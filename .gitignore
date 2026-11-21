@@ -46,3 +46,8 @@ desktop.ini
 
 # Local interpreter pointer (machine specific)
 .python_path
+
+# The chat-transfer export holds the Cursor account credentials.
+# It travels by hand (USB, drive), never through the repository.
+*CHAT_TRANSFER*/
+*chat_transfer*/

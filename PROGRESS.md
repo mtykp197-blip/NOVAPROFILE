@@ -130,11 +130,32 @@ _Cập nhật: 22/11/2026 00:50 (UTC+7)_
 ### Dọn dẹp
 - Xóa `.nova_verify2` (đã kiểm tra: 0 rows ở mọi bảng SQLite), `.ruff_cache`, `__pycache__`, `.pytest_cache`.
 
+### Sửa bug launcher — phát hiện khi đóng gói
+- **Trước**: `build_args()` gọi `self.chrome_path` (tìm `chrome.exe` trên hệ thống) **trước** khi chọn core → máy không cài Chrome sẽ `FileNotFoundError` dù core đã đăng ký và có executable riêng.
+- **Sau**: chọn core trước, chỉ fallback về `chrome_path` khi không có core nào khớp.
+- Lỗi này làm fail `test_launcher_cores.py` — và sẽ làm fail trên **mọi máy mới** không cài Chrome sẵn. Đã sửa trước khi chuyển máy.
+
+### Đóng gói cho việc chuyển máy
+- `git init` — repo trước đó chưa có (chỉ có file rời).
+- `.gitattributes` — pin LF cho patch series; patch có context CRLF **không apply** được.
+- `.gitignore` — mở rộng: `.nova_verify*`, `*.log` (trừ `scale_check_100m.log`), `scratch/`, `tmp/`.
+- `README.md` — sửa 4 lỗi: preset count 11→42, preset ID sai (`pixel-8-pro` không tồn tại, phải `pixel-8-pro-android14`), thiếu mục `js_runtime`/`docs/measurements`, tham chiếu `core_patch/README.md` không tồn tại → **đã tạo**.
+- `AGENT_CONTRACT.md` — bỏ đường dẫn `C:\Users\ezycloudx-admin\...` hardcode (máy-specific).
+- Commit: `baebcc5`, 134 file, 41.913 dòng.
+
+### Chuyển lịch sử chat sang máy mới
+- Thêm `tools/cursor_chat_transfer.py` — export/import chat của Cursor.
+- Cursor lưu chat ở **3 nơi**: `globalStorage/state.vscdb` (`cursorDiskKV` = tin nhắn, `composerHeaders` = metadata sidebar), `.cursor/projects/<slug>/agent-transcripts/*.jsonl` (transcript), `workspaceStorage/` (state).
+- Export lấy **đầy đủ**: 5 chat, 5.136 rows chat + 206 rows `ItemTable` (account state) + 14 credential + 5 transcript = 81,6 MB.
+- Import là **merge**: cái đã có trên máy đích thắng, chạy 2 lần vô hại.
+- ⚠️ Thư mục export chứa credential của account → copy tay (USB/ổ), **không** push lên git, **không** để trên cloud công khai.
+
 ---
 
 ## 7. Lịch sử cập nhật
 
 | Thời điểm | Nội dung |
 |---|---|
+| 22/11 01:15 | Sửa bug launcher. Đóng gói git (commit `baebcc5`, 134 file). Viết `RULES.md` đầy đủ 11 mục. Thêm `tools/cursor_chat_transfer.py` + export chat 81,6 MB. |
 | 22/11 00:50 | Catalog 11→42 preset. Sửa đơn vị đo screen (logical pixel). Thêm `fleet-audit` vào ledger. 559 test pass. 2M profile 0 va chạm. |
 | 21/11 22:50 | Tạo báo cáo. 540 test pass. |
