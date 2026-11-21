@@ -1,0 +1,29 @@
+{
+  "command": "python -m novaprofile.scripts.audit --count 2000",
+  "conclusion": "All 4 audit dimensions pass across 2000 profiles with 25 warning(s).",
+  "environment": {
+    "cpu_count": 18,
+    "cpu_physical": 1,
+    "implementation": "CPython",
+    "machine": "AMD64",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 151 Stepping 2, GenuineIntel",
+    "python": "3.12.10"
+  },
+  "measured_at": "2026-11-22T00:44:27+07:00",
+  "metrics": {
+    "coherent_passed": true,
+    "dimensions_passed": 4,
+    "dimensions_total": 4,
+    "errors": 0,
+    "profiles_checked": 2000,
+    "real_passed": true,
+    "scale_passed": true,
+    "unique_passed": true,
+    "warnings": 25
+  },
+  "notes": "",
+  "reusable": true,
+  "sha256": "88fa6614ef7a882e0a1bcb2393e627c894fd8977bc261d596408805222188afd",
+  "slug": "fleet-audit"
+}

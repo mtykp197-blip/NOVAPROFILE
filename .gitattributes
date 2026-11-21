@@ -1,0 +1,49 @@
+# Keep the line endings of the text files stable across machines.
+#
+# The work was done on Windows; without this, a checkout on Linux would
+# rewrite every file, which makes a diff between the two machines
+# unreadable and makes the patch series fail to apply.
+#
+# The C++ sources and the patch files are the ones that matter most:
+# a patch whose context lines carry CRLF does not apply to a checkout
+# with LF.
+
+* text=auto
+
+*.py    text diff=python
+*.cc    text
+*.h     text
+*.md    text
+*.toml  text
+*.txt   text
+*.json  text
+*.js    text
+*.html  text
+*.css   text
+*.yml   text
+*.yaml  text
+
+# The unified diffs must keep LF exactly: a patch with CRLF context
+# lines does not apply.
+*.patch text eol=lf
+
+# Binary or generated content.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.zip   binary
+*.exe   binary
+*.dll   binary
+*.so    binary
+*.dylib binary
+*.a     binary
+*.o     binary
+*.obj   binary
+*.lib   binary
+*.pdb   binary
+*.db    binary
+*.sqlite binary
+*.wasm  binary

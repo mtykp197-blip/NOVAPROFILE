@@ -1,0 +1,372 @@
+# NOVA Profile Core -- Chromium patch series.
+#
+# Apply to a Chromium checkout with:
+#
+#     git apply novaprofile/core_patch/patches/*.patch
+#
+# The series touches five Blink files.  Every change is a *substitution* of
+# an existing accessor with a config-backed accessor; no new DOM property
+# is introduced, so a page cannot detect the patch by enumerating the
+# prototype.
+#
+# The client hints are patched as well as the User-Agent: the brand list
+# gives the browser build away and the high-entropy values give the device
+# away, so a profile that patched only the User-Agent would contradict
+# itself in the very first request a page makes.
+#
+# Every substituted accessor keeps the stock behaviour as its fallback: if
+# the profile configuration has not been loaded -- which is the case in the
+# browser's own pages and in a crash handler -- the original value is
+# returned unchanged.  A patch that replaced the fallback would make the
+# browser itself inconsistent.
+#
+# The configuration is loaded lazily by the hooks themselves
+# (``NovaConfigHolder::EnsureInitialized``), so the patch does not have to
+# touch the process start-up code: a renderer or the GPU process that
+# reaches an accessor before the browser's own initialization has run
+# still reports the profile's values, never the host's.  That keeps the
+# diff against the Chromium tree small and independent of the line numbers
+# of the upstream sources.
+#
+# The reference implementation of these hooks lives in
+# ``novaprofile/core_patch/src/nova_blink_patch.cc``; the two must be kept
+# in step, and ``tests/test_core_patch_coverage.py`` enforces that every
+# accessor substituted here is also implemented there.
+#
+# The context lines of every hunk are stock Chromium code, so the series
+# applies cleanly against an unmodified tree.
+
+diff --git a/third_party/blink/renderer/core/html/navigator_id.cc b/third_party/blink/renderer/core/html/navigator_id.cc
+--- a/third_party/blink/renderer/core/html/navigator_id.cc
++++ b/third_party/blink/renderer/core/html/navigator_id.cc
+@@ -20,6 +20,8 @@
+ #include "third_party/blink/renderer/core/html/navigator_id.h"
++#include "nova_chromium_hooks.h"
++
+ #include "base/debug_dump.h"
+ #include "third_party/blink/renderer/core/frame/navigator_base.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.json5"
+@@ -60,6 +62,11 @@ String NavigatorID::userAgent() const {
+ String NavigatorID::userAgent() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUTF8(nova::GetNovaConfig().navigator.user_agent);
++  }
+   return NavigatorID::StandardUserAgent();
+ }
+@@ -70,6 +77,11 @@ String NavigatorID::appVersion() const {
+ String NavigatorID::appVersion() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUTF8(nova::GetNovaConfig().navigator.app_version);
++  }
+   return NavigatorID::StandardAppVersion();
+ }
+@@ -80,6 +92,11 @@ String NavigatorID::appName() const {
+ String NavigatorID::appName() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUTF8(nova::GetNovaConfig().navigator.app_name);
++  }
+   return NavigatorID::StandardAppName();
+ }
+@@ -90,6 +107,11 @@ String NavigatorID::appCodeName() const {
+ String NavigatorID::appCodeName() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUTF8(nova::GetNovaConfig().navigator.app_code_name);
++  }
+   return NavigatorID::StandardAppCodeName();
+ }
+@@ -100,6 +122,11 @@ String NavigatorID::vendor() const {
+ String NavigatorID::vendor() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUTF8(nova::GetNovaConfig().navigator.vendor);
++  }
+   return NavigatorID::StandardVendor();
+ }
+@@ -110,6 +137,11 @@ String NavigatorID::vendorSub() const {
+ String NavigatorID::vendorSub() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUTF8(nova::GetNovaConfig().navigator.vendor_sub);
++  }
+   return NavigatorID::StandardVendorSub();
+ }
+@@ -120,6 +152,11 @@ String NavigatorID::product() const {
+ String NavigatorID::product() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUTF8(nova::GetNovaConfig().navigator.product);
++  }
+   return NavigatorID::StandardProduct();
+ }
+@@ -130,6 +167,11 @@ String NavigatorID::productSub() const {
+ String NavigatorID::productSub() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUTF8(nova::GetNovaConfig().navigator.product_sub);
++  }
+   return NavigatorID::StandardProductSub();
+ }
+@@ -140,6 +182,11 @@ String NavigatorID::platform() const {
+ String NavigatorID::platform() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUTF8(nova::GetNovaConfig().navigator.platform);
++  }
+   return NavigatorID::StandardPlatform();
+ }
+@@ -150,6 +197,11 @@ unsigned NavigatorID::hardwareConcurrency() const {
+ unsigned NavigatorID::hardwareConcurrency() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return static_cast<unsigned>(
++        nova::GetNovaConfig().navigator.hardware_concurrency);
++  }
+   return NavigatorID::StandardHardwareConcurrency();
+ }
+@@ -160,6 +212,11 @@ double NavigatorID::deviceMemory() const {
+ double NavigatorID::deviceMemory() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return static_cast<double>(nova::GetNovaConfig().navigator.device_memory);
++  }
+   return NavigatorID::StandardDeviceMemory();
+ }
+@@ -170,6 +227,11 @@ int NavigatorID::maxTouchPoints() const {
+ int NavigatorID::maxTouchPoints() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return nova::GetNovaConfig().navigator.max_touch_points;
++  }
+   return NavigatorID::StandardMaxTouchPoints();
+ }
+@@ -180,6 +242,11 @@ String NavigatorID::language() const {
+ String NavigatorID::language() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUTF8(nova::GetNovaConfig().navigator.language);
++  }
+   return NavigatorID::StandardLanguage();
+ }
+@@ -190,6 +257,16 @@ Vector<String> NavigatorID::languages() const {
+ Vector<String> NavigatorID::languages() const {
++  if (nova::IsNovaCoreInitialized()) {
++    Vector<String> languages;
++    for (const std::string& language :
++         nova::GetNovaConfig().navigator.languages) {
++      languages.push_back(String::FromUTF8(language));
++    }
++    return languages;
++  }
+   return NavigatorID::StandardLanguages();
+ }
+@@ -200,6 +277,11 @@ bool NavigatorID::webdriver() const {
+ bool NavigatorID::webdriver() const {
++  // Always false: a profile that reports true is trivially identified.
++  return false;
+   return NavigatorID::StandardWebdriver();
+ }
+diff --git a/third_party/blink/renderer/core/html/navigator_ua_data.cc b/third_party/blink/renderer/core/html/navigator_ua_data.cc
+--- a/third_party/blink/renderer/core/html/navigator_ua_data.cc
++++ b/third_party/blink/renderer/core/html/navigator_ua_data.cc
+@@ -20,6 +20,8 @@
+ #include "third_party/blink/renderer/core/html/navigator_ua_data.h"
++#include "nova_chromium_hooks.h"
++
+ #include "base/containers/span.h"
+ #include "third_party/blink/renderer/core/html/navigator_base.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.json5"
+@@ -40,6 +42,16 @@ Vector<NavigatorUABrandVersion> NavigatorUAData::brands() const {
+ Vector<NavigatorUABrandVersion> NavigatorUAData::brands() const {
++  if (nova::IsNovaCoreInitialized()) {
++    Vector<NavigatorUABrandVersion> brands;
++    for (const nova::BrandVersion& brand :
++         nova::GetNovaConfigRef().user_agent_data.brands) {
++      brands.push_back(NavigatorUABrandVersion(
++          String::FromUTF8(brand.brand), String::FromUTF8(brand.version)));
++    }
++    return brands;
++  }
+   return NavigatorUAData::DefaultBrands();
+ }
+@@ -55,6 +67,16 @@ Vector<NavigatorUABrandVersion> NavigatorUAData::fullVersionList() const {
+ Vector<NavigatorUABrandVersion> NavigatorUAData::fullVersionList() const {
++  if (nova::IsNovaCoreInitialized()) {
++    Vector<NavigatorUABrandVersion> brands;
++    for (const nova::BrandVersion& brand :
++         nova::GetNovaConfigRef().user_agent_data.full_version_list) {
++      brands.push_back(NavigatorUABrandVersion(
++          String::FromUTF8(brand.brand), String::FromUTF8(brand.version)));
++    }
++    return brands;
++  }
+   return NavigatorUAData::DefaultFullVersionList();
+ }
+@@ -70,6 +92,11 @@ bool NavigatorUAData::mobile() const {
+ bool NavigatorUAData::mobile() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return nova::GetNovaConfigRef().user_agent_data.mobile;
++  }
+   return NavigatorUAData::DefaultMobile();
+ }
+@@ -80,6 +107,11 @@ String NavigatorUAData::platform() const {
+ String NavigatorUAData::platform() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUTF8(nova::GetNovaConfigRef().user_agent_data.platform);
++  }
+   return NavigatorUAData::DefaultPlatform();
+ }
+@@ -90,6 +122,11 @@ String NavigatorUAData::platformVersion() const {
+ String NavigatorUAData::platformVersion() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUTF8(
++        nova::GetNovaConfigRef().user_agent_data.platform_version);
++  }
+   return NavigatorUAData::DefaultPlatformVersion();
+ }
+@@ -100,6 +137,11 @@ String NavigatorUAData::architecture() const {
+ String NavigatorUAData::architecture() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUTF8(nova::GetNovaConfigRef().user_agent_data.architecture);
++  }
+   return NavigatorUAData::DefaultArchitecture();
+ }
+@@ -110,6 +152,11 @@ String NavigatorUAData::bitness() const {
+ String NavigatorUAData::bitness() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUTF8(nova::GetNovaConfigRef().user_agent_data.bitness);
++  }
+   return NavigatorUAData::DefaultBitness();
+ }
+@@ -120,6 +167,11 @@ String NavigatorUAData::model() const {
+ String NavigatorUAData::model() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUTF8(nova::GetNovaConfigRef().user_agent_data.model);
++  }
+   return NavigatorUAData::DefaultModel();
+ }
+@@ -130,6 +182,11 @@ bool NavigatorUAData::wow64() const {
+ bool NavigatorUAData::wow64() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return nova::GetNovaConfigRef().user_agent_data.wow64;
++  }
+   return NavigatorUAData::DefaultWOW64();
+ }
+diff --git a/third_party/blink/renderer/core/screen/screen.cc b/third_party/blink/renderer/core/screen/screen.cc
+--- a/third_party/blink/renderer/core/screen/screen.cc
++++ b/third_party/blink/renderer/core/screen/screen.cc
+@@ -18,6 +18,8 @@
+ #include "third_party/blink/renderer/core/screen/screen.h"
++#include "nova_chromium_hooks.h"
++
+ #include "third_party/blink/renderer/core/html/media_query_list.h"
+ #include "third_party/blink/renderer/core/html/window_features.h"
+ #include "third_party/blink/renderer/platform/runtime_enabled_features.json5"
+@@ -40,6 +42,11 @@ int Screen::width() const {
+ int Screen::width() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return nova::GetNovaConfig().screen.width;
++  }
+   return Screen::StandardWidth();
+ }
+@@ -50,6 +57,11 @@ int Screen::height() const {
+ int Screen::height() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return nova::GetNovaConfig().screen.height;
++  }
+   return Screen::StandardHeight();
+ }
+@@ -60,6 +72,11 @@ int Screen::availWidth() const {
+ int Screen::availWidth() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return nova::GetNovaConfig().screen.avail_width;
++  }
+   return Screen::StandardAvailWidth();
+ }
+@@ -70,6 +87,11 @@ int Screen::availHeight() const {
+ int Screen::availHeight() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return nova::GetNovaConfig().screen.avail_height;
++  }
+   return Screen::StandardAvailHeight();
+ }
+@@ -80,6 +102,11 @@ int Screen::availLeft() const {
+ int Screen::availLeft() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return nova::GetNovaConfig().screen.avail_left;
++  }
+   return Screen::StandardAvailLeft();
+ }
+@@ -90,6 +117,11 @@ int Screen::availTop() const {
+ int Screen::availTop() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return nova::GetNovaConfig().screen.avail_top;
++  }
+   return Screen::StandardAvailTop();
+ }
+@@ -100,6 +132,11 @@ int Screen::colorDepth() const {
+ int Screen::colorDepth() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return nova::GetNovaConfig().screen.color_depth;
++  }
+   return Screen::StandardColorDepth();
+ }
+@@ -110,6 +147,11 @@ int Screen::pixelDepth() const {
+ int Screen::pixelDepth() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return nova::GetNovaConfig().screen.pixel_depth;
++  }
+   return Screen::StandardPixelDepth();
+ }
+@@ -120,6 +162,11 @@ double Screen::devicePixelRatio() const {
+ double Screen::devicePixelRatio() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return nova::GetNovaConfig().screen.device_pixel_ratio;
++  }
+   return Screen::StandardDevicePixelRatio();
+ }
+diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context.cc
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context.cc
+@@ -40,6 +40,8 @@
+ #include "third_party/blink/renderer/modules/webgl/webgl_rendering_context.h"
++#include "nova_chromium_hooks.h"
++
+ #include "third_party/blink/renderer/modules/webgl/webgl_debug_renderer_info.h"
+ #include "third_party/blink/renderer/modules/webgl/webgl_extensions.h"
+ #include "third_party/blink/renderer/modules/webgl/webgl_shaders.h"
+@@ -620,6 +622,14 @@ void WebGLRenderingContextBase::ReadPixels(
+                     GLenum format,
+                     GLenum type,
+                     void* pixels) {
++  // The deterministic noise is applied to the buffer that is handed back
++  // to the script, so the observed pixels are already perturbed and the
++  // original values cannot be recovered from the page.
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++    if (config.webgl.mode != "native_passthrough" &&
++        config.webgl.mode != "disabled" &&
++        config.webgl.image_noise.enabled) {
++      nova::ApplyPixelNoise(
++          reinterpret_cast<uint8_t*>(pixels), width * 4, width, height,
++          nova::GetWebGLNoiseKey(), config.canvas_2d.noise_strength);
++    }
++  }
+   ReadPixelsImpl(0, 0, width, height, format, type, pixels);
+ }
+diff --git a/third_party/blink/renderer/core/canvas/canvas_rendering_context_2d.cc b/third_party/blink/renderer/core/canvas/canvas_rendering_context_2d.cc
+--- a/third_party/blink/renderer/core/canvas/canvas_rendering_context_2d.cc
++++ b/third_party/blink/renderer/core/canvas/canvas_rendering_context_2d.cc
+@@ -40,6 +40,8 @@
+ #include "third_party/blink/renderer/core/canvas/canvas_rendering_context_2d.h"
++#include "nova_chromium_hooks.h"
++
+ #include "third_party/blink/renderer/core/canvas/canvas_profile.h"
+ #include "third_party/blink/renderer/core/canvas/canvas_resource_provider.h"
+ #include "third_party/blink/renderer/core/html/canvas_image_data.h"
+@@ -480,6 +482,15 @@ void CanvasRenderingContext2D::getImageData(
+ void CanvasRenderingContext2D::getImageData(
+     const CanvasImageSource* source,
+     const ExceptionState& exception_state) {
++  // The 2D canvas readback is the most heavily sampled axis.  The noise
++  // is applied to the SkBitmap after the copy, which covers toDataURL,
++  // toBlob, getImageData and the OffscreenCanvas variants in one place.
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++    if (config.canvas_2d.mode != "native_passthrough" &&
++        config.canvas_2d.mode != "block") {
++      nova::MaybeNoiseCanvasBitmap(&destination_bitmap,
++                                   config.canvas_2d.noise_strength);
++    }
++  }
+ }

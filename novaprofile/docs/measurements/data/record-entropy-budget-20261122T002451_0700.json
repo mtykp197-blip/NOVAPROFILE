@@ -1,0 +1,111 @@
+{
+  "command": "python -m novaprofile.scripts.entropy_budget",
+  "conclusion": "Every identifying axis clears the 26.6-bit fleet threshold; the weakest is 'sig_device' at 128.0 bits.",
+  "environment": {
+    "cpu_count": 18,
+    "cpu_physical": 1,
+    "implementation": "CPython",
+    "machine": "AMD64",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 151 Stepping 2, GenuineIntel",
+    "python": "3.12.10"
+  },
+  "measured_at": "2026-11-22T00:24:51+07:00",
+  "metrics": {
+    "all_axes_clear": true,
+    "axes": {
+      "sig_audio": {
+        "birthday_p_at_target": 0.0,
+        "bits": 128,
+        "clears_threshold": true,
+        "distinct_in_sample": 200,
+        "sample": 200
+      },
+      "sig_canvas": {
+        "birthday_p_at_target": 0.0,
+        "bits": 128,
+        "clears_threshold": true,
+        "distinct_in_sample": 200,
+        "sample": 200
+      },
+      "sig_device": {
+        "birthday_p_at_target": 0.0,
+        "bits": 128,
+        "clears_threshold": true,
+        "distinct_in_sample": 200,
+        "sample": 200
+      },
+      "sig_devices": {
+        "birthday_p_at_target": 0.0,
+        "bits": 128,
+        "clears_threshold": true,
+        "distinct_in_sample": 200,
+        "sample": 200
+      },
+      "sig_fonts": {
+        "birthday_p_at_target": 0.0,
+        "bits": 128,
+        "clears_threshold": true,
+        "distinct_in_sample": 200,
+        "sample": 200
+      },
+      "sig_full": {
+        "birthday_p_at_target": 0.0,
+        "bits": 1280,
+        "clears_threshold": true,
+        "distinct_in_sample": 200,
+        "sample": 200
+      },
+      "sig_rects": {
+        "birthday_p_at_target": 0.0,
+        "bits": 128,
+        "clears_threshold": true,
+        "distinct_in_sample": 200,
+        "sample": 200
+      },
+      "sig_sensors": {
+        "birthday_p_at_target": 0.0,
+        "bits": 128,
+        "clears_threshold": true,
+        "distinct_in_sample": 200,
+        "sample": 200
+      },
+      "sig_storage": {
+        "birthday_p_at_target": 0.0,
+        "bits": 128,
+        "clears_threshold": true,
+        "distinct_in_sample": 200,
+        "sample": 200
+      },
+      "sig_webgl_draw": {
+        "birthday_p_at_target": 0.0,
+        "bits": 184,
+        "clears_threshold": true,
+        "distinct_in_sample": 200,
+        "sample": 200
+      },
+      "sig_webgl_params": {
+        "birthday_p_at_target": 0.0,
+        "bits": 184,
+        "clears_threshold": true,
+        "distinct_in_sample": 200,
+        "sample": 200
+      },
+      "sig_webgpu": {
+        "birthday_p_at_target": 0.0,
+        "bits": 128,
+        "clears_threshold": true,
+        "distinct_in_sample": 200,
+        "sample": 200
+      }
+    },
+    "required_bits": 26.58,
+    "target_fleet": 100000000,
+    "worst_axis": "sig_device",
+    "worst_axis_bits": 128
+  },
+  "notes": "",
+  "reusable": true,
+  "sha256": "a53cd6c77bb4e10be17c3c2e17756bcc7ca0c9fe56ee5d866655b5b9b9de8c34",
+  "slug": "entropy-budget"
+}

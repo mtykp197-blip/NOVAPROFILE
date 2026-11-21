@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
+ENV/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Nova runtime
+state.db
+state.db-wal
+state.db-shm
+keys/
+logs/
+profiles/
+*.db-journal
+.nova_verify*/
+.nova_run/
+*.nova
+
+# Test and measurement scratch output
+*.log
+!scale_check_100m.log
+.nova_measurements.tmp/
+scratch/
+tmp/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Local interpreter pointer (machine specific)
+.python_path

@@ -1,0 +1,24 @@
+{
+  "command": "python -m pytest -q && python -m ruff check .",
+  "conclusion": "546 tests pass and the linter is clean.",
+  "environment": {
+    "cpu_count": 18,
+    "cpu_physical": 1,
+    "implementation": "CPython",
+    "machine": "AMD64",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "processor": "Intel64 Family 6 Model 151 Stepping 2, GenuineIntel",
+    "python": "3.12.10"
+  },
+  "measured_at": "2026-11-22T00:25:05+07:00",
+  "metrics": {
+    "pytest_failed": 0,
+    "pytest_passed": 546,
+    "ruff_clean": true,
+    "ruff_violations": 0
+  },
+  "notes": "",
+  "reusable": true,
+  "sha256": "f31fd995ef1b6f0c850c7833ef5390834bd9ee17908aa8b234ef979ae624eaec",
+  "slug": "test-suite"
+}

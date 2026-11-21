@@ -1,0 +1,129 @@
+# MỤC TIÊU TỐI THƯỢNG (CORE OBJECTIVE)
+Xây dựng trọn bộ hệ thống **Custom Android Browser Core (Chromium / Blink / ANGLE / Skia / Net / Media)** và **Android Profile Engine & Control Plane** đạt chuẩn thương mại (tương đương Hidemium/Multilogin), hỗ trợ **trên 100.000.000+ (100M+) tổ hợp vân tay độc bản**.
+**Tiêu chí sống còn:** Mọi website và hệ thống chống bot (Cloudflare, Akamai, CreepJS, DataDome, FingerprintJS...) phải nhận diện mỗi profile là **một thiết bị Android thật độc lập**, tuyệt đối không bao giờ gom cụm (cluster) hai profile khác nhau thành cùng một người dùng.
+
+---
+
+# PHẦN 1 — QUY TRÌNH TRIỂN KHAI TỪNG BƯỚC (STEP-BY-STEP EXECUTION WORKFLOW)
+Hãy thiết kế và triển khai hệ thống tuân thủ nghiêm ngặt quy trình 6 bước khép kín sau:
+
+## BƯỚC 1: KHỞI TẠO KHÔNG GIAN ENTROPY & KHÓA CÁC TRỤC GOM NHÓM (CLUSTERING AXES)
+1. **Sinh Master Entropy:** Mỗi profile được cấp `profile_id` (UUIDv7) + `master_seed` (256-bit hex từ CSPRNG) + `seed_epoch` (int) + `nudge_step` (int).
+2. **Phân tách Domain Salt (HKDF-SHA256):** Tuyệt đối không dùng chung 1 số float cho nhiều trục. Dùng HKDF-SHA256 với `domain_salt` riêng biệt cho từng trục: `android_build`, `navigator`, `client_hints`, `screen_viewport`, `canvas_2d`, `webgl_pixel`, `webgl_params`, `webgpu`, `audio`, `rects`, `fonts`, `media_devices`, `sensors`, `battery_network`, `geo_timezone`, `storage_quota`.
+3. **Chống trùng chéo phần cứng (Anti Cross-GPU Collision):** Khi sinh hệ số nhiễu cho WebGL (`webgl_image_value`), bắt buộc nối chuỗi `unmasked_renderer` (ví dụ: `Mali-G715 MC10`, `Adreno (TM) 740`) vào công thức băm để 2 dòng chip khác nhau không bao giờ vô tình rơi vào chung một mã hash đồ họa. Giữ độ chính xác tối thiểu 17 chữ số thập phân (không làm tròn thô).
+4. **Tôn trọng giới hạn vật lý của nhân (Engine Quantization & Native Standards):**
+   - Không bẻ cong giả tạo trục **TLS/JA3/HTTP2** (giữ chuẩn của bản dựng Chromium/Android để không bị tường lửa mạng chặn từ cổng kết nối).
+   - Tôn trọng mức lượng tử hóa tự nhiên của **AudioContext** (7 buckets chuẩn Android/Chromium) và quy luật **Font Metrics** theo nhóm của hệ điều hành Android.
+
+## BƯỚC 2: TIÊM CẤU HÌNH TẦNG NATIVE C++ & ĐỒNG BỘ MỌI NGỮ CẢNH (CROSS-CONTEXT SYNC)
+1. **Native C++ Injection (Không dùng JS Hook bề mặt):**
+   - Truyền toàn bộ cấu hình profile qua Shared Memory / Mojo / Command-line Flag được mã hóa vào tiến trình trình duyệt ngay từ lúc khởi tạo, trước khi Renderer Process, GPU Process và Network Stack chạy.
+   - Tuyệt đối không để lộ dấu vết `Function.prototype.toString()`, `Object.getOwnPropertyDescriptor()`, `Proxy` leak hay `navigator.webdriver = true`.
+2. **Đồng bộ đa luồng thực thi:**
+   - Mọi thông số giả lập phải đồng nhất 100% giữa: **Main Frame (`window`)**, **Cross-origin / Same-origin / `srcdoc` / Sandboxed `iframe`**, **`Web Worker`**, **`SharedWorker`**, và **`ServiceWorker`**.
+3. **Xử lý triệt để điểm mù đồ họa (`Canvas 2D` & `WebGL readPixels`):**
+   - Can thiệp trực tiếp vào tầng kết xuất pixel của Skia/ANGLE (`toDataURL`, `toBlob`, `getImageData`, và đặc biệt là `gl.readPixels` trên framebuffer WebGL) dựa trên `master_seed` + `renderer` + `nudge_step`. Đảm bảo cùng một profile luôn xuất ra đúng 1 mã hash qua hàng nghìn lần mở lại (Deterministic Persistence), nhưng 2 profile khác nhau luôn xuất ra 2 mã hash riêng biệt.
+
+## BƯỚC 3: BỘ GIẢI QUYẾT NHẤT QUÁN CHÉO (CROSS-LAYER CONSISTENCY RESOLVER)
+Xây dựng module kiểm tra và ràng buộc chéo trước khi xuất cấu hình:
+1. **Khớp phần cứng Android:** `Brand/Manufacturer/Model/Device/Product/Hardware/Board/Build.FINGERPRINT` ↔ `Android OS Version/SDK_INT/Security Patch` ↔ `ABI (arm64-v8a/armeabi-v7a)` ↔ `SoC & GPU Renderer` ↔ `Screen Resolution/DPR/DensityDPI/MaxTouchPoints` ↔ `CPU Cores/RAM` ↔ `User-Agent` & `Sec-CH-UA-*`.
+2. **Khớp vị trí địa lý & Mạng:** `Proxy Exit IP` ↔ `Country/Region/City/ASN` ↔ `Timezone IANA & Offset & DST` ↔ `Primary Locale & Intl & Accept-Language` ↔ `Geolocation (Lat/Lng/Accuracy)` ↔ `WebRTC Public IP`.
+
+## BƯỚC 4: HỆ THỐNG CHỐNG TRÙNG ĐA TẦNG (COLLISION GUARD: NUDGE → ROLL SEED → REJECT)
+1. **Lưu trữ chữ ký vân tay (Signature Registry):** Lưu hash của từng nhóm trục (`sig_canvas`, `sig_webgl_draw`, `sig_webgl_params`, `sig_rects`, `sig_devices`, `sig_full`) vào Local SQLite và Central DB kèm trạng thái (`active`, `archived`, `revoked`).
+2. **Vòng lặp kiểm duyệt khi cấp phát profile mới:**
+   - *Lần 1:* Tính/đo signature của candidate profile.
+   - *Nếu trùng:* Tăng `nudge_step` (tối đa 3–5 bước) để dịch chuyển các chữ số thập phân sâu của `webgl_image_value` và đo lại.
+   - *Nếu vẫn trùng:* Thực hiện **Roll Seed** (`master_seed` mới, `seed_epoch += 1`, `nudge_step = 0`) để biến profile thành một thiết bị phần cứng mới hoàn toàn.
+   - *Nếu sau 8 lần thử vẫn trùng:* **Từ chối cấp phát và ném lỗi rõ ràng**, tuyệt đối không tạo profile trùng lặp.
+
+## BƯỚC 5: CÔ LẬP DỮ LIỆU & TÀI NGUYÊN TUYỆT ĐỐI (STRICT ISOLATION)
+1. Mỗi `profile_id` sở hữu một thư mục `user_data_dir` độc lập hoàn toàn (`Cookies`, `Local Storage`, `Session Storage`, `IndexedDB`, `CacheStorage`, `Code Cache`, `GPUCache`, `Service Workers`, `FileSystem`, `Extensions`).
+2. Cấm chia sẻ bất kỳ tệp tin phiên hoặc bộ nhớ đệm nào giữa các profile. Khi nhân bản (clone) profile, bắt buộc cung cấp tùy chọn tạo `master_seed` mới và làm sạch storage.
+
+## BƯỚC 6: VẬN HÀNH MẠNG, TỰ ĐỘNG HÓA & KIỂM CHỨNG HỒI QUY (QA PROBE SUITE)
+1. Gán proxy riêng biệt cho từng profile; chặn rò rỉ WebRTC UDP ngoài proxy và chặn DNS leak.
+2. Tích hợp bộ **Runtime Probe & Automated Test Suite** tự động đo lường: Tỷ lệ độc bản (`Distinct Ratio = 100%`), Tỷ lệ va chạm (`Collision Rate = 0%`), Tính ổn định (`Persistence = True`), và Kiểm tra lệch pha (`Consistency Pass`) trước khi đưa profile vào sử dụng.
+
+---
+
+# PHẦN 2 — DANH SÁCH ĐẦY ĐỦ TẤT CẢ CÁC TRƯỜNG DỮ LIỆU & CHI TIẾT (ANDROID SCHEMA)
+
+Hãy định nghĩa đầy đủ các trường sau trong Schema (JSON / Pydantic / TypeScript / C++ Struct):
+
+### 1. Profile Identity, Seed & Android Build Metadata
+- `profile`: `id` (UUIDv7), `name`, `group_id`, `folder_id`, `tags[]`, `notes`, `status` (`created|ready|starting|running|stopping|crashed|archived|revoked`), `created_at`, `updated_at`, `last_started_at`, `last_closed_at`, `total_runtime_ms`, `launch_count`.
+- `seed_config`: `master_seed` (64-char hex), `seed_epoch` (int), `nudge_step` (int), `hkdf_version` (string), `preset_id` (string), `core_version` (string).
+- `android_build`: `version_release` (`"13"|"14"|"15"`), `sdk_int` (`33|34|35`), `security_patch` (YYYY-MM-DD), `build_id`, `display`, `version_incremental`, `model`, `device`, `product`, `manufacturer`, `brand`, `hardware`, `board`, `bootloader`, `fingerprint`, `host`, `user`, `tags` (`"release-keys"`), `type` (`"user"`), `serial`.
+- `android_abi_soc`: `supported_abis[]` (`["arm64-v8a", "armeabi-v7a"]`), `supported_64_bit_abis[]`, `supported_32_bit_abis[]`, `primary_abi`, `is_64_bit` (bool), `soc_vendor`, `soc_model`, `cpu_cluster_layout`, `gpu_architecture`.
+
+### 2. Proxy, Network, WebRTC, DNS & Geo-Sync
+- `proxy`: `enabled` (bool), `protocol` (`http|https|socks4|socks5|socks5h|ssh|direct`), `host`, `port`, `username`, `password` (encrypted), `auth_method`, `connect_timeout_ms`, `read_timeout_ms`.
+- `proxy_rotation`: `enabled` (bool), `mode` (`manual|on_launch|on_interval|on_api_call|on_error`), `interval_sec`, `rotate_url`, `http_method`, `headers{}`, `body`, `cooldown_sec`.
+- `geo_intelligence`: `exit_ip_v4`, `exit_ip_v6`, `country_code`, `country_name`, `region_code`, `region_name`, `city`, `postal_code`, `asn`, `isp`, `org`, `is_mobile_carrier` (bool), `is_datacenter` (bool), `latency_ms`, `checked_at`.
+- `geo_sync`: `enabled` (bool), `lock_manual_overrides` (bool), `sync_timezone` (bool), `sync_locale` (bool), `sync_geolocation` (bool), `sync_webrtc_ip` (bool).
+- `webrtc`: `mode` (`real|altered|disabled|default_public_interface_only|proxy_only`), `spoofed_public_ip_v4`, `spoofed_public_ip_v6`, `spoofed_local_ip_v4` (deterministic theo seed), `mdns_enabled` (bool), `block_non_proxied_udp` (bool), `ice_transport_policy` (`all|relay`).
+- `dns`: `mode` (`system|proxy_remote|custom_udp|doh|dot`), `servers[]`, `doh_url`, `dot_host`, `prevent_dns_leak` (bool).
+- `http_headers`: `accept_language`, `dnt`, `sec_ch_ua`, `sec_ch_ua_mobile` (`"?1"`), `sec_ch_ua_platform` (`"Android"`), `sec_ch_ua_platform_version`, `sec_ch_ua_arch`, `sec_ch_ua_bitness`, `sec_ch_ua_model`, `sec_ch_ua_full_version_list`, `custom_headers{}`.
+
+### 3. Navigator, Client Hints & Permissions
+- `navigator`: `user_agent`, `app_version`, `app_name`, `app_code_name`, `vendor` (`"Google Inc."`), `vendor_sub`, `product` (`"Gecko"`), `product_sub` (`"20030107"`), `platform` (`"Linux armv8l"|"Linux aarch64"|"Linux armv7l"`), `hardware_concurrency` (`4|6|8|12`), `device_memory` (`2|4|6|8|12|16`), `max_touch_points` (`5|10`), `language`, `languages[]`, `cookie_enabled` (bool), `do_not_track`, `global_privacy_control`, `pdf_viewer_enabled` (bool), `webdriver` (`false`), `on_line` (bool), `java_enabled` (`false`).
+- `user_agent_data`: `brands[]` (`{brand, version}`), `full_version_list[]` (`{brand, version}`), `mobile` (`true`), `platform` (`"Android"`), `platform_version`, `architecture` (`""|"arm"`), `bitness` (`""|"64"`), `model`, `wow64` (`false`).
+- `plugins_mime`: `plugins[]`, `mime_types[]`.
+- `permissions`: `policies` (`geolocation`, `notifications`, `camera`, `microphone`, `clipboard-read`, `clipboard-write`, `midi`, `persistent-storage`, `accelerometer`, `gyroscope`, `magnetometer` → `granted|denied|prompt`).
+
+### 4. Screen, Viewport, Safe Area & CSS Media Queries
+- `screen`: `width`, `height`, `avail_width`, `avail_height`, `avail_left`, `avail_top`, `color_depth` (`24|30`), `pixel_depth`, `device_pixel_ratio` (`1.75|2.0|2.25|2.5|2.625|2.75|3.0|3.5`), `density_dpi` (`280|320|400|420|440|480|560`).
+- `orientation`: `type` (`portrait-primary|portrait-secondary|landscape-primary|landscape-secondary`), `angle` (`0|90|180|270`), `lock_supported` (bool).
+- `viewport`: `inner_width`, `inner_height`, `outer_width`, `outer_height`, `screen_x`, `screen_y`, `visual_viewport_scale`, `safe_area_insets` (`{top, right, bottom, left}`), `scrollbar_width`.
+- `media_queries`: `prefers_color_scheme` (`light|dark`), `prefers_reduced_motion` (`no-preference|reduce`), `prefers_contrast`, `forced_colors`, `pointer` (`coarse`), `any_pointer` (`["coarse"]`), `hover` (`none`), `any_hover` (`["none"]`), `color_gamut` (`srgb|p3`), `dynamic_range` (`standard|high`).
+
+### 5. Timezone, Locale, Intl & Geolocation
+- `timezone`: `iana_name`, `offset_minutes`, `dst_active` (bool), `abbreviation`.
+- `locale`: `primary`, `intl_locale`, `numbering_system` (`"latn"`), `calendar` (`"gregory"`), `hour_cycle` (`"h23"|"h12"`), `currency`.
+- `geolocation`: `mode` (`allow_custom|sync_proxy_ip|prompt|block`), `latitude`, `longitude`, `accuracy`, `altitude`, `altitude_accuracy`, `heading`, `speed`, `timestamp_jitter_ms`.
+
+### 6. Canvas 2D, WebGL / WebGL2, `readPixels` & WebGPU
+- `canvas_2d`: `mode` (`noise|native_passthrough|block`), `salt`, `noise_strength`, `persist_across_restarts` (bool), `targets` (`toDataURL`, `toBlob`, `getImageData`, `isPointInPath`, `isPointInStroke`, `measureText`).
+- `webgl`:
+  - `mode` (`noise|native_passthrough|disabled`), `unmasked_vendor` (`"ARM"|"Qualcomm"|"Google Inc. (ARM)"|"Google Inc. (Qualcomm)"`), `unmasked_renderer` (`"Mali-G715 MC10"|"Mali-G57 MC2"|"Adreno (TM) 740"|...`), `vendor`, `renderer`, `version`, `shading_language_version`.
+  - `image_noise`: `enabled` (bool), `value` (17-digit decimal string/float derived from `master_seed + unmasked_renderer + nudge_step`).
+  - `read_pixels_sync`: `enabled` (bool — đồng bộ noise trực tiếp vào bộ đệm `gl.readPixels`).
+  - `extensions`: `supported[]` (danh sách extension chuẩn OpenGL ES / WebGL2 của dòng GPU tương ứng).
+  - `parameters`: `MAX_TEXTURE_SIZE`, `MAX_CUBE_MAP_TEXTURE_SIZE`, `MAX_3D_TEXTURE_SIZE`, `MAX_ARRAY_TEXTURE_LAYERS`, `MAX_RENDERBUFFER_SIZE`, `MAX_VIEWPORT_DIMS`, `MAX_VERTEX_ATTRIBS`, `MAX_VERTEX_UNIFORM_VECTORS`, `MAX_VERTEX_UNIFORM_COMPONENTS`, `MAX_FRAGMENT_UNIFORM_VECTORS`, `MAX_FRAGMENT_UNIFORM_COMPONENTS`, `MAX_VARYING_VECTORS`, `MAX_COMBINED_TEXTURE_IMAGE_UNITS`, `MAX_VERTEX_TEXTURE_IMAGE_UNITS`, `MAX_TEXTURE_IMAGE_UNITS`, `MAX_COLOR_ATTACHMENTS`, `MAX_DRAW_BUFFERS`, `MAX_SAMPLES`, `MAX_UNIFORM_BUFFER_BINDINGS`, `ALIASED_LINE_WIDTH_RANGE`, `ALIASED_POINT_SIZE_RANGE`, `SAMPLE_BUFFERS`, `SAMPLES`, `MAX_TEXTURE_MAX_ANISOTROPY_EXT`.
+  - `shader_precision`: `VERTEX_SHADER` & `FRAGMENT_SHADER` × `LOW_FLOAT|MEDIUM_FLOAT|HIGH_FLOAT|LOW_INT|MEDIUM_INT|HIGH_INT` (`{rangeMin, rangeMax, precision}`).
+- `webgpu`: `enabled` (bool), `adapter` (`vendor`, `architecture`, `device`, `description`, `is_fallback_adapter`), `features[]`, `limits{}`.
+
+### 7. Audio, ClientRects, Fonts, Media Devices, Storage, Battery & Mobile Sensors
+- `audio`: `mode` (`noise|native_quantized|disabled`), `salt`, `sample_rate` (`48000|44100`), `base_latency`, `output_latency`, `channel_count`, `max_channel_count`, `respect_core_quantization` (bool).
+- `rects`: `mode` (`noise|off`), `salt`, `delta_x`, `delta_y`, `delta_width`, `delta_height`, `targets` (`getBoundingClientRect`, `getClientRects`, `Range.getBoundingClientRect`, `Range.getClientRects`, `measureText`).
+- `fonts`: `mode` (`android_preset|custom_list`), `installed[]` (`Roboto`, `Noto Sans`, `Noto Color Emoji`, `Droid Sans`, font locale), `salt`, `preserve_metric_clusters` (bool).
+- `media_devices`: `mode` (`deterministic_mock|real|none`), `id_scope` (`per_profile|per_profile_and_origin`), `salt`, `audio_inputs[]`, `audio_outputs[]`, `video_inputs[]` (kèm `facing_mode`: `environment|user`).
+- `storage_network`: `quota_bytes`, `usage_bytes`, `persisted_default` (bool), `effective_type` (`4g|3g|2g`), `rtt` (ms), `downlink` (Mbps), `save_data` (bool), `connection_type` (`wifi|cellular`).
+- `battery_speech_gamepad`: `battery` (`enabled`, `charging`, `level`, `charging_time`, `discharging_time`), `speech_voices[]`, `gamepad` (`enabled`, `devices[]`).
+- `sensors`: `enabled` (bool), `sampling_hz` (`60`), `motion_profile` (`stationary_micro_jitter|walking_subtle|custom_static`), `accelerometer` (`{x, y, z, noise_amp}`), `gyroscope` (`{x, y, z, noise_amp}`), `linear_acceleration`, `gravity`, `absolute_orientation` (`{alpha, beta, gamma}`), `relative_orientation`.
+
+---
+
+# PHẦN 3 — NHỮNG HẠNG MỤC "NGOÀI LỀ" BẮT BUỘC PHẢI CHỈNH CHU
+1. **Quản lý tiến trình, tài nguyên & Crash Recovery:**
+   - Bộ giám sát RAM/CPU máy host để giới hạn số lượng profile mở đồng thời (Concurrency Limiter), tránh tràn RAM gây crash toàn hệ thống.
+   - Cơ chế tự động dọn dẹp file khóa (`SingletonLock`, `SingletonCookie`, `SingletonSocket`) và tiêu diệt các tiến trình renderer/GPU mồ côi khi profile bị đóng đột ngột.
+   - Hệ thống ghi log phân tách theo từng `profile_id` và `session_id`.
+2. **Runtime Integrity & Build/Release Pipeline:**
+   - Khi đóng gói core và ký kiểm tra toàn vẹn (Manifest Signing), bắt buộc loại trừ các tệp biến động trong quá trình chạy (`*.log`, `*.tmp`, `*.old`, `*.dmp`, thư mục cache) để tránh lỗi sai lệch mã hash sau lần khởi động đầu tiên.
+   - Tích hợp bước kiểm tra toàn vẹn (`verify_runtime`) tự động trước khi xuất bản bản build.
+3. **Bảo mật dữ liệu & Thao tác hàng loạt (Batch Operations):**
+   - Mã hóa toàn bộ thông tin nhạy cảm (mật khẩu proxy, khóa SSH, token phiên) bằng DPAPI / AES-256-GCM trước khi lưu xuống ổ đĩa hoặc database.
+   - Hỗ trợ đầy đủ API/UI thao tác hàng loạt: tạo N profile độc bản cùng lúc, nhập/kiểm tra live proxy hàng loạt, xuất/nhập cookie (`JSON`/`Netscape`), phân nhóm/gắn thẻ (tag) và tìm kiếm tốc độ cao.
+4. **Bộ Probe & Automated QA Test Suite:**
+   - Viết sẵn tập lệnh kiểm thử thực tế (sử dụng shader tọa độ nội suy `varying` để đo `gl.readPixels`, đo Canvas 2D, kiểm tra `Worker`/`iframe`, đo độ ổn định qua 5 lần khởi động lại liên tiếp và kiểm tra xác suất va chạm trên tập mẫu lớn).
+
+---
+
+# YÊU CẦU TRÌNH BÀY ĐẦU RA TỪ CURSOR
+Hãy triển khai chi tiết, đầy đủ mã nguồn thực thi được (không viết giả mã rút gọn):
+1. **Sơ đồ kiến trúc thư mục & luồng dữ liệu** từ Control Plane xuống Custom Core C++.
+2. **Định nghĩa Schema đầy đủ** (Python Pydantic + JSON Schema + C++ Config Struct) bao quát toàn bộ 7 nhóm trường ở Phần 2.
+3. **Module cốt lõi (`SeedDeriver`, `ConsistencyResolver`, `CollisionGuard`)** thực thi đầy đủ thuật toán HKDF tách salt, chống trùng chéo GPU và vòng lặp `Nudge → Roll Seed → Reject`.
+4. **Mã nguồn can thiệp Core & Bộ Test Kiểm Chứng (`runtime_probe` + `test_collision_and_persistence`)** chứng minh tỷ lệ độc bản 100% và tính ổn định tuyệt đối.

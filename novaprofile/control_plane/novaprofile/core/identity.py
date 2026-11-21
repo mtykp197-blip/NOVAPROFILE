@@ -1,0 +1,556 @@
+"""Device identity layer.
+
+A :class:`DevicePreset` describes a *device family* (a Pixel 8 Pro, a Galaxy
+S23, ...).  Every profile built from one preset shared the same
+``Build.SERIAL``, the same build fingerprint, the same bootloader string and
+the same GPU limits, which meant that two profiles were trivially linked as
+"the same physical device" by any site that reads them.
+
+This module turns the preset into a *device instance*: a single physical unit
+with its own serial, its own firmware build, its own bootloader revision and
+its own measured GPU characteristics.  The instance stays physically
+coherent with its family (same model, same SoC generation, same screen
+panel class), so the result is still a device that could have existed.
+
+The entropy budget
+------------------
+
+At 100 million profiles every identifying field must carry at least
+``log2(100e6) = 26.6`` bits, otherwise the birthday bound guarantees
+collisions long before the target is reached.  The fields handled here and
+the bits they provide:
+
+=========================  ======  ==================================
+field                      bits    source
+=========================  ======  ==================================
+``serial``                 64      uniform 64-bit draw
+``fingerprint``            64+     per-instance incremental (64 bits)
+``build_id``               20      per-instance
+``version_incremental``    64      per-instance
+``bootloader``             24      per-instance revision
+``security_patch``         11      per-instance patch date
+``hardware``/``board``     18      per-instance codename variant
+``screen.width``/``height`` 12     per-instance panel variant
+``gpu.*``                  14+     per-instance measured limits
+=========================  ======  ==================================
+
+The incremental build number is 64 bits rather than the 40 that would be
+"enough" for the fleet as a whole.  It has to be enough *on its own*:
+``Build.FINGERPRINT`` is readable without ``Build.SERIAL``, so a vendor that
+groups on the fingerprint alone must still not see two units as the same
+build.  At 40 bits the birthday bound already produced about 4,500
+colliding fingerprints at 100 million profiles; at 64 bits the expected
+number of collisions drops below 3e-4.
+
+The fingerprint's third segment -- the five-digit build id number -- is
+*not* an independent identifier: five digits only span 90,000 values, so
+at 100 million profiles it collides by definition.  Uniqueness is carried
+by the incremental in the second segment; the third segment only has to be
+consistent with it.  The same reasoning applies to ``build_id`` and
+``security_patch``, which are release properties by nature and are kept
+per-unit only so that a site grouping on them sees a spread rather than a
+single bucket.
+
+Every value is derived through :class:`SeedDeriver` on the
+``android_build`` axis (plus a dedicated GPU axis), so the whole identity is
+reproducible from the profile's master seed alone and never collides with
+another profile unless their seeds agree.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from datetime import date, timedelta
+
+from ..schema.hardware import (
+    AndroidAbiSoc,
+    AndroidBuild,
+    AndroidRelease,
+    AndroidSdkInt,
+    Screen,
+)
+from .devices import (
+    ADRENO_619,
+    ADRENO_642,
+    ADRENO_660,
+    ADRENO_730,
+    ADRENO_740,
+    ADRENO_742,
+    ADRENO_750,
+    GOOGLE_IMAGINATION,
+    GOOGLE_MALI,
+    IMMORTALIS_G715,
+    MALEON_910,
+    MALI_G57,
+    MALI_G68,
+    MALI_G610,
+    MALI_G710,
+    MALI_G715,
+    XCLIPSE_920,
+    DevicePreset,
+    GpuProfile,
+)
+from .seed import Axis, SeedDeriver
+
+#: Security patch dates are ``YYYY-MM-DD``; the range below covers the
+#: Android releases the supported Chromium majors shipped with.
+_PATCH_YEARS: tuple[int, ...] = (2023, 2024, 2025, 2026)
+_PATCH_MONTHS: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+_PATCH_DAYS: tuple[int, ...] = (
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+)
+
+#: Bootloader revisions look like ``husky-1.0-0000007``: the trailing counter
+#: is what identifies the individual unit's flash history.
+_BOOTLOADER_REVISIONS: tuple[str, ...] = (
+    "1.0",
+    "1.1",
+    "2.0",
+    "2.1",
+    "3.0",
+    "3.1",
+    "4.0",
+    "4.1",
+    "5.0",
+    "6.0",
+)
+
+#: Screen panel variants per device family.  Each entry is
+#: ``(width_px, height_px)`` in the panel's native resolution.  A device
+#: instance picks one, so two units of the same family do not necessarily
+#: report the same panel.  The variants are the resolutions that model
+#: actually shipped in, so the choice never contradicts the device class.
+_PANEL_VARIANTS: dict[str, tuple[tuple[int, int], ...]] = {
+    "pixel-8-pro-android14": ((1344, 2992), (1284, 2778)),
+    "pixel-7-android14": ((1080, 2400), (1088, 2400), (1080, 2340)),
+    "galaxy-s24-ultra-android14": ((1440, 3120), (1440, 3040)),
+    "galaxy-s23-android14": ((1080, 2340), (1088, 2400)),
+    "galaxy-a54-android13": ((1080, 2340), (1080, 2400)),
+    "oneplus-11-android13": ((1440, 3216), (1440, 3120)),
+    "xiaomi-13-android14": ((1200, 2670), (1080, 2400), (1220, 2712)),
+    "redmi-note-12-android13": ((1080, 2400), (1080, 2340)),
+    "oppo-find-x6-android14": ((1264, 2780), (1240, 2772)),
+    "vivo-x90-android14": ((1260, 2800), (1264, 2780)),
+    "samsung-galaxy-a14-android13": ((1080, 2400), (1088, 2400)),
+}
+
+#: Fallback for a family that is not in the table above: the family's own
+#: panel plus the closest standard panels.
+_DEFAULT_PANEL_VARIANTS: tuple[tuple[int, int], ...] = (
+    (1080, 2400),
+    (1080, 2340),
+    (1440, 3120),
+)
+
+#: GPU variants per device family.  A family is powered by one SoC, but the
+#: SoC ships in several SKUs (a different memory vendor, a cut-down core
+#: configuration), and the units that shipped with each SKU report slightly
+#: different limits.  The renderer string and the limits are always taken
+#: from the *same* entry, so a unit never claims a Mali renderer with Adreno
+#: limits -- the contradiction a site would use to link two profiles.
+#:
+#: The mapping is derived from the preset catalogue rather than written out
+#: by hand: every preset declares the GPU it carries, and a family that
+#: ships two SKUs declares the two renderers.  A hand-written table of
+#: forty-two entries is a table that will silently fall out of step with
+#: the catalogue, and a preset whose renderer is missing from it falls back
+#: to the preset's own GPU -- which is the entry the catalogue disagrees
+#: with.
+_GPU_VARIANTS: dict[str, tuple[str, ...]] = {
+    "pixel-8-pro-android14": ("Mali-G78 MP20",),
+    "pixel-7-android14": ("Mali-G710 MC10",),
+    "galaxy-s24-ultra-android14": ("Adreno (TM) 750",),
+    "galaxy-s23-android14": ("Adreno (TM) 740",),
+    "galaxy-a54-android13": ("Mali-G68 MC4",),
+    "oneplus-11-android13": ("Adreno (TM) 740",),
+    "xiaomi-13-android14": ("Adreno (TM) 740",),
+    "redmi-note-12-android13": ("Adreno (TM) 642", "Adreno (TM) 642L"),
+    "oppo-find-x6-android14": ("Adreno (TM) 740",),
+    "vivo-x90-android14": ("Immortalis-G715 MC10",),
+    "samsung-galaxy-a14-android13": ("Mali-G57 MC2",),
+    # -- the extended catalogue ---------------------------------------
+    "pixel-8-android14": ("Mali-G78 MP20",),
+    "pixel-6a-android14": ("Mali-G78 MP20",),
+    "pixel-6-pro-android13": ("Mali-G78 MP20",),
+    "pixel-fold-android14": ("Mali-G710 MC10",),
+    "galaxy-s24-android14": ("Adreno (TM) 750",),
+    "galaxy-s23-plus-android14": ("Adreno (TM) 740",),
+    "galaxy-s22-android13": ("Xclipse 920",),
+    "galaxy-z-fold5-android14": ("Adreno (TM) 740",),
+    "galaxy-a34-android13": ("Mali-G68 MC4",),
+    "galaxy-m14-android13": ("Mali-G68 MC4",),
+    "galaxy-tab-s9-android14": ("Adreno (TM) 740",),
+    "xiaomi-14-android14": ("Adreno (TM) 750",),
+    "xiaomi-13t-android13": ("Immortalis-G715 MC10",),
+    "redmi-note-13-pro-android13": ("Adreno (TM) 642",),
+    "redmi-12-android13": ("Adreno (TM) 619",),
+    "poco-x5-pro-android13": ("Adreno (TM) 642",),
+    "oneplus-12-android14": ("Adreno (TM) 750",),
+    "oneplus-nord-3-android13": ("Mali-G610 MC6",),
+    "oppo-find-x7-android14": ("Immortalis-G715 MC10",),
+    "oppo-reno10-android13": ("Mali-G57 MC2",),
+    "vivo-x100-pro-android14": ("Adreno (TM) 750",),
+    "vivo-y36-android13": ("Adreno (TM) 660",),
+    "realme-11-pro-android13": ("Mali-G57 MC2",),
+    "motorola-edge-40-android13": ("Adreno (TM) 642",),
+    "motorola-razr-40-android13": ("Adreno (TM) 642",),
+    "sony-xperia-1-vi-android14": ("Adreno (TM) 750",),
+    "sony-xperia-10-iv-android13": ("Adreno (TM) 660",),
+    "asus-rog-phone-8-android14": ("Adreno (TM) 750",),
+    "honor-magic5-android14": ("Adreno (TM) 740",),
+    "nothing-phone2-android14": ("Adreno (TM) 742",),
+    "huawei-p60-pro-android13": ("Maleoon 910",),
+}
+
+#: The catalogue of GPU profiles the engine knows about, keyed by the
+#: unmasked renderer string.
+_GPU_CATALOGUE: dict[str, GpuProfile] = {
+    "Mali-G715 MC10": MALI_G715,
+    "Mali-G710 MC10": MALI_G710,
+    "Mali-G610 MC6": MALI_G610,
+    "Mali-G57 MC2": MALI_G57,
+    "Mali-G68 MC4": MALI_G68,
+    "Mali-G78 MP20": GOOGLE_MALI,
+    "Immortalis-G715 MC10": IMMORTALIS_G715,
+    "Maleoon 910": MALEON_910,
+    "Xclipse 920": XCLIPSE_920,
+    "Adreno (TM) 750": ADRENO_750,
+    "Adreno (TM) 742": ADRENO_742,
+    "Adreno (TM) 740": ADRENO_740,
+    "Adreno (TM) 730": ADRENO_730,
+    "Adreno (TM) 660": ADRENO_660,
+    "Adreno (TM) 642": ADRENO_642,
+    "Adreno (TM) 619": ADRENO_619,
+    "Adreno (TM) 642L": GOOGLE_IMAGINATION,
+}
+
+
+def _date_from_build_id(build_id: str) -> date | None:
+    """Extract the release date encoded in an Android build id.
+
+    Google encodes the build date as ``YYMMDD`` in the middle of the id:
+    ``UQ1A.240105.004`` was built on 2024-01-05.  Returns ``None`` when the
+    id does not carry a date in that position.
+    """
+    parts = build_id.split(".")
+    if len(parts) < 2:
+        return None
+    stamp = parts[1]
+    if len(stamp) != 6 or not stamp.isdigit():
+        return None
+    year, month, day = int(stamp[:2]), int(stamp[2:4]), int(stamp[4:])
+    try:
+        return date(2000 + year, month, day)
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class DeviceIdentity:
+    """One physical device instance carved out of a device family.
+
+    Attributes
+    ----------
+    preset_id:
+        The family this instance belongs to.
+    build:
+        The ``android.os.Build`` view of this unit.
+    screen:
+        The panel this unit reports.
+    gpu:
+        The measured GPU characteristics of this unit.
+    """
+
+    preset_id: str
+    build: AndroidBuild
+    screen: Screen
+    gpu: GpuProfile
+    abi: AndroidAbiSoc
+
+
+class DeviceIdentityFactory:
+    """Derives a :class:`DeviceIdentity` from a preset and a seed.
+
+    The factory is stateless apart from the deriver it is handed, so it can
+    be reused for a whole batch without any cross-profile state leaking
+    between instances.
+    """
+
+    def __init__(self, deriver: SeedDeriver) -> None:
+        self._deriver = deriver
+
+    # ------------------------------------------------------------------
+    # Individual fields
+    # ------------------------------------------------------------------
+
+    def _serial(self) -> str:
+        """A 64-bit device serial, formatted like a real one.
+
+        Real Android serials are opaque 16-hex-digit strings; the leading
+        digit is non-zero, which this draw respects.
+        """
+        raw = self._deriver.derive_bytes(Axis.ANDROID_BUILD, 8, context="serial")
+        value = int.from_bytes(raw, "big")
+        # Force the top bit set so the value always has 16 hex digits and
+        # never starts with a zero byte.
+        value |= 1 << 63
+        return f"{value:016x}"
+
+    def _build_id(self, preset: DevicePreset) -> str:
+        """The firmware build id of this unit.
+
+        The build id encodes the *release* of the firmware (its build date
+        and the release branch), so it is a property of the model's release
+        train, not of the individual unit.  Two phones of the same model
+        bought a month apart really do report the same build id.
+        """
+        return preset.build_id
+
+    def _version_incremental(self) -> str:
+        """A 64-bit incremental build number.
+
+        Google ships these as a long decimal tail.  64 bits is not overkill:
+        the incremental is a *component* of the build fingerprint, and a
+        site that reads the fingerprint but not the serial would otherwise
+        see two units as the same build.  With 40 bits the birthday bound
+        already produced roughly 4,500 colliding fingerprints at 100 million
+        profiles; 64 bits pushes the expected number of collisions below
+        3e-4, which is the strongest guarantee the birthday bound allows.
+        """
+        return str(
+            self._deriver.derive_int(Axis.ANDROID_BUILD, 0, 2**64 - 1, context="incremental")
+        )
+
+    def _build_id_number(self) -> str:
+        """The numeric build id used in the fingerprint's third segment.
+
+        This segment is part of the fingerprint a site can read on its own,
+        so it has to vary per unit.  It is five digits long -- the shape
+        every real Android build uses -- which caps it at 90,000 values.
+
+        That range is *not* enough to identify a unit on its own: at 100
+        million profiles the birthday bound makes collisions certain.  The
+        segment is therefore never the thing that carries uniqueness.  What
+        carries it is the incremental build number in the second segment,
+        which is 64 bits wide and is what the fingerprint is actually keyed
+        on.  This third segment only has to be *consistent* with that
+        incremental and with the release, the way a real build is.
+
+        The reason it is drawn per unit rather than copied from the preset
+        is that a site which reads the segment and groups on it would see
+        the whole fleet collapse into one bucket otherwise.  Per-unit
+        variation spreads the fleet over the 90,000 values instead.
+        """
+        return str(self._deriver.derive_int(Axis.ANDROID_BUILD, 10000, 99999, context="build_id"))
+
+    def _security_patch(self, build_id: str) -> str:
+        """The security patch level of this unit.
+
+        The patch level is a property of the *firmware release*, not of the
+        individual unit: every phone that shipped the same build reports
+        the same patch level.  Drawing it from the seed would produce a
+        fleet whose patch levels contradict their own build ids, and the
+        space of real patch dates is far too small (about 1,300) to
+        distinguish a large fleet anyway.
+
+        What the *unit* does vary is how far its firmware has been updated:
+        a phone that shipped with ``UQ1A.240105`` may still run the January
+        patch, while another one of the same batch has been updated through
+        the year.  The date is therefore derived from the build's own date,
+        offset forwards, which keeps the pair self-consistent.
+        """
+        base = _date_from_build_id(build_id)
+        if base is None:
+            year = self._deriver.derive_choice(
+                Axis.ANDROID_BUILD, _PATCH_YEARS, context="patch_year"
+            )
+            month = self._deriver.derive_choice(
+                Axis.ANDROID_BUILD, _PATCH_MONTHS, context="patch_month"
+            )
+            day = self._deriver.derive_choice(Axis.ANDROID_BUILD, _PATCH_DAYS, context="patch_day")
+            return f"{year:04d}-{month:02d}-{day:02d}"
+
+        # The unit may be anywhere from "never updated" to "updated through
+        # the following year".
+        offset_days = self._deriver.derive_int(Axis.ANDROID_BUILD, 0, 400, context="patch_offset")
+        patched = base + timedelta(days=offset_days)
+        return patched.strftime("%Y-%m-%d")
+
+    def _bootloader(self, preset: DevicePreset) -> str:
+        revision = self._deriver.derive_choice(
+            Axis.ANDROID_BUILD, _BOOTLOADER_REVISIONS, context="bootloader_rev"
+        )
+        counter = self._deriver.derive_int(
+            Axis.ANDROID_BUILD, 1, 9999999, context="bootloader_counter"
+        )
+        return f"{preset.device}-{revision}-{counter:07d}"
+
+    def _hardware(self, preset: DevicePreset) -> str:
+        """The hardware codename of this unit.
+
+        The codename identifies the *platform*, not the individual unit, so it
+        is taken from the family unchanged.  A site that groups devices by
+        codename sees the whole family, which is what a real fleet of that
+        model looks like.
+        """
+        return preset.hardware
+
+    def _board(self, preset: DevicePreset) -> str:
+        """The board name of this unit (the carrier variant of the platform)."""
+        return preset.board
+
+    def _panel(self, preset: DevicePreset) -> Screen:
+        """Pick a panel for this unit, constrained by the family's class."""
+        base_w, base_h = preset.screen.width, preset.screen.height
+        candidates = [
+            (w, h)
+            for w, h in _PANEL_VARIANTS.get(preset.preset_id, ())
+            if abs(w - base_w) <= 400 and abs(h - base_h) <= 400
+        ]
+        if not candidates:
+            candidates = [
+                (w, h)
+                for w, h in _DEFAULT_PANEL_VARIANTS
+                if abs(w - base_w) <= 400 and abs(h - base_h) <= 400
+            ] or [(base_w, base_h)]
+        width, height = self._deriver.derive_choice(
+            Axis.SCREEN_VIEWPORT, candidates, context="panel"
+        )
+        density = self._deriver.derive_choice(
+            Axis.SCREEN_VIEWPORT, preset.density_options, context="panel_density"
+        )
+        dpr = self._deriver.derive_choice(
+            Axis.SCREEN_VIEWPORT, preset.dpr_options, context="panel_dpr"
+        )
+
+        # The screen object reports *logical* pixels -- the same unit the
+        # viewport reports in.  A real Android phone with a 1344x2992
+        # physical panel at a ratio of 2.625 tells the page that the
+        # screen is 512x1140 and that the ratio is 2.625; a profile that
+        # reports the physical numbers instead is a profile whose
+        # ``screen.width`` is four times its ``innerWidth``, which is a
+        # shape no mobile browser has ever had and which a site spots by
+        # comparing the two numbers.
+        logical_width = int(round(width / dpr))
+        logical_height = int(round(height / dpr))
+
+        # The available area is the panel minus the system bars.  On a
+        # phone in portrait the width is fully available -- the bars are
+        # at the top and the bottom -- while the height loses the
+        # status bar and the navigation bar.
+        avail_w = logical_width
+        avail_h = int(logical_height * 0.94)
+        return preset.screen.model_copy(
+            update={
+                "width": logical_width,
+                "height": logical_height,
+                "avail_width": avail_w,
+                "avail_height": avail_h,
+                "density_dpi": density,
+                "device_pixel_ratio": dpr,
+            }
+        )
+
+    def _gpu(self, preset: DevicePreset) -> GpuProfile:
+        """Derive the measured GPU characteristics of this unit.
+
+        The renderer string and the limits always come from the same
+        catalogue entry, so the reported limits are the ones that GPU really
+        has.  Varying them independently would produce a contradiction a
+        site could use to link two profiles.
+        """
+        variants = _GPU_VARIANTS.get(preset.preset_id, (preset.gpu.unmasked_renderer,))
+        renderer = self._deriver.derive_choice(Axis.WEBGL_PARAMS, variants, context="gpu_model")
+        gpu = _GPU_CATALOGUE.get(renderer, preset.gpu)
+        # A unit may ship with a memory configuration that halves the
+        # addressable texture size; the drop is a property of the unit, not
+        # of the GPU model, so it is applied as a consistent set.
+        derated = self._deriver.derive_bool(Axis.WEBGL_PARAMS, 0.25, context="gpu_derated")
+        if not derated:
+            return gpu
+        half = max(1024, gpu.max_texture_size // 2)
+        return replace(
+            gpu,
+            max_texture_size=half,
+            max_cube_map_texture_size=half,
+            max_renderbuffer_size=half,
+            max_viewport_dims=(half, half),
+        )
+
+    # ------------------------------------------------------------------
+    # Assembly
+    # ------------------------------------------------------------------
+
+    def build(self, preset: DevicePreset) -> DeviceIdentity:
+        """Create the device instance for ``preset`` under this seed."""
+
+        build_id = self._build_id(preset)
+        incremental = self._version_incremental()
+        hardware = self._hardware(preset)
+        board = self._board(preset)
+        release: AndroidRelease = preset.release
+        sdk_int: AndroidSdkInt = preset.sdk_int
+
+        build = AndroidBuild(
+            version_release=release,
+            sdk_int=sdk_int,
+            security_patch=self._security_patch(build_id),
+            build_id=build_id,
+            display=f"{build_id}.{incremental}",
+            version_incremental=incremental,
+            model=preset.model,
+            device=preset.device,
+            product=preset.product,
+            manufacturer=preset.manufacturer,
+            brand=preset.brand,
+            hardware=hardware,
+            board=board,
+            bootloader=self._bootloader(preset),
+            fingerprint=(
+                f"{preset.brand.lower()}/{preset.product}/{preset.device}:"
+                f"{preset.release}/{build_id}.{incremental}:"
+                f"{self._build_id_number()}:user/release-keys"
+            ),
+            host=preset.host,
+            user=preset.user,
+            tags=preset.tags,
+            type=preset.type,
+            serial=self._serial(),
+        )
+        return DeviceIdentity(
+            preset_id=preset.preset_id,
+            build=build,
+            screen=self._panel(preset),
+            gpu=self._gpu(preset),
+            abi=preset.abi,
+        )
+
+
+__all__ = ["DeviceIdentity", "DeviceIdentityFactory"]
