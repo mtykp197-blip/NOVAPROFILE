@@ -14,10 +14,22 @@ Modules
     The CDP client, the pure comparison logic and :class:`RuntimeProbe`.
 ``simulator``
     A deterministic, browser-free simulation used by CI.
+``e2e``
+    The end-to-end harness: it reads the twelve axes out of a real
+    browser and compares them against the profile.
 """
 
 from __future__ import annotations
 
+from .e2e import (
+    GUARDED_AXES,
+    ComparisonEngine,
+    E2EReport,
+    SurfaceExtractor,
+    compare_axis,
+    derive_expected_values,
+    tolerance_for,
+)
 from .harness import (
     HARNESS_HTML_PATH,
     REQUIRED_MARKERS,
@@ -79,8 +91,11 @@ __all__ = [
     "CdpClient",
     "CdpError",
     "CdpSession",
+    "ComparisonEngine",
+    "E2EReport",
     "FONT_CANDIDATES",
     "FONTS_JS",
+    "GUARDED_AXES",
     "HARNESS_HTML_PATH",
     "HARNESS_RUN_EXPRESSION",
     "IFRAME_SYNC_JS",
@@ -98,14 +113,17 @@ __all__ = [
     "STORAGE_JS",
     "SimulatedProbe",
     "SimulatedSession",
+    "SurfaceExtractor",
     "TIMEZONE_JS",
     "WEBGL_READPIXELS_JS",
     "WEBSOCKET_TO_WORKER_JS",
     "WORKER_JS",
     "build_harness_html",
     "collision_stats",
+    "compare_axis",
     "compare_expectations",
     "compute_signature",
+    "derive_expected_values",
     "evaluate_axis_expectations",
     "find_free_port",
     "harness_path",
@@ -115,5 +133,6 @@ __all__ = [
     "render_snippet",
     "simulate_payload",
     "simulated_axis_values",
+    "tolerance_for",
     "write_harness_html",
 ]

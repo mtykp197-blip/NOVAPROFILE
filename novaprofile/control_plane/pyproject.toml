@@ -20,6 +20,13 @@ dependencies = [
     "aiohttp>=3.9",
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
+    # The IANA time zone database.  Windows has no system copy of it,
+    # so without this package ``zoneinfo`` finds no zones at all and
+    # every profile reports UTC with a zero offset -- on every machine
+    # that is not a Linux distribution.  It is a hard dependency, not an
+    # optional extra: a wrong time zone is one of the loudest signals a
+    # site can detect.
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +43,9 @@ include = ["novaprofile*"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "slow: a test that builds or installs something; it takes minutes",
+]
 
 [tool.ruff]
 line-length = 100

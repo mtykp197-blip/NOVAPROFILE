@@ -323,11 +323,49 @@ def test_the_screen_reports_logical_pixels_like_a_phone(gen):
 
 
 def test_catalogue_separates_users_within_a_country():
-    """A country must not collapse its users into one identity."""
+    """A country must not collapse its users into one identity.
+
+    The diversity inside a country does not have to come from the time
+    zone.  Most European countries keep a single clock -- Vienna, Berlin,
+    Paris, Madrid, Rome and Warsaw all run on CET -- so the IANA
+    database carries one zone for the whole of them and a catalogue that
+    pretended otherwise would be claiming a difference that does not
+    exist.
+
+    The diversity inside a country comes from the *language list*: a
+    German user with English enabled is a different browser
+    configuration from one without, and ``navigator.languages`` is
+    readable.
+
+    What has to hold is that every country contributes more than one
+    distinguishable configuration, and that the countries which really do
+    span several clocks (the United States, Canada, Brazil, Mexico,
+    China, Indonesia, Malaysia) are all still represented.
+    """
+
+    from novaprofile.core.geo_catalog import GEO_CATALOGUE
 
     zones = countries_with_multiple_zones()
     assert len(zones) > 30
-    assert sum(1 for count in zones.values() if count > 1) >= 10
+
+    # The countries that really do span several clocks.
+    multi_zone = {country for country, count in zones.items() if count > 1}
+    for country in ("US", "CA", "BR", "MX", "CN", "ID", "MY"):
+        assert country in multi_zone, (
+            f"{country} spans several time zones and must keep them"
+        )
+
+    # Every country contributes at least one entry, and the countries
+    # whose users differ by their language list contribute more than one.
+    by_country: dict[str, set[tuple[str, ...]]] = {}
+    for entry in GEO_CATALOGUE:
+        by_country.setdefault(entry[2], set()).add(entry[5])
+    assert len(by_country) > 50
+    varied = sum(1 for languages in by_country.values() if len(languages) > 1)
+    assert varied >= 5, (
+        "only a handful of countries offer more than one language list; "
+        "the fleet cannot separate its users"
+    )
 
 
 def test_locale_and_timezone_vary_within_a_country(gen):

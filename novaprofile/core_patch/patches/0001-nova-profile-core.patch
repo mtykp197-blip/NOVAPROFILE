@@ -1,372 +1,3352 @@
-# NOVA Profile Core -- Chromium patch series.
-#
-# Apply to a Chromium checkout with:
-#
-#     git apply novaprofile/core_patch/patches/*.patch
-#
-# The series touches five Blink files.  Every change is a *substitution* of
-# an existing accessor with a config-backed accessor; no new DOM property
-# is introduced, so a page cannot detect the patch by enumerating the
-# prototype.
-#
-# The client hints are patched as well as the User-Agent: the brand list
-# gives the browser build away and the high-entropy values give the device
-# away, so a profile that patched only the User-Agent would contradict
-# itself in the very first request a page makes.
-#
-# Every substituted accessor keeps the stock behaviour as its fallback: if
-# the profile configuration has not been loaded -- which is the case in the
-# browser's own pages and in a crash handler -- the original value is
-# returned unchanged.  A patch that replaced the fallback would make the
-# browser itself inconsistent.
-#
-# The configuration is loaded lazily by the hooks themselves
-# (``NovaConfigHolder::EnsureInitialized``), so the patch does not have to
-# touch the process start-up code: a renderer or the GPU process that
-# reaches an accessor before the browser's own initialization has run
-# still reports the profile's values, never the host's.  That keeps the
-# diff against the Chromium tree small and independent of the line numbers
-# of the upstream sources.
-#
-# The reference implementation of these hooks lives in
-# ``novaprofile/core_patch/src/nova_blink_patch.cc``; the two must be kept
-# in step, and ``tests/test_core_patch_coverage.py`` enforces that every
-# accessor substituted here is also implemented there.
-#
-# The context lines of every hunk are stock Chromium code, so the series
-# applies cleanly against an unmodified tree.
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: NOVA Profile <nova@example.invalid>
+Date: Sat, 22 Nov 2026 00:00:00 +0000
+Subject: [PATCH 1/2] nova: serve the profile's own values to Blink
 
-diff --git a/third_party/blink/renderer/core/html/navigator_id.cc b/third_party/blink/renderer/core/html/navigator_id.cc
---- a/third_party/blink/renderer/core/html/navigator_id.cc
-+++ b/third_party/blink/renderer/core/html/navigator_id.cc
-@@ -20,6 +20,8 @@
- #include "third_party/blink/renderer/core/html/navigator_id.h"
+Blink reports the host's values.  A page that reads
+``navigator.userAgent``, ``navigator.hardwareConcurrency``,
+``navigator.deviceMemory``, ``screen.width`` or the WebGL identity
+strings sees the machine the browser runs on, and a fleet of profiles
+that all run on the same machine collapses into a single bucket that
+any vendor can fingerprint on sight.
+
+This patch puts the NOVA configuration in front of those accessors.
+
+The shape of the change
+-----------------------
+
+Every substituted accessor keeps its own original body.  The original
+body *is* the fallback: when no profile configuration has been
+installed the accessor falls through to the code it always had, so a
+browser that is started without ``--nova-config`` behaves exactly like
+stock Chromium.  This is the arrangement the series depends on, and it
+has a practical consequence: the NOVA sources do not redefine a single
+accessor, so the stock behaviour and the profile's behaviour live in
+one place -- the Blink file the patch edits -- and cannot drift apart.
+
+The hook layer
+--------------
+
+The layer that serves the values lives next to them, in
+
+  third_party/blink/renderer/core/nova/
+
+and is built as the target
+
+  //third_party/blink/renderer/core/nova:nova_core
+
+The target is added to the dependencies of the Blink ``core`` component,
+of the Blink ``modules`` component and of ``content/app``, so the
+patched translation units find the hooks header and the browser process
+finds the bootstrap.
+
+The hooks header is included by its bare name -- ``nova_chromium_hooks.h``
+-- and the directory is put on the include path of every consumer through
+the ``nova_include_dirs`` configuration that the target exports.
+
+The configuration bootstrap
+---------------------------
+
+``nova::InitializeFromCommandLine()`` is called from
+``content::ContentMainRunnerImpl::Initialize()``, right after the process
+type is read and before any child process is forked.  The renderer, the
+GPU process and the network service therefore inherit the configuration
+from the same ``--nova-config`` switch, and there is no window in which a
+page can observe the host's values.
+
+diff --git a/content/app/BUILD.gn b/content/app/BUILD.gn
+index 822b769d8c..46a34438c5 100644
+--- a/content/app/BUILD.gn
++++ b/content/app/BUILD.gn
+@@ -78,6 +78,7 @@ source_set("content_main_runner_app") {
+            "//content/renderer",
+            "//content/utility",
+            "//content/zygote",
++           "//third_party/blink/renderer/core/nova:nova_core",
+            "//third_party/tflite:buildflags",
+            "//tools/v8_context_snapshot:buildflags",
+          ]
+diff --git a/content/app/content_main_runner_impl.cc b/content/app/content_main_runner_impl.cc
+index dd65e2cdf6..7eccd9514f 100644
+--- a/content/app/content_main_runner_impl.cc
++++ b/content/app/content_main_runner_impl.cc
+@@ -126,6 +126,7 @@
+ #include "services/tracing/public/cpp/tracing_features.h"
+ #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
+ #include "third_party/blink/public/common/origin_trials/trial_token_validator.h"
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
+ #include "third_party/perfetto/include/perfetto/tracing/track.h"
+ #include "third_party/tflite/buildflags.h"
+ #include "tools/v8_context_snapshot/buildflags.h"
+@@ -870,6 +871,16 @@ int ContentMainRunnerImpl::Initialize(ContentMainParams params) {
+   std::string process_type =
+       command_line.GetSwitchValueASCII(switches::kProcessType);
+ 
++  // NOVA Profile Core: install the profile's configuration before anything
++  // else happens, and in particular before any child process is forked.  The
++  // renderer, the GPU process and the network service inherit the
++  // configuration from the command line, so a page never sees the host's
++  // values -- there is no window in which the real values are observable.
++  //
++  // The hooks also load the configuration lazily, so a process that reaches
++  // an accessor before this point still reports the profile's values.
++  nova::InitializeFromCommandLine(command_line);
++
+ #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+   // Must run while the process is still single-threaded, i.e. before the
+   // thread pool (and, in Chrome, the stack sampling profiler) is created below.
+diff --git a/third_party/blink/renderer/core/BUILD.gn b/third_party/blink/renderer/core/BUILD.gn
+index c1e08ec727..1d96e11d16 100644
+--- a/third_party/blink/renderer/core/BUILD.gn
++++ b/third_party/blink/renderer/core/BUILD.gn
+@@ -191,6 +191,7 @@ source_set("prerequisites") {
+     "//third_party/blink/renderer/bindings/core/v8:generated",
+     "//third_party/blink/renderer/core/animation:buildflags",
+     "//third_party/blink/renderer/core/inspector:generated",
++    "//third_party/blink/renderer/core/nova:nova_core",
+     "//third_party/blink/renderer/core/probe:generated",
+     "//third_party/blink/renderer/platform",
+     "//third_party/icu",
+diff --git a/third_party/blink/renderer/core/events/navigator_events.cc b/third_party/blink/renderer/core/events/navigator_events.cc
+index a57561775c..ca65ede2e7 100644
+--- a/third_party/blink/renderer/core/events/navigator_events.cc
++++ b/third_party/blink/renderer/core/events/navigator_events.cc
+@@ -30,6 +30,8 @@
+ 
+ #include "third_party/blink/renderer/core/events/navigator_events.h"
+ 
 +#include "nova_chromium_hooks.h"
 +
- #include "base/debug_dump.h"
- #include "third_party/blink/renderer/core/frame/navigator_base.h"
- #include "third_party/blink/renderer/platform/runtime_enabled_features.json5"
-@@ -60,6 +62,11 @@ String NavigatorID::userAgent() const {
- String NavigatorID::userAgent() const {
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/core/frame/navigator.h"
+@@ -38,6 +40,9 @@
+ namespace blink {
+ 
+ int32_t NavigatorEvents::maxTouchPoints(Navigator& navigator) {
 +  if (nova::IsNovaCoreInitialized()) {
-+    return String::FromUTF8(nova::GetNovaConfig().navigator.user_agent);
++    return nova::GetNovaConfig().navigator.max_touch_points;
 +  }
-   return NavigatorID::StandardUserAgent();
+   LocalDOMWindow* window = navigator.DomWindow();
+   return window ? window->GetFrame()->GetSettings()->GetMaxTouchPoints() : 0;
  }
-@@ -70,6 +77,11 @@ String NavigatorID::appVersion() const {
- String NavigatorID::appVersion() const {
+diff --git a/third_party/blink/renderer/core/execution_context/navigator_base.cc b/third_party/blink/renderer/core/execution_context/navigator_base.cc
+index 83f427c5ec..3015949f4e 100644
+--- a/third_party/blink/renderer/core/execution_context/navigator_base.cc
++++ b/third_party/blink/renderer/core/execution_context/navigator_base.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "third_party/blink/renderer/core/execution_context/navigator_base.h"
+ 
++#include "nova_chromium_hooks.h"
++
+ #include "base/feature_list.h"
+ #include "build/build_config.h"
+ #include "third_party/blink/public/common/features.h"
+@@ -62,11 +64,21 @@ NavigatorBase::NavigatorBase(ExecutionContext* context)
+     : NavigatorLanguage(context), ExecutionContextClient(context) {}
+ 
+ String NavigatorBase::userAgent() const {
++  // This is the single implementation of NavigatorID::userAgent(): the
++  // method is pure virtual in navigator_id.h, and NavigatorBase is the
++  // only class that provides an override, so every path -- the window,
++  // a worker, a service worker -- funnels through here.
 +  if (nova::IsNovaCoreInitialized()) {
-+    return String::FromUTF8(nova::GetNovaConfig().navigator.app_version);
++    return String::FromUtf8(nova::GetNovaConfig().navigator.user_agent);
 +  }
-   return NavigatorID::StandardAppVersion();
+   ExecutionContext* execution_context = GetExecutionContext();
+   return execution_context ? execution_context->UserAgent() : String();
  }
-@@ -80,6 +92,11 @@ String NavigatorID::appName() const {
- String NavigatorID::appName() const {
+ 
+ String NavigatorBase::platform() const {
 +  if (nova::IsNovaCoreInitialized()) {
-+    return String::FromUTF8(nova::GetNovaConfig().navigator.app_name);
++    return String::FromUtf8(nova::GetNovaConfig().navigator.platform);
 +  }
-   return NavigatorID::StandardAppName();
+ #if BUILDFLAG(IS_ANDROID)
+   // We need to check the ReduceUserAgentMinorVersion feature flag for
+   // Android WebView, which does not currently ship a reduced User-Agent.
+diff --git a/third_party/blink/renderer/core/frame/navigator.cc b/third_party/blink/renderer/core/frame/navigator.cc
+index 72964f48db..a2fa8ce81c 100644
+--- a/third_party/blink/renderer/core/frame/navigator.cc
++++ b/third_party/blink/renderer/core/frame/navigator.cc
+@@ -23,6 +23,8 @@
+ 
+ #include "third_party/blink/renderer/core/frame/navigator.h"
+ 
++#include "nova_chromium_hooks.h"
++
+ #include "third_party/blink/renderer/bindings/core/v8/script_controller.h"
+ #include "third_party/blink/renderer/core/dom/document.h"
+ #include "third_party/blink/renderer/core/execution_context/navigator_base.h"
+@@ -79,6 +81,10 @@ bool Navigator::cookieEnabled() const {
  }
-@@ -90,6 +107,11 @@ String NavigatorID::appCodeName() const {
- String NavigatorID::appCodeName() const {
+ 
+ bool Navigator::webdriver() const {
 +  if (nova::IsNovaCoreInitialized()) {
-+    return String::FromUTF8(nova::GetNovaConfig().navigator.app_code_name);
++    // Always false: a profile that reports true is trivially identified.
++    return false;
 +  }
-   return NavigatorID::StandardAppCodeName();
- }
-@@ -100,6 +122,11 @@ String NavigatorID::vendor() const {
- String NavigatorID::vendor() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return String::FromUTF8(nova::GetNovaConfig().navigator.vendor);
-+  }
-   return NavigatorID::StandardVendor();
- }
-@@ -110,6 +137,11 @@ String NavigatorID::vendorSub() const {
- String NavigatorID::vendorSub() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return String::FromUTF8(nova::GetNovaConfig().navigator.vendor_sub);
-+  }
-   return NavigatorID::StandardVendorSub();
- }
-@@ -120,6 +152,11 @@ String NavigatorID::product() const {
- String NavigatorID::product() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return String::FromUTF8(nova::GetNovaConfig().navigator.product);
-+  }
-   return NavigatorID::StandardProduct();
- }
-@@ -130,6 +167,11 @@ String NavigatorID::productSub() const {
- String NavigatorID::productSub() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return String::FromUTF8(nova::GetNovaConfig().navigator.product_sub);
-+  }
-   return NavigatorID::StandardProductSub();
- }
-@@ -140,6 +182,11 @@ String NavigatorID::platform() const {
- String NavigatorID::platform() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return String::FromUTF8(nova::GetNovaConfig().navigator.platform);
-+  }
-   return NavigatorID::StandardPlatform();
- }
-@@ -150,6 +197,11 @@ unsigned NavigatorID::hardwareConcurrency() const {
- unsigned NavigatorID::hardwareConcurrency() const {
+   if (RuntimeEnabledFeatures::AutomationControlledEnabled())
+     return true;
+ 
+diff --git a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+index f5c0db2d1b..b668e1d5b7 100644
+--- a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
++++ b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+@@ -4,11 +4,17 @@
+ 
+ #include "third_party/blink/renderer/core/frame/navigator_concurrent_hardware.h"
+ 
++#include "nova_chromium_hooks.h"
++
+ #include "base/system/sys_info.h"
+ 
+ namespace blink {
+ 
+ unsigned NavigatorConcurrentHardware::hardwareConcurrency() const {
 +  if (nova::IsNovaCoreInitialized()) {
 +    return static_cast<unsigned>(
 +        nova::GetNovaConfig().navigator.hardware_concurrency);
 +  }
-   return NavigatorID::StandardHardwareConcurrency();
+   return static_cast<unsigned>(base::SysInfo::NumberOfProcessors());
  }
-@@ -160,6 +212,11 @@ double NavigatorID::deviceMemory() const {
- double NavigatorID::deviceMemory() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return static_cast<double>(nova::GetNovaConfig().navigator.device_memory);
-+  }
-   return NavigatorID::StandardDeviceMemory();
- }
-@@ -170,6 +227,11 @@ int NavigatorID::maxTouchPoints() const {
- int NavigatorID::maxTouchPoints() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return nova::GetNovaConfig().navigator.max_touch_points;
-+  }
-   return NavigatorID::StandardMaxTouchPoints();
- }
-@@ -180,6 +242,11 @@ String NavigatorID::language() const {
- String NavigatorID::language() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return String::FromUTF8(nova::GetNovaConfig().navigator.language);
-+  }
-   return NavigatorID::StandardLanguage();
- }
-@@ -190,6 +257,16 @@ Vector<String> NavigatorID::languages() const {
- Vector<String> NavigatorID::languages() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    Vector<String> languages;
-+    for (const std::string& language :
-+         nova::GetNovaConfig().navigator.languages) {
-+      languages.push_back(String::FromUTF8(language));
-+    }
-+    return languages;
-+  }
-   return NavigatorID::StandardLanguages();
- }
-@@ -200,6 +277,11 @@ bool NavigatorID::webdriver() const {
- bool NavigatorID::webdriver() const {
-+  // Always false: a profile that reports true is trivially identified.
-+  return false;
-   return NavigatorID::StandardWebdriver();
- }
-diff --git a/third_party/blink/renderer/core/html/navigator_ua_data.cc b/third_party/blink/renderer/core/html/navigator_ua_data.cc
---- a/third_party/blink/renderer/core/html/navigator_ua_data.cc
-+++ b/third_party/blink/renderer/core/html/navigator_ua_data.cc
-@@ -20,6 +20,8 @@
- #include "third_party/blink/renderer/core/html/navigator_ua_data.h"
+ 
+diff --git a/third_party/blink/renderer/core/frame/navigator_device_memory.cc b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
+index 05fa33e456..9a90219868 100644
+--- a/third_party/blink/renderer/core/frame/navigator_device_memory.cc
++++ b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "third_party/blink/renderer/core/frame/navigator_device_memory.h"
+ 
 +#include "nova_chromium_hooks.h"
 +
- #include "base/containers/span.h"
- #include "third_party/blink/renderer/core/html/navigator_base.h"
- #include "third_party/blink/renderer/platform/runtime_enabled_features.json5"
-@@ -40,6 +42,16 @@ Vector<NavigatorUABrandVersion> NavigatorUAData::brands() const {
- Vector<NavigatorUABrandVersion> NavigatorUAData::brands() const {
+ #include "third_party/blink/public/common/device_memory/approximated_device_memory.h"
+ #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
+ #include "third_party/blink/renderer/core/dom/document.h"
+@@ -12,6 +14,9 @@
+ namespace blink {
+ 
+ float NavigatorDeviceMemory::deviceMemory() const {
 +  if (nova::IsNovaCoreInitialized()) {
-+    Vector<NavigatorUABrandVersion> brands;
-+    for (const nova::BrandVersion& brand :
-+         nova::GetNovaConfigRef().user_agent_data.brands) {
-+      brands.push_back(NavigatorUABrandVersion(
-+          String::FromUTF8(brand.brand), String::FromUTF8(brand.version)));
-+    }
-+    return brands;
++    return static_cast<float>(nova::GetNovaConfig().navigator.device_memory);
 +  }
-   return NavigatorUAData::DefaultBrands();
+   return ApproximatedDeviceMemory::GetApproximatedDeviceMemory();
  }
-@@ -55,6 +67,16 @@ Vector<NavigatorUABrandVersion> NavigatorUAData::fullVersionList() const {
- Vector<NavigatorUABrandVersion> NavigatorUAData::fullVersionList() const {
+ 
+diff --git a/third_party/blink/renderer/core/frame/navigator_id.cc b/third_party/blink/renderer/core/frame/navigator_id.cc
+index 7ff65229bd..51934505ca 100644
+--- a/third_party/blink/renderer/core/frame/navigator_id.cc
++++ b/third_party/blink/renderer/core/frame/navigator_id.cc
+@@ -31,6 +31,8 @@
+ 
+ #include "third_party/blink/renderer/core/frame/navigator_id.h"
+ 
++#include "nova_chromium_hooks.h"
++
+ #include "base/feature_list.h"
+ #include "base/no_destructor.h"
+ #include "build/build_config.h"
+@@ -46,20 +48,32 @@
+ namespace blink {
+ 
+ String NavigatorID::appCodeName() {
 +  if (nova::IsNovaCoreInitialized()) {
-+    Vector<NavigatorUABrandVersion> brands;
-+    for (const nova::BrandVersion& brand :
-+         nova::GetNovaConfigRef().user_agent_data.full_version_list) {
-+      brands.push_back(NavigatorUABrandVersion(
-+          String::FromUTF8(brand.brand), String::FromUTF8(brand.version)));
-+    }
-+    return brands;
++    return String::FromUtf8(nova::GetNovaConfig().navigator.app_code_name);
 +  }
-   return NavigatorUAData::DefaultFullVersionList();
+   return "Mozilla";
  }
-@@ -70,6 +92,11 @@ bool NavigatorUAData::mobile() const {
+ 
+ String NavigatorID::appName() {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUtf8(nova::GetNovaConfig().navigator.app_name);
++  }
+   return "Netscape";
+ }
+ 
+ String NavigatorID::appVersion() {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUtf8(nova::GetNovaConfig().navigator.app_version);
++  }
+   // Version is everything in the user agent string past the "Mozilla/" prefix.
+   const String& agent = userAgent();
+   return agent.substr(agent.find('/') + 1);
+ }
+ 
+ String NavigatorID::platform() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUtf8(nova::GetNovaConfig().navigator.platform);
++  }
+ #if BUILDFLAG(IS_MAC)
+   // Match Safari and Mozilla on Mac x86.
+   return "MacIntel";
+@@ -85,14 +99,23 @@ String NavigatorID::platform() const {
+ }
+ 
+ String NavigatorID::product() {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUtf8(nova::GetNovaConfig().navigator.product);
++  }
+   return "Gecko";
+ }
+ 
+ String NavigatorID::productSub() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUtf8(nova::GetNovaConfig().navigator.product_sub);
++  }
+   return "20030107";
+ }
+ 
+ String NavigatorID::vendor() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUtf8(nova::GetNovaConfig().navigator.vendor);
++  }
+   // Do not change without good cause. History:
+   // https://code.google.com/p/chromium/issues/detail?id=276813
+   // https://www.w3.org/Bugs/Public/show_bug.cgi?id=27786
+@@ -102,6 +125,9 @@ String NavigatorID::vendor() const {
+ }
+ 
+ String NavigatorID::vendorSub() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return String::FromUtf8(nova::GetNovaConfig().navigator.vendor_sub);
++  }
+   return "";
+ }
+ 
+diff --git a/third_party/blink/renderer/core/frame/navigator_language.cc b/third_party/blink/renderer/core/frame/navigator_language.cc
+index a333624eae..b2d7bab717 100644
+--- a/third_party/blink/renderer/core/frame/navigator_language.cc
++++ b/third_party/blink/renderer/core/frame/navigator_language.cc
+@@ -4,10 +4,14 @@
+ 
+ #include "third_party/blink/renderer/core/frame/navigator_language.h"
+ 
++#include "nova_chromium_hooks.h"
++
+ #include "third_party/blink/renderer/core/probe/core_probes.h"
+ #include "third_party/blink/renderer/platform/language.h"
+ #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+ 
++#include "base/no_destructor.h"
++
+ namespace blink {
+ 
+ Vector<String> ParseAndSanitize(const String& accept_languages) {
+@@ -33,10 +37,28 @@ NavigatorLanguage::NavigatorLanguage(ExecutionContext* execution_context)
+     : execution_context_(execution_context) {}
+ 
+ AtomicString NavigatorLanguage::language() {
++  if (nova::IsNovaCoreInitialized()) {
++    return AtomicString(String::FromUtf8(nova::GetNovaConfig().navigator.language));
++  }
+   return AtomicString(languages().front());
+ }
+ 
+ const Vector<String>& NavigatorLanguage::languages() {
++  if (nova::IsNovaCoreInitialized()) {
++    // The accessor returns a reference, so the substituted list is kept
++    // in a process-wide cache.  The profile configuration is installed
++    // once, before any renderer exists, and is never replaced afterwards,
++    // so the reference stays valid for the lifetime of the process.
++    static const base::NoDestructor<Vector<String>> nova_languages([] {
++      Vector<String> list;
++      for (const std::string& language :
++           nova::GetNovaConfig().navigator.languages) {
++        list.push_back(String::FromUtf8(language));
++      }
++      return list;
++    }());
++    return *nova_languages;
++  }
+   EnsureUpdatedLanguage();
+   return languages_;
+ }
+diff --git a/third_party/blink/renderer/core/frame/navigator_ua.cc b/third_party/blink/renderer/core/frame/navigator_ua.cc
+index d334ce3951..59845b2126 100644
+--- a/third_party/blink/renderer/core/frame/navigator_ua.cc
++++ b/third_party/blink/renderer/core/frame/navigator_ua.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "third_party/blink/renderer/core/frame/navigator_ua.h"
+ 
++#include "nova_chromium_hooks.h"
++
+ #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
+ #include "third_party/blink/renderer/core/frame/navigator_ua_data.h"
+ #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+@@ -14,6 +16,37 @@ NavigatorUAData* NavigatorUA::userAgentData() {
+   NavigatorUAData* ua_data =
+       MakeGarbageCollected<NavigatorUAData>(GetUAExecutionContext());
+ 
++  if (nova::IsNovaCoreInitialized()) {
++    // This is the single point at which the client hints object is built,
++    // so it is where the profile's own values are substituted.  Every
++    // consumer -- navigator.userAgentData.brands, .mobile, .platform and
++    // getHighEntropyValues() -- reads what is set here, so the low- and
++    // the high-entropy hints cannot contradict each other.
++    const nova::UserAgentDataConfig& uad = nova::GetNovaConfigRef().user_agent_data;
++    UserAgentBrandList brands;
++    brands.reserve(uad.brands.size());
++    for (const nova::BrandVersion& brand : uad.brands) {
++      brands.push_back(UserAgentBrandVersion(brand.brand, brand.version));
++    }
++    ua_data->SetBrandVersionList(brands);
++
++    UserAgentBrandList full_brands;
++    full_brands.reserve(uad.full_version_list.size());
++    for (const nova::BrandVersion& brand : uad.full_version_list) {
++      full_brands.push_back(UserAgentBrandVersion(brand.brand, brand.version));
++    }
++    ua_data->SetFullVersionList(full_brands);
++
++    ua_data->SetMobile(uad.mobile);
++    ua_data->SetPlatform(String::FromUtf8(uad.platform),
++                         String::FromUtf8(uad.platform_version));
++    ua_data->SetArchitecture(String::FromUtf8(uad.architecture));
++    ua_data->SetModel(String::FromUtf8(uad.model));
++    ua_data->SetBitness(String::FromUtf8(uad.bitness));
++    ua_data->SetWoW64(uad.wow64);
++    return ua_data;
++  }
++
+   UserAgentMetadata metadata = GetUserAgentMetadata();
+   ua_data->SetBrandVersionList(metadata.brand_version_list);
+   ua_data->SetMobile(metadata.mobile);
+diff --git a/third_party/blink/renderer/core/frame/navigator_ua_data.cc b/third_party/blink/renderer/core/frame/navigator_ua_data.cc
+index d75832c657..060b716fe3 100644
+--- a/third_party/blink/renderer/core/frame/navigator_ua_data.cc
++++ b/third_party/blink/renderer/core/frame/navigator_ua_data.cc
+@@ -4,9 +4,12 @@
+ 
+ #include "third_party/blink/renderer/core/frame/navigator_ua_data.h"
+ 
++#include "nova_chromium_hooks.h"
++
+ #include <utility>
+ 
+ #include "base/compiler_specific.h"
++#include "base/no_destructor.h"
+ #include "base/numerics/safe_conversions.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-blink.h"
+@@ -87,6 +90,9 @@ void NavigatorUAData::SetFormFactors(Vector<String> form_factors) {
+ }
+ 
  bool NavigatorUAData::mobile() const {
 +  if (nova::IsNovaCoreInitialized()) {
 +    return nova::GetNovaConfigRef().user_agent_data.mobile;
 +  }
-   return NavigatorUAData::DefaultMobile();
+   if (GetExecutionContext()) {
+     return is_mobile_;
+   }
+@@ -95,6 +101,10 @@ bool NavigatorUAData::mobile() const {
+ 
+ const HeapVector<Member<NavigatorUABrandVersion>>& NavigatorUAData::brands()
+     const {
++  // The substituted brand list is installed into ``brand_set_`` when the
++  // object is built -- see NavigatorUA::userAgentData() -- so the accessor
++  // does not have to keep a cache of its own and cannot hand out a list
++  // that disagrees with the one the object was built with.
+   if (GetExecutionContext()) {
+     return brand_set_;
+   }
+@@ -105,6 +115,13 @@ const HeapVector<Member<NavigatorUABrandVersion>>& NavigatorUAData::brands()
  }
-@@ -80,6 +107,11 @@ String NavigatorUAData::platform() const {
- String NavigatorUAData::platform() const {
+ 
+ const String& NavigatorUAData::platform() const {
 +  if (nova::IsNovaCoreInitialized()) {
-+    return String::FromUTF8(nova::GetNovaConfigRef().user_agent_data.platform);
++    // The accessor returns a reference, so the substituted platform is
++    // kept in a process-wide cache.  See the comment in brands() above.
++    static const base::NoDestructor<String> nova_platform(
++        String::FromUtf8(nova::GetNovaConfigRef().user_agent_data.platform));
++    return *nova_platform;
 +  }
-   return NavigatorUAData::DefaultPlatform();
- }
-@@ -90,6 +122,11 @@ String NavigatorUAData::platformVersion() const {
- String NavigatorUAData::platformVersion() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return String::FromUTF8(
-+        nova::GetNovaConfigRef().user_agent_data.platform_version);
-+  }
-   return NavigatorUAData::DefaultPlatformVersion();
- }
-@@ -100,6 +137,11 @@ String NavigatorUAData::architecture() const {
- String NavigatorUAData::architecture() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return String::FromUTF8(nova::GetNovaConfigRef().user_agent_data.architecture);
-+  }
-   return NavigatorUAData::DefaultArchitecture();
- }
-@@ -110,6 +152,11 @@ String NavigatorUAData::bitness() const {
- String NavigatorUAData::bitness() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return String::FromUTF8(nova::GetNovaConfigRef().user_agent_data.bitness);
-+  }
-   return NavigatorUAData::DefaultBitness();
- }
-@@ -120,6 +167,11 @@ String NavigatorUAData::model() const {
- String NavigatorUAData::model() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return String::FromUTF8(nova::GetNovaConfigRef().user_agent_data.model);
-+  }
-   return NavigatorUAData::DefaultModel();
- }
-@@ -130,6 +182,11 @@ bool NavigatorUAData::wow64() const {
- bool NavigatorUAData::wow64() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return nova::GetNovaConfigRef().user_agent_data.wow64;
-+  }
-   return NavigatorUAData::DefaultWOW64();
- }
-diff --git a/third_party/blink/renderer/core/screen/screen.cc b/third_party/blink/renderer/core/screen/screen.cc
---- a/third_party/blink/renderer/core/screen/screen.cc
-+++ b/third_party/blink/renderer/core/screen/screen.cc
-@@ -18,6 +18,8 @@
- #include "third_party/blink/renderer/core/screen/screen.h"
-+#include "nova_chromium_hooks.h"
+   if (GetExecutionContext()) {
+     return platform_;
+   }
+@@ -142,30 +159,60 @@ ScriptPromise<UADataValues> NavigatorUAData::getHighEntropyValues(
+   // low-entropy brands, mobile and platform hints should always be included for
+   // convenience.
+ 
+-  values->setBrands(brand_set_);
+-  values->setMobile(is_mobile_);
+-  values->setPlatform(platform_);
++  values->setBrands(brands());
++  values->setMobile(mobile());
++  values->setPlatform(platform());
+ 
+   // If the "ch-ua-high-entropy-values" permission policy is enabled for a
+   // document, add high-entropy client hints to values (if requested)
+   if (AllowedToCollectHighEntropyValues(execution_context)) {
+-    for (const String& hint : hints) {
+-      if (hint == "platformVersion") {
+-        values->setPlatformVersion(platform_version_);
+-      } else if (hint == "architecture") {
+-        values->setArchitecture(architecture_);
+-      } else if (hint == "model") {
+-        values->setModel(model_);
+-      } else if (hint == "uaFullVersion") {
+-        values->setUaFullVersion(ua_full_version_);
+-      } else if (hint == "bitness") {
+-        values->setBitness(bitness_);
+-      } else if (hint == "fullVersionList") {
+-        values->setFullVersionList(full_version_list_);
+-      } else if (hint == "wow64") {
+-        values->setWow64(is_wow64_);
+-      } else if (hint == "formFactors") {
+-        values->setFormFactors(form_factors_);
++    // The high-entropy values are read from the profile's own
++    // configuration when it is loaded, and from the members the client
++    // hints object was built with otherwise.  Both paths therefore report
++    // the same numbers, and the high-entropy hints cannot contradict the
++    // low-entropy ones.
++    const bool nova_loaded = nova::IsNovaCoreInitialized();
++    if (nova_loaded) {
++      const nova::UserAgentDataConfig& uad =
++          nova::GetNovaConfigRef().user_agent_data;
++      for (const String& hint : hints) {
++        if (hint == "platformVersion") {
++          values->setPlatformVersion(String::FromUtf8(uad.platform_version));
++        } else if (hint == "architecture") {
++          values->setArchitecture(String::FromUtf8(uad.architecture));
++        } else if (hint == "model") {
++          values->setModel(String::FromUtf8(uad.model));
++        } else if (hint == "uaFullVersion") {
++          values->setUaFullVersion(ua_full_version_);
++        } else if (hint == "bitness") {
++          values->setBitness(String::FromUtf8(uad.bitness));
++        } else if (hint == "fullVersionList") {
++          values->setFullVersionList(full_version_list_);
++        } else if (hint == "wow64") {
++          values->setWow64(uad.wow64);
++        } else if (hint == "formFactors") {
++          values->setFormFactors(form_factors_);
++        }
++      }
++    } else {
++      for (const String& hint : hints) {
++        if (hint == "platformVersion") {
++          values->setPlatformVersion(platform_version_);
++        } else if (hint == "architecture") {
++          values->setArchitecture(architecture_);
++        } else if (hint == "model") {
++          values->setModel(model_);
++        } else if (hint == "uaFullVersion") {
++          values->setUaFullVersion(ua_full_version_);
++        } else if (hint == "bitness") {
++          values->setBitness(bitness_);
++        } else if (hint == "fullVersionList") {
++          values->setFullVersionList(full_version_list_);
++        } else if (hint == "wow64") {
++          values->setWow64(is_wow64_);
++        } else if (hint == "formFactors") {
++          values->setFormFactors(form_factors_);
++        }
+       }
+     }
+   }
+diff --git a/third_party/blink/renderer/core/nova/BUILD.gn b/third_party/blink/renderer/core/nova/BUILD.gn
+new file mode 100644
+index 0000000000..012cb7d5bc
+--- /dev/null
++++ b/third_party/blink/renderer/core/nova/BUILD.gn
+@@ -0,0 +1,55 @@
++# Copyright 2026 The Chromium Authors
++# Use of this source code is governed by a BSD-style license that can be
++# found in the LICENSE file.
 +
- #include "third_party/blink/renderer/core/html/media_query_list.h"
- #include "third_party/blink/renderer/core/html/window_features.h"
- #include "third_party/blink/renderer/platform/runtime_enabled_features.json5"
-@@ -40,6 +42,11 @@ int Screen::width() const {
- int Screen::width() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return nova::GetNovaConfig().screen.width;
-+  }
-   return Screen::StandardWidth();
- }
-@@ -50,6 +57,11 @@ int Screen::height() const {
- int Screen::height() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return nova::GetNovaConfig().screen.height;
-+  }
-   return Screen::StandardHeight();
- }
-@@ -60,6 +72,11 @@ int Screen::availWidth() const {
- int Screen::availWidth() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return nova::GetNovaConfig().screen.avail_width;
-+  }
-   return Screen::StandardAvailWidth();
- }
-@@ -70,6 +87,11 @@ int Screen::availHeight() const {
- int Screen::availHeight() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return nova::GetNovaConfig().screen.avail_height;
-+  }
-   return Screen::StandardAvailHeight();
- }
-@@ -80,6 +102,11 @@ int Screen::availLeft() const {
- int Screen::availLeft() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return nova::GetNovaConfig().screen.avail_left;
-+  }
-   return Screen::StandardAvailLeft();
- }
-@@ -90,6 +117,11 @@ int Screen::availTop() const {
- int Screen::availTop() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return nova::GetNovaConfig().screen.avail_top;
-+  }
-   return Screen::StandardAvailTop();
- }
-@@ -100,6 +132,11 @@ int Screen::colorDepth() const {
- int Screen::colorDepth() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return nova::GetNovaConfig().screen.color_depth;
-+  }
-   return Screen::StandardColorDepth();
- }
-@@ -110,6 +147,11 @@ int Screen::pixelDepth() const {
- int Screen::pixelDepth() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return nova::GetNovaConfig().screen.pixel_depth;
-+  }
-   return Screen::StandardPixelDepth();
- }
-@@ -120,6 +162,11 @@ double Screen::devicePixelRatio() const {
- double Screen::devicePixelRatio() const {
-+  if (nova::IsNovaCoreInitialized()) {
-+    return nova::GetNovaConfig().screen.device_pixel_ratio;
-+  }
-   return Screen::StandardDevicePixelRatio();
- }
-diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context.cc
---- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context.cc
-+++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context.cc
-@@ -40,6 +40,8 @@
- #include "third_party/blink/renderer/modules/webgl/webgl_rendering_context.h"
-+#include "nova_chromium_hooks.h"
++# The NOVA Profile Core -- the hook layer that serves the profile's own
++# values to Blink.
++#
++# The sources live here rather than in //content because the accessors they
++# support live in Blink: the patched translation units include
++# "nova_chromium_hooks.h", and the header is found through the include
++# directory this target exports (see :nova_include_dirs below).
++#
++# The target is a source_set so that it can be linked into both the Blink
++# core component and the Blink modules component without pulling the whole
++# of Blink into the browser process.
++#
++# The public interface of the target is the hooks header; everything else is
++# private to the core.
 +
- #include "third_party/blink/renderer/modules/webgl/webgl_debug_renderer_info.h"
- #include "third_party/blink/renderer/modules/webgl/webgl_extensions.h"
- #include "third_party/blink/renderer/modules/webgl/webgl_shaders.h"
-@@ -620,6 +622,14 @@ void WebGLRenderingContextBase::ReadPixels(
-                     GLenum format,
-                     GLenum type,
-                     void* pixels) {
-+  // The deterministic noise is applied to the buffer that is handed back
-+  // to the script, so the observed pixels are already perturbed and the
-+  // original values cannot be recovered from the page.
-+  if (nova::IsNovaCoreInitialized()) {
-+    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
-+    if (config.webgl.mode != "native_passthrough" &&
-+        config.webgl.mode != "disabled" &&
-+        config.webgl.image_noise.enabled) {
-+      nova::ApplyPixelNoise(
-+          reinterpret_cast<uint8_t*>(pixels), width * 4, width, height,
-+          nova::GetWebGLNoiseKey(), config.canvas_2d.noise_strength);
++config("nova_include_dirs") {
++  # The patched Blink translation units include the hooks header by its bare
++  # name, so the directory that holds it has to be on the include path of
++  # every target that calls into the core.
++  include_dirs = [ "." ]
++}
++
++source_set("nova_core") {
++  sources = [
++    "nova_blink_patch.cc",
++    "nova_core_config.cc",
++    "nova_pixel_noise.cc",
++  ]
++
++  public = [
++    "nova_chromium_hooks.h",
++    "nova_core_config.h",
++    "nova_pixel_noise.h",
++  ]
++
++  # The header is included by name rather than by path, so the directory
++  # has to be exported to every consumer.
++  public_configs = [ ":nova_include_dirs" ]
++
++  deps = [
++    "//base",
++    "//third_party/boringssl",
++  ]
++
++  # The core is linked into the renderer, into the GPU process and into the
++  # browser process, so the visibility has to cover all of them.
++  visibility = [
++    "//content/*",
++    "//third_party/blink/*",
++  ]
++}
+diff --git a/third_party/blink/renderer/core/nova/nova_blink_patch.cc b/third_party/blink/renderer/core/nova/nova_blink_patch.cc
+new file mode 100644
+index 0000000000..ff5ec06e91
+--- /dev/null
++++ b/third_party/blink/renderer/core/nova/nova_blink_patch.cc
+@@ -0,0 +1,557 @@
++// NOVA Profile Core -- Blink integration.
++//
++// This file is the *hook layer* of the NOVA profile engine.  It is
++// deliberately placed *inside* Blink rather than in a JavaScript shim,
++// because anything that runs in the JS world is observable:
++//
++//   - Function.prototype.toString() returns the shim's source
++//   - Object.getOwnPropertyDescriptor() reveals an accessor
++//   - A Proxy traps every property access
++//   - navigator.webdriver is set to true
++//
++// The hooks are therefore called from *below* Blink, in the C++ accessors
++// themselves, so that the page sees ordinary native properties: the same
++// shape, the same enumerability, the same `toString()` output as a stock
++// Android Chrome.
++//
++// The division of labour
++// ---------------------------------------------------------------------------
++//
++// The patched accessors live in the Blink sources themselves:
++//
++//   third_party/blink/renderer/core/execution_context/navigator_base.cc
++//   third_party/blink/renderer/core/frame/navigator_id.cc
++//   third_party/blink/renderer/core/frame/navigator_ua.cc
++//   third_party/blink/renderer/core/frame/navigator_ua_data.cc
++//   third_party/blink/renderer/core/frame/navigator.cc
++//   third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
++//   third_party/blink/renderer/core/frame/navigator_device_memory.cc
++//   third_party/blink/renderer/core/frame/navigator_language.cc
++//   third_party/blink/renderer/core/events/navigator_events.cc
++//   third_party/blink/renderer/core/frame/screen.cc
++//   third_party/blink/renderer/core/frame/local_dom_window.cc
++//   third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
++//   third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
++//
++// Each of those accessors keeps its *own* original body as the fallback:
++// when the profile configuration has not been loaded, the accessor returns
++// exactly the value it returned before the patch.  The stock behaviour is
++// therefore the body of the accessor, not a call to a separate helper.
++//
++// This is deliberate.  The helpers this file used to call -- the
++// ``NavigatorID::Standard*`` family, the ``NavigatorUAData::Default*``
++// family and the ``Screen::Standard*`` family -- no longer exist in
++// Chromium 159: Blink was reorganised, the accessors were moved into
++// per-feature translation units, and the shared "standard value" helpers
++// were dissolved into the accessors themselves.  Calling them would not
++// link, and re-introducing them would put the stock value in a second
++// place that the patched accessor could drift away from.
++//
++// So this file does *not* define the accessors.  It defines the
++// configuration, the derivation of the per-surface noise keys, and the
++// entry points the patched accessors call.  The accessor bodies and their
++// fallbacks live in exactly one place: the Blink source.
++//
++// Every accessor reads from a single process-wide ProfileConfig, which is
++// why the main frame, a cross-origin iframe, a sandboxed iframe, a Web
++// Worker, a SharedWorker and a ServiceWorker all report identical values:
++// they are separate JS worlds but the same native process.
++
++#include "nova_core_config.h"
++#include "nova_pixel_noise.h"
++
++#include <memory>
++#include <string>
++#include <vector>
++
++#include "base/command_line.h"
++#include "base/files/file_path.h"
++#include "base/location.h"
++#include "base/logging.h"
++#include "base/synchronization/lock.h"
++
++namespace nova {
++
++namespace {
++
++// ---------------------------------------------------------------------------
++// The process-wide configuration
++//
++// It is installed in the browser process before any child process is
++// forked, and is inherited by the renderer, the GPU process and the
++// network service through the Mojo shared memory region.
++// ---------------------------------------------------------------------------
++
++class NovaConfigHolder {
++ public:
++  static NovaConfigHolder& Get() {
++    static auto* instance = new NovaConfigHolder();
++    return *instance;
++  }
++
++  bool Initialize(const ProfileConfig& config) {
++    base::AutoLock guard(lock_);
++    config_ = std::make_unique<ProfileConfig>(config);
++    // Each surface gets its own salt, so that a script which hashes two
++    // surfaces and compares the results learns nothing about the link
++    // between them.  Sharing the canvas salt between the canvas and the
++    // WebGL surface would have made the two hash to the same thing for a
++    // given profile -- a correlation a vendor can read straight off.
++    canvas_key_ = DerivePixelNoiseKey(config.seed_config, "canvas2d",
++                                      config.canvas_2d.salt,
++                                      config.webgl.unmasked_renderer);
++    webgl_key_ = DerivePixelNoiseKey(config.seed_config, "webgl",
++                                     config.webgl.salt,
++                                     config.webgl.unmasked_renderer);
++    // The offscreen surface shares the canvas salt on purpose -- it is the
++    // same kind of surface -- but the domain string separates the two
++    // keys, so the offscreen pixels are not the canvas pixels.
++    offscreen_key_ = DerivePixelNoiseKey(config.seed_config, "offscreen",
++                                         config.canvas_2d.salt,
++                                         config.webgl.unmasked_renderer);
++    // The audio key uses the audio salt and the audio mode, so that the
++    // audio fingerprint is independent of the canvas one.  A script that
++    // compares the two hashes therefore learns nothing about the link
++    // between the surfaces.
++    audio_key_ = DerivePixelNoiseKey(config.seed_config, "audio",
++                                     config.audio.salt, config.audio.mode);
++    initialized_ = true;
++    return true;
++  }
++
++  bool IsInitialized() {
++    base::AutoLock guard(lock_);
++    return initialized_;
++  }
++
++  // Loads the configuration on demand.
++  //
++  // The browser process installs the configuration before it forks any
++  // child, but a renderer or the GPU process can reach this code first --
++  // a renderer that starts before the browser's own initialization has run
++  // would otherwise report the host's values for the very first request of
++  // the very first page.  The load is therefore attempted lazily as well,
++  // and it is idempotent.
++  void EnsureInitialized() {
++    {
++      base::AutoLock guard(lock_);
++      if (initialized_) {
++        return;
++      }
++    }
++    const base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
++    if (!command_line) {
++      return;
++    }
++    const std::string path = command_line->GetSwitchValueASCII("nova-config");
++    if (path.empty()) {
++      return;
++    }
++    ProfileConfig config;
++    std::string error;
++    if (!LoadProfileConfigFromCommandLine(&config, &error)) {
++      LOG(ERROR) << "NOVA: failed to load the profile configuration: " << error;
++      return;
++    }
++    Initialize(config);
++  }
++
++  ProfileConfig GetConfig() {
++    base::AutoLock guard(lock_);
++    return *config_;
++  }
++
++  // A reference to the live configuration.  The caller must not hold it
++  // across a re-initialization, but the configuration is installed once
++  // before any renderer exists and never replaced afterwards.
++  //
++  // The accessor exists because the client hints are read on every
++  // request: copying the whole configuration for each of them would put
++  // a measurable cost on the hot path.
++  const ProfileConfig& GetConfigRef() {
++    base::AutoLock guard(lock_);
++    return *config_;
++  }
++
++  PixelNoiseKey CanvasKey() {
++    base::AutoLock guard(lock_);
++    return canvas_key_;
++  }
++
++  PixelNoiseKey WebGLKey() {
++    base::AutoLock guard(lock_);
++    return webgl_key_;
++  }
++
++  PixelNoiseKey OffscreenKey() {
++    base::AutoLock guard(lock_);
++    return offscreen_key_;
++  }
++
++  // The audio key.  It is derived from the audio salt and the audio mode
++  // rather than from the canvas salt, so that a script comparing the
++  // canvas hash with the audio hash cannot link them.
++  PixelNoiseKey AudioKey() {
++    base::AutoLock guard(lock_);
++    return audio_key_;
++  }
++
++ private:
++  NovaConfigHolder() = default;
++
++  base::Lock lock_;
++  bool initialized_ = false;
++  std::unique_ptr<ProfileConfig> config_;
++  PixelNoiseKey canvas_key_;
++  PixelNoiseKey webgl_key_;
++  PixelNoiseKey offscreen_key_;
++  PixelNoiseKey audio_key_;
++};
++
++// Reads the configuration before the renderer process starts.
++//
++// This is called from content::ContentMainRunner::Initialize(), before the
++// browser creates any renderer.  Nothing that a page can observe has
++// happened at that point, so there is no window in which the page could
++// see the real values.
++bool InitializeNovaCore(const base::CommandLine& command_line) {
++  const std::string path = command_line.GetSwitchValueASCII("nova-config");
++  if (path.empty()) {
++    return false;
++  }
++
++  ProfileConfig config;
++  std::string error;
++  if (!LoadProfileConfigFromCommandLine(&config, &error)) {
++    LOG(ERROR) << "NOVA: failed to load the profile configuration: " << error;
++    return false;
++  }
++
++  NovaConfigHolder::Get().Initialize(config);
++  LOG(INFO) << "NOVA: profile " << config.profile_id << " loaded (preset "
++            << config.seed_config.preset_id << ")";
++  return true;
++}
++
++}  // namespace
++
++// ---------------------------------------------------------------------------
++// The public entry points used by the Chromium patches
++// ---------------------------------------------------------------------------
++
++// Called from content::ContentMainRunner::Initialize().
++bool InitializeFromCommandLine(const base::CommandLine& command_line) {
++  return InitializeNovaCore(command_line);
++}
++
++// Called from the GPU process when it starts, so that the GPU process
++// holds the same configuration as the renderer.
++bool InitializeGpuProcess(const base::CommandLine& command_line) {
++  return InitializeNovaCore(command_line);
++}
++
++// Called from the network service when it starts.
++bool InitializeNetworkProcess(const base::CommandLine& command_line) {
++  return InitializeNovaCore(command_line);
++}
++
++bool IsNovaCoreInitialized() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  // The lazy load makes the accessor safe even in a process that was
++  // started without the browser's own initialization having run.
++  holder.EnsureInitialized();
++  return holder.IsInitialized();
++}
++
++ProfileConfig GetNovaConfig() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  holder.EnsureInitialized();
++  return holder.GetConfig();
++}
++
++// The same configuration, without the copy.  Use this on the hot paths --
++// the client hints are read on every request.
++const ProfileConfig& GetNovaConfigRef() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  holder.EnsureInitialized();
++  return holder.GetConfigRef();
++}
++
++// ---------------------------------------------------------------------------
++// The noise keys
++//
++// One key per readback surface.  The keys are derived from the profile's
++// own seed, so the noise of a profile is reproducible across restarts
++// and distinct from the noise of every other profile -- two profiles can
++// therefore never collapse into the same canvas bucket.
++// ---------------------------------------------------------------------------
++
++PixelNoiseKey GetCanvasNoiseKey() {
++  return NovaConfigHolder::Get().CanvasKey();
++}
++
++PixelNoiseKey GetWebGLNoiseKey() {
++  return NovaConfigHolder::Get().WebGLKey();
++}
++
++PixelNoiseKey GetOffscreenNoiseKey() {
++  return NovaConfigHolder::Get().OffscreenKey();
++}
++
++// ---------------------------------------------------------------------------
++// The WebGL identity strings
++//
++// The unmasked renderer is served through WEBGL_debug_renderer_info.  It
++// is patched at the WebGLContext level so that the value is identical in
++// every context and cannot be distinguished from a real GPU by its
++// lifetime or by the way it is exposed.
++// ---------------------------------------------------------------------------
++
++std::string GetUnmaskedVendorString() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return std::string();
++  }
++  return holder.GetConfig().webgl.unmasked_vendor;
++}
++
++std::string GetUnmaskedRendererString() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return std::string();
++  }
++  return holder.GetConfig().webgl.unmasked_renderer;
++}
++
++// ---------------------------------------------------------------------------
++// The audio fingerprint
++//
++// The Web Audio API produces a device-specific fingerprint: an oscillator
++// is run through a compressor and the resulting samples are hashed.  The
++// values that shape that fingerprint -- the sample rate, the input and
++// output latency and the channel count -- are served from the profile's
++// own configuration, and the rendered samples are perturbed with the
++// profile's audio key.
++//
++// The latency buckets are the ones Chromium's real Android implementation
++// produces; a latency outside those buckets is itself a signal.
++// ---------------------------------------------------------------------------
++
++double GetAudioSampleRate() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0.0;
++  }
++  return static_cast<double>(holder.GetConfig().audio.sample_rate);
++}
++
++double GetAudioBaseLatency() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0.0;
++  }
++  return holder.GetConfig().audio.base_latency;
++}
++
++double GetAudioOutputLatency() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0.0;
++  }
++  return holder.GetConfig().audio.output_latency;
++}
++
++int GetAudioChannelCount() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0;
++  }
++  return holder.GetConfig().audio.channel_count;
++}
++
++int GetAudioMaxChannelCount() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0;
++  }
++  return holder.GetConfig().audio.max_channel_count;
++}
++
++PixelNoiseKey GetAudioNoiseKey() {
++  return NovaConfigHolder::Get().AudioKey();
++}
++
++// ---------------------------------------------------------------------------
++// The geometry perturbation
++//
++// The deltas are integer pixel offsets.  An integer offset keeps the
++// layout, the painting and the hit testing consistent with each other: a
++// fractional offset would move the rectangle without moving the pixels
++// that belong to it.
++// ---------------------------------------------------------------------------
++
++int GetRectDeltaX() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0;
++  }
++  return holder.GetConfig().rects.delta_x;
++}
++
++int GetRectDeltaY() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0;
++  }
++  return holder.GetConfig().rects.delta_y;
++}
++
++int GetRectDeltaWidth() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0;
++  }
++  return holder.GetConfig().rects.delta_width;
++}
++
++int GetRectDeltaHeight() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0;
++  }
++  return holder.GetConfig().rects.delta_height;
++}
++
++// ---------------------------------------------------------------------------
++// The media devices
++//
++// The device identifiers are derived from the profile's own salt, so two
++// profiles never expose the same device ids.  A device id that repeats
++// across two profiles is a stable identifier that links them.
++// ---------------------------------------------------------------------------
++
++std::string GetMediaDeviceSalt() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return std::string();
++  }
++  return holder.GetConfig().media_devices.salt;
++}
++
++// ---------------------------------------------------------------------------
++// The motion sensors
++//
++// The readings are served from the profile's own configuration.  A device
++// that is not moving still reports a little jitter, and the gravity
++// reading has to agree with the accelerometer.
++// ---------------------------------------------------------------------------
++
++double GetSensorAccelerometerX() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0.0;
++  }
++  return holder.GetConfig().sensors.accelerometer.x;
++}
++
++double GetSensorAccelerometerY() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0.0;
++  }
++  return holder.GetConfig().sensors.accelerometer.y;
++}
++
++double GetSensorAccelerometerZ() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0.0;
++  }
++  return holder.GetConfig().sensors.accelerometer.z;
++}
++
++double GetSensorGyroscopeX() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0.0;
++  }
++  return holder.GetConfig().sensors.gyroscope.x;
++}
++
++double GetSensorGyroscopeY() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0.0;
++  }
++  return holder.GetConfig().sensors.gyroscope.y;
++}
++
++double GetSensorGyroscopeZ() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0.0;
++  }
++  return holder.GetConfig().sensors.gyroscope.z;
++}
++
++double GetSensorGravityZ() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0.0;
++  }
++  return holder.GetConfig().sensors.gravity.z;
++}
++
++std::string GetSensorSalt() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return std::string();
++  }
++  return holder.GetConfig().sensors.salt;
++}
++
++// ---------------------------------------------------------------------------
++// The storage estimate
++//
++// ``navigator.storage.estimate()`` returns the quota and the usage.  The
++// usage has to stay below the quota; a site that sees otherwise knows
++// the values are fabricated.
++// ---------------------------------------------------------------------------
++
++uint64_t GetStorageQuotaBytes() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0;
++  }
++  return holder.GetConfig().storage_network.quota_bytes;
++}
++
++uint64_t GetStorageUsageBytes() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return 0;
++  }
++  return holder.GetConfig().storage_network.usage_bytes;
++}
++
++std::string GetStorageSalt() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return std::string();
++  }
++  return holder.GetConfig().storage_network.salt;
++}
++
++// ---------------------------------------------------------------------------
++// The WebGPU adapter
++// ---------------------------------------------------------------------------
++
++std::string GetWebGpuSalt() {
++  NovaConfigHolder& holder = NovaConfigHolder::Get();
++  if (!holder.IsInitialized()) {
++    return std::string();
++  }
++  return holder.GetConfig().webgpu.salt;
++}
++
++}  // namespace nova
+diff --git a/third_party/blink/renderer/core/nova/nova_chromium_hooks.h b/third_party/blink/renderer/core/nova/nova_chromium_hooks.h
+new file mode 100644
+index 0000000000..bc120bf5f0
+--- /dev/null
++++ b/third_party/blink/renderer/core/nova/nova_chromium_hooks.h
+@@ -0,0 +1,141 @@
++// NOVA Profile Core -- the Chromium integration patches.
++//
++// This header is included by the Chromium source files that need to serve
++// the spoofed values.  It is deliberately tiny: a single inline function
++// per patched accessor, so the diff against the Chromium tree stays
++// reviewable.
++//
++//   third_party/blink/renderer/core/events/navigator_events.cc
++//   third_party/blink/renderer/core/execution_context/navigator_base.cc
++//   third_party/blink/renderer/core/frame/navigator.cc
++//   third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
++//   third_party/blink/renderer/core/frame/navigator_device_memory.cc
++//   third_party/blink/renderer/core/frame/navigator_id.cc
++//   third_party/blink/renderer/core/frame/navigator_language.cc
++//   third_party/blink/renderer/core/frame/navigator_ua.cc
++//   third_party/blink/renderer/core/frame/navigator_ua_data.cc
++//   third_party/blink/renderer/core/frame/screen.cc
++//   third_party/blink/renderer/core/frame/local_dom_window.cc
++//   third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
++//   third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
++//   content/public/browser/content_main_runner.cc
++//
++// The hooks layer itself lives in
++//
++//   third_party/blink/renderer/core/nova/nova_core_config.{h,cc}
++//   third_party/blink/renderer/core/nova/nova_pixel_noise.{h,cc}
++//   third_party/blink/renderer/core/nova/nova_blink_patch.cc
++//
++// and is built as the target
++// ``//third_party/blink/renderer/core/nova:nova_core``.
++
++#ifndef NOVA_PROFILE_CORE_CHROMIUM_HOOKS_H_
++#define NOVA_PROFILE_CORE_CHROMIUM_HOOKS_H_
++
++#include "nova_core_config.h"
++#include "nova_pixel_noise.h"
++
++#include <cstdint>
++#include <string>
++
++#include "base/command_line.h"
++
++namespace nova {
++
++// ---------------------------------------------------------------------------
++// The configuration accessor.
++//
++// The config is held in the browser process and replicated into the
++// renderer, the GPU process and the network service through a Mojo
++// shared-memory region.  Every process therefore reports exactly the
++// same values, which is what makes a cross-context check succeed.
++// ---------------------------------------------------------------------------
++
++bool IsNovaCoreInitialized();
++ProfileConfig GetNovaConfig();
++
++// The same configuration without the copy.  Use this on the hot paths:
++// the client hints are read on every request.
++const ProfileConfig& GetNovaConfigRef();
++
++// The noise keys, one per readback surface.
++PixelNoiseKey GetCanvasNoiseKey();
++PixelNoiseKey GetWebGLNoiseKey();
++PixelNoiseKey GetOffscreenNoiseKey();
++
++// The WebGL identity strings.
++std::string GetUnmaskedVendorString();
++std::string GetUnmaskedRendererString();
++
++// ---------------------------------------------------------------------------
++// The surfaces that are read on their own.
++//
++// A fingerprinting script does not have to combine the canvas hash with
++// the WebGL hash with the device serial.  It can read the audio
++// fingerprint, the geometry of a rectangle, the media device list, the
++// motion readings or the storage estimate and cluster on any one of them
++// alone.  Each of those therefore needs its own accessor, and each of
++// them is derived from the profile's own seed so that two profiles never
++// report the same value.
++// ---------------------------------------------------------------------------
++
++// The audio fingerprint.
++//
++// The Web Audio API produces a device-specific fingerprint from the
++// combination of an oscillator and a compressor.  The accessors return
++// the profile's own sample rate, latency and channel count, and the
++// renderer applies the deterministic perturbation to the rendered
++// samples.
++double GetAudioSampleRate();
++double GetAudioBaseLatency();
++double GetAudioOutputLatency();
++int GetAudioChannelCount();
++int GetAudioMaxChannelCount();
++PixelNoiseKey GetAudioNoiseKey();
++
++// The geometry perturbation.
++//
++// The deltas are applied as integer pixel offsets, so the layout and the
++// hit testing stay consistent with what the page sees.
++int GetRectDeltaX();
++int GetRectDeltaY();
++int GetRectDeltaWidth();
++int GetRectDeltaHeight();
++
++// The media devices.
++//
++// The device identifiers are derived from the profile's own salt, so two
++// profiles never expose the same device ids.
++std::string GetMediaDeviceSalt();
++
++// The motion sensors.
++double GetSensorAccelerometerX();
++double GetSensorAccelerometerY();
++double GetSensorAccelerometerZ();
++double GetSensorGyroscopeX();
++double GetSensorGyroscopeY();
++double GetSensorGyroscopeZ();
++double GetSensorGravityZ();
++
++// The per-unit salts of the motion and the storage surfaces.  The core
++// mixes them into the readings it hands out, so that two units of the
++// same model do not report the same gravity or the same storage
++// estimate -- the raw readings alone cannot tell them apart.
++std::string GetSensorSalt();
++std::string GetStorageSalt();
++
++// The storage estimate.
++uint64_t GetStorageQuotaBytes();
++uint64_t GetStorageUsageBytes();
++
++// The WebGPU adapter.
++std::string GetWebGpuSalt();
++
++// The process entry points.
++bool InitializeFromCommandLine(const base::CommandLine& command_line);
++bool InitializeGpuProcess(const base::CommandLine& command_line);
++bool InitializeNetworkProcess(const base::CommandLine& command_line);
++
++}  // namespace nova
++
++#endif  // NOVA_PROFILE_CORE_CHROMIUM_HOOKS_H_
+diff --git a/third_party/blink/renderer/core/nova/nova_core_config.cc b/third_party/blink/renderer/core/nova/nova_core_config.cc
+new file mode 100644
+index 0000000000..3028c20185
+--- /dev/null
++++ b/third_party/blink/renderer/core/nova/nova_core_config.cc
+@@ -0,0 +1,1079 @@
++// NOVA Profile Core -- configuration parsing (implementation).
++
++#include "nova_core_config.h"
++
++#include <memory>
++#include <optional>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "base/command_line.h"
++#include "base/files/file_path.h"
++#include "base/files/file_util.h"
++#include "base/json/json_reader.h"
++#include "base/logging.h"
++#include "base/path_service.h"
++#include "base/values.h"
++#include "url/gurl.h"
++
++namespace nova {
++namespace {
++
++// Small helpers for reading a JSON value into a typed field.  Each helper
++// returns false when the key is missing or has the wrong shape, which makes
++// the parser strict: a profile that is missing a field is rejected rather
++// than silently half-applied.
++
++bool ReadString(const base::DictValue& dict,
++                const char* key,
++                std::string* out,
++                std::string* error) {
++  const base::Value* value = dict.Find(key);
++  if (!value || !value->is_string()) {
++    *error = std::string("missing or non-string field: ") + key;
++    return false;
++  }
++  *out = value->GetString();
++  return true;
++}
++
++// A missing or misshaped field leaves |out| alone, so the caller seeds it
++// with the value it wants to fall back to.  The signature matches the
++// strict readers above.
++bool ReadStringOrDefault(const base::DictValue& dict,
++                          const char* key,
++                          std::string* out,
++                          std::string* error) {
++  const base::Value* value = dict.Find(key);
++  if (!value) {
++    return true;
++  }
++  if (!value->is_string()) {
++    *error = std::string("non-string field: ") + key;
++    return false;
++  }
++  *out = value->GetString();
++  return true;
++}
++
++bool ReadInt(const base::DictValue& dict,
++             const char* key,
++             int* out,
++             std::string* error) {
++  const base::Value* value = dict.Find(key);
++  if (!value || !value->is_int()) {
++    *error = std::string("missing or non-integer field: ") + key;
++    return false;
++  }
++  *out = value->GetInt();
++  return true;
++}
++
++// The seed epoch and the nudge step are unsigned, so they need their own
++// overload: an ``int*`` cannot bind to a ``uint32_t*``.
++bool ReadInt(const base::DictValue& dict,
++             const char* key,
++             uint32_t* out,
++             std::string* error) {
++  const base::Value* value = dict.Find(key);
++  if (!value || !value->is_int()) {
++    *error = std::string("missing or non-integer field: ") + key;
++    return false;
++  }
++  *out = static_cast<uint32_t>(value->GetInt());
++  return true;
++}
++
++bool ReadIntOrDefault(const base::DictValue& dict,
++                       const char* key,
++                       int* out,
++                       std::string* error) {
++  const base::Value* value = dict.Find(key);
++  if (!value) {
++    return true;
++  }
++  if (!value->is_int()) {
++    *error = std::string("non-integer field: ") + key;
++    return false;
++  }
++  *out = value->GetInt();
++  return true;
++}
++
++bool ReadDouble(const base::DictValue& dict,
++                const char* key,
++                double* out,
++                std::string* error) {
++  const base::Value* value = dict.Find(key);
++  if (!value || !value->is_double() && !value->is_int()) {
++    *error = std::string("missing or non-numeric field: ") + key;
++    return false;
++  }
++  *out = value->GetDouble();
++  return true;
++}
++
++bool ReadBool(const base::DictValue& dict,
++              const char* key,
++              bool* out,
++              std::string* error) {
++  const base::Value* value = dict.Find(key);
++  if (!value || !value->is_bool()) {
++    *error = std::string("missing or non-boolean field: ") + key;
++    return false;
++  }
++  *out = value->GetBool();
++  return true;
++}
++
++bool ReadBoolOrDefault(const base::DictValue& dict,
++                       const char* key,
++                       bool* out,
++                       std::string* error) {
++  const base::Value* value = dict.Find(key);
++  if (!value) {
++    return true;
++  }
++  if (!value->is_bool()) {
++    *error = std::string("non-boolean field: ") + key;
++    return false;
++  }
++  *out = value->GetBool();
++  return true;
++}
++
++bool ReadStringList(const base::DictValue& dict,
++                    const char* key,
++                    std::vector<std::string>* out,
++                    std::string* error) {
++  const base::Value* value = dict.Find(key);
++  if (!value || !value->is_list()) {
++    *error = std::string("missing or non-list field: ") + key;
++    return false;
++  }
++  out->clear();
++  for (const base::Value& item : value->GetList()) {
++    if (!item.is_string()) {
++      *error = std::string("non-string item in list field: ") + key;
++      return false;
++    }
++    out->push_back(item.GetString());
++  }
++  return true;
++}
++
++bool ReadIntList(const base::DictValue& dict,
++                 const char* key,
++                 std::vector<int>* out,
++                 std::string* error) {
++  const base::Value* value = dict.Find(key);
++  if (!value || !value->is_list()) {
++    *error = std::string("missing or non-list field: ") + key;
++    return false;
++  }
++  out->clear();
++  for (const base::Value& item : value->GetList()) {
++    if (!item.is_int()) {
++      *error = std::string("non-integer item in list field: ") + key;
++      return false;
++    }
++    out->push_back(item.GetInt());
++  }
++  return true;
++}
++
++bool ReadDoubleList(const base::DictValue& dict,
++                     const char* key,
++                     std::vector<double>* out,
++                     std::string* error) {
++  const base::Value* value = dict.Find(key);
++  if (!value || !value->is_list()) {
++    *error = std::string("missing or non-list field: ") + key;
++    return false;
++  }
++  out->clear();
++  for (const base::Value& item : value->GetList()) {
++    if (!item.is_double() && !item.is_int()) {
++      *error = std::string("non-numeric item in list field: ") + key;
++      return false;
++    }
++    out->push_back(item.GetDouble());
++  }
++  return true;
++}
++
++const base::DictValue* FindDict(const base::DictValue& parent,
++                                   const char* key,
++                                   std::string* error) {
++  const base::Value* value = parent.Find(key);
++  if (!value || !value->is_dict()) {
++    *error = std::string("missing or non-object field: ") + key;
++    return nullptr;
++  }
++  return &value->GetDict();
++}
++
++bool ReadStringMap(const base::DictValue& dict,
++                   const char* key,
++                   std::map<std::string, std::string>* out,
++                   std::string* error) {
++  const base::Value* value = dict.Find(key);
++  if (!value || !value->is_dict()) {
++    *error = std::string("missing or non-object field: ") + key;
++    return false;
++  }
++  out->clear();
++  for (const auto& pair : value->GetDict()) {
++    if (!pair.second.is_string()) {
++      *error = std::string("non-string value in map field: ") + key;
++      return false;
++    }
++    out->emplace(pair.first, pair.second.GetString());
++  }
++  return true;
++}
++
++bool ReadDoubleMap(const base::DictValue& dict,
++                   const char* key,
++                   std::map<std::string, double>* out,
++                   std::string* error) {
++  const base::Value* value = dict.Find(key);
++  if (!value || !value->is_dict()) {
++    *error = std::string("missing or non-object field: ") + key;
++    return false;
++  }
++  out->clear();
++  for (const auto& pair : value->GetDict()) {
++    if (!pair.second.is_double() && !pair.second.is_int()) {
++      *error = std::string("non-numeric value in map field: ") + key;
++      return false;
++    }
++    out->emplace(pair.first, pair.second.GetDouble());
++  }
++  return true;
++}
++
++// Reads a vector of {brand, version} objects.
++bool ReadBrandList(const base::DictValue& dict,
++                   const char* key,
++                   std::vector<BrandVersion>* out,
++                   std::string* error) {
++  const base::Value* value = dict.Find(key);
++  if (!value || !value->is_list()) {
++    *error = std::string("missing or non-list field: ") + key;
++    return false;
++  }
++  out->clear();
++  for (const base::Value& item : value->GetList()) {
++    if (!item.is_dict()) {
++      *error = std::string("non-object item in list field: ") + key;
++      return false;
++    }
++    BrandVersion brand;
++    if (!ReadString(item.GetDict(), "brand", &brand.brand, error) ||
++        !ReadString(item.GetDict(), "version", &brand.version, error)) {
++      return false;
++    }
++    out->push_back(brand);
++  }
++  return true;
++}
++
++bool ReadShaderPrecision(const base::DictValue& dict,
++                         ShaderPrecision* out,
++                         std::string* error) {
++  const base::DictValue* vertex = FindDict(dict, "vertex_shader", error);
++  if (!vertex) return false;
++  const base::DictValue* fragment = FindDict(dict, "fragment_shader", error);
++  if (!fragment) return false;
++
++  auto read_stage = [&](const base::DictValue& stage,
++                         std::map<std::string, ShaderPrecisionRange>* target) {
++    for (const auto& pair : stage) {
++      if (!pair.second.is_dict()) {
++        *error = "non-object entry in a shader precision table";
++        return false;
++      }
++      ShaderPrecisionRange range;
++      if (!ReadInt(pair.second.GetDict(), "range_min", &range.range_min, error) ||
++          !ReadInt(pair.second.GetDict(), "range_max", &range.range_max, error) ||
++          !ReadInt(pair.second.GetDict(), "precision", &range.precision, error)) {
++        return false;
++      }
++      target->emplace(pair.first, range);
++    }
++    return true;
++  };
++
++  return read_stage(*vertex, &out->vertex_shader) &&
++         read_stage(*fragment, &out->fragment_shader);
++}
++
++// ---------------------------------------------------------------------------
++// Section parsers
++// ---------------------------------------------------------------------------
++
++bool ParseSeed(const base::DictValue& dict, SeedConfig* out, std::string* error) {
++  return ReadString(dict, "master_seed", &out->master_seed, error) &&
++         ReadInt(dict, "seed_epoch", &out->seed_epoch, error) &&
++         ReadInt(dict, "nudge_step", &out->nudge_step, error) &&
++         ReadString(dict, "hkdf_version", &out->hkdf_version, error) &&
++         ReadString(dict, "preset_id", &out->preset_id, error) &&
++         ReadString(dict, "core_version", &out->core_version, error);
++}
++
++bool ParseAndroidBuild(const base::DictValue& dict,
++                       AndroidBuild* out,
++                       std::string* error) {
++  return ReadString(dict, "version_release", &out->version_release, error) &&
++         ReadInt(dict, "sdk_int", &out->sdk_int, error) &&
++         ReadString(dict, "security_patch", &out->security_patch, error) &&
++         ReadString(dict, "build_id", &out->build_id, error) &&
++         ReadString(dict, "display", &out->display, error) &&
++         ReadString(dict, "version_incremental", &out->version_incremental, error) &&
++         ReadString(dict, "model", &out->model, error) &&
++         ReadString(dict, "device", &out->device, error) &&
++         ReadString(dict, "product", &out->product, error) &&
++         ReadString(dict, "manufacturer", &out->manufacturer, error) &&
++         ReadString(dict, "brand", &out->brand, error) &&
++         ReadString(dict, "hardware", &out->hardware, error) &&
++         ReadString(dict, "board", &out->board, error) &&
++         ReadString(dict, "bootloader", &out->bootloader, error) &&
++         ReadString(dict, "fingerprint", &out->fingerprint, error) &&
++         ReadString(dict, "host", &out->host, error) &&
++         ReadString(dict, "user", &out->user, error) &&
++         ReadString(dict, "tags", &out->tags, error) &&
++         ReadString(dict, "type", &out->type, error) &&
++         ReadString(dict, "serial", &out->serial, error);
++}
++
++bool ParseAndroidAbiSoc(const base::DictValue& dict,
++                        AndroidAbiSoc* out,
++                        std::string* error) {
++  return ReadStringList(dict, "supported_abis", &out->supported_abis, error) &&
++         ReadStringList(dict, "supported_64_bit_abis",
++                        &out->supported_64_bit_abis, error) &&
++         ReadStringList(dict, "supported_32_bit_abis",
++                        &out->supported_32_bit_abis, error) &&
++         ReadString(dict, "primary_abi", &out->primary_abi, error) &&
++         ReadBool(dict, "is_64_bit", &out->is_64_bit, error) &&
++         ReadString(dict, "soc_vendor", &out->soc_vendor, error) &&
++         ReadString(dict, "soc_model", &out->soc_model, error) &&
++         ReadString(dict, "cpu_cluster_layout", &out->cpu_cluster_layout, error) &&
++         ReadString(dict, "gpu_architecture", &out->gpu_architecture, error);
++}
++
++bool ParseScreen(const base::DictValue& dict, Screen* out, std::string* error) {
++  return ReadInt(dict, "width", &out->width, error) &&
++         ReadInt(dict, "height", &out->height, error) &&
++         ReadInt(dict, "avail_width", &out->avail_width, error) &&
++         ReadInt(dict, "avail_height", &out->avail_height, error) &&
++         ReadInt(dict, "avail_left", &out->avail_left, error) &&
++         ReadInt(dict, "avail_top", &out->avail_top, error) &&
++         ReadInt(dict, "color_depth", &out->color_depth, error) &&
++         ReadInt(dict, "pixel_depth", &out->pixel_depth, error) &&
++         ReadDouble(dict, "device_pixel_ratio", &out->device_pixel_ratio, error) &&
++         ReadInt(dict, "density_dpi", &out->density_dpi, error);
++}
++
++bool ParseOrientation(const base::DictValue& dict,
++                      Orientation* out,
++                      std::string* error) {
++  return ReadString(dict, "type", &out->type, error) &&
++         ReadInt(dict, "angle", &out->angle, error) &&
++         ReadBool(dict, "lock_supported", &out->lock_supported, error);
++}
++
++bool ParseViewport(const base::DictValue& dict,
++                   Viewport* out,
++                   std::string* error) {
++  const base::DictValue* insets = FindDict(dict, "safe_area_insets", error);
++  if (!insets) return false;
++  return ReadInt(dict, "inner_width", &out->inner_width, error) &&
++         ReadInt(dict, "inner_height", &out->inner_height, error) &&
++         ReadInt(dict, "outer_width", &out->outer_width, error) &&
++         ReadInt(dict, "outer_height", &out->outer_height, error) &&
++         ReadInt(dict, "screen_x", &out->screen_x, error) &&
++         ReadInt(dict, "screen_y", &out->screen_y, error) &&
++         ReadDouble(dict, "visual_viewport_scale",
++                    &out->visual_viewport_scale, error) &&
++         ReadInt(*insets, "top", &out->safe_area_insets.top, error) &&
++         ReadInt(*insets, "right", &out->safe_area_insets.right, error) &&
++         ReadInt(*insets, "bottom", &out->safe_area_insets.bottom, error) &&
++         ReadInt(*insets, "left", &out->safe_area_insets.left, error) &&
++         ReadInt(dict, "scrollbar_width", &out->scrollbar_width, error);
++}
++
++bool ParseMediaQueries(const base::DictValue& dict,
++                       MediaQueries* out,
++                       std::string* error) {
++  return ReadString(dict, "prefers_color_scheme", &out->prefers_color_scheme,
++                    error) &&
++         ReadString(dict, "prefers_reduced_motion", &out->prefers_reduced_motion,
++                    error) &&
++         ReadString(dict, "prefers_contrast", &out->prefers_contrast, error) &&
++         ReadString(dict, "forced_colors", &out->forced_colors, error) &&
++         ReadString(dict, "pointer", &out->pointer, error) &&
++         ReadStringList(dict, "any_pointer", &out->any_pointer, error) &&
++         ReadString(dict, "hover", &out->hover, error) &&
++         ReadStringList(dict, "any_hover", &out->any_hover, error) &&
++         ReadString(dict, "color_gamut", &out->color_gamut, error) &&
++         ReadString(dict, "dynamic_range", &out->dynamic_range, error);
++}
++
++bool ParseCanvas(const base::DictValue& dict,
++                 Canvas2DConfig* out,
++                 std::string* error) {
++  return ReadString(dict, "mode", &out->mode, error) &&
++         ReadString(dict, "salt", &out->salt, error) &&
++         ReadDouble(dict, "noise_strength", &out->noise_strength, error) &&
++         ReadBool(dict, "persist_across_restarts", &out->persist_across_restarts,
++                  error) &&
++         ReadStringList(dict, "targets", &out->targets, error);
++}
++
++bool ParseWebGL(const base::DictValue& dict,
++                WebGLConfig* out,
++                std::string* error) {
++  const base::DictValue* noise = FindDict(dict, "image_noise", error);
++  if (!noise) return false;
++  const base::DictValue* extensions = FindDict(dict, "extensions", error);
++  if (!extensions) return false;
++  const base::DictValue* parameters = FindDict(dict, "parameters", error);
++  if (!parameters) return false;
++  const base::DictValue* precision = FindDict(dict, "shader_precision", error);
++  if (!precision) return false;
++
++  if (!ReadString(*noise, "value", &out->image_noise.value, error) ||
++      !ReadBool(*noise, "enabled", &out->image_noise.enabled, error)) {
++    return false;
++  }
++  if (!ReadStringList(*extensions, "supported", &out->extensions,
++                      error)) {
++    return false;
++  }
++
++  const base::DictValue& p = *parameters;
++  WebGLParameters& params = out->parameters;
++  bool ok = ReadInt(p, "max_texture_size", &params.max_texture_size, error) &&
++            ReadInt(p, "max_cube_map_texture_size",
++                    &params.max_cube_map_texture_size, error) &&
++            ReadInt(p, "max_3d_texture_size", &params.max_3d_texture_size,
++                    error) &&
++            ReadInt(p, "max_array_texture_layers",
++                    &params.max_array_texture_layers, error) &&
++            ReadInt(p, "max_renderbuffer_size", &params.max_renderbuffer_size,
++                    error) &&
++            ReadIntList(p, "max_viewport_dims", &params.max_viewport_dims,
++                        error) &&
++            ReadInt(p, "max_vertex_attribs", &params.max_vertex_attribs, error) &&
++            ReadInt(p, "max_vertex_uniform_vectors",
++                    &params.max_vertex_uniform_vectors, error) &&
++            ReadInt(p, "max_vertex_uniform_components",
++                    &params.max_vertex_uniform_components, error) &&
++            ReadInt(p, "max_fragment_uniform_vectors",
++                    &params.max_fragment_uniform_vectors, error) &&
++            ReadInt(p, "max_fragment_uniform_components",
++                    &params.max_fragment_uniform_components, error) &&
++            ReadInt(p, "max_varying_vectors", &params.max_varying_vectors, error) &&
++            ReadInt(p, "max_combined_texture_image_units",
++                    &params.max_combined_texture_image_units, error) &&
++            ReadInt(p, "max_vertex_texture_image_units",
++                    &params.max_vertex_texture_image_units, error) &&
++            ReadInt(p, "max_texture_image_units", &params.max_texture_image_units,
++                    error) &&
++            ReadInt(p, "max_color_attachments", &params.max_color_attachments,
++                    error) &&
++            ReadInt(p, "max_draw_buffers", &params.max_draw_buffers, error) &&
++            ReadInt(p, "max_samples", &params.max_samples, error) &&
++            ReadInt(p, "max_uniform_buffer_bindings",
++                    &params.max_uniform_buffer_bindings, error) &&
++            ReadDoubleList(p, "aliased_line_width_range",
++                           &params.aliased_line_width_range, error) &&
++            ReadDoubleList(p, "aliased_point_size_range",
++                           &params.aliased_point_size_range, error) &&
++            ReadInt(p, "sample_buffers", &params.sample_buffers, error) &&
++            ReadInt(p, "samples", &params.samples, error) &&
++            ReadInt(p, "max_texture_max_anisotropy_ext",
++                    &params.max_texture_max_anisotropy_ext, error);
++  if (!ok) {
++    return false;
++  }
++
++  return ReadString(dict, "mode", &out->mode, error) &&
++         ReadString(dict, "unmasked_vendor", &out->unmasked_vendor, error) &&
++         ReadString(dict, "unmasked_renderer", &out->unmasked_renderer, error) &&
++         ReadString(dict, "vendor", &out->vendor, error) &&
++         ReadString(dict, "renderer", &out->renderer, error) &&
++         ReadString(dict, "version", &out->version, error) &&
++         ReadString(dict, "shading_language_version",
++                    &out->shading_language_version, error) &&
++         ReadBool(dict, "read_pixels_sync", &out->read_pixels_sync, error) &&
++         ReadShaderPrecision(*precision, &out->shader_precision,
++                             error) &&
++         ReadStringOrDefault(dict, "salt", &out->salt, error);
++}
++
++bool ParseWebGPU(const base::DictValue& dict,
++                 WebGPUConfig* out,
++                 std::string* error) {
++  const base::DictValue* adapter = FindDict(dict, "adapter", error);
++  if (!adapter) return false;
++  return ReadBool(dict, "enabled", &out->enabled, error) &&
++         ReadString(*adapter, "vendor", &out->adapter.vendor, error) &&
++         ReadString(*adapter, "architecture",
++                    &out->adapter.architecture, error) &&
++         ReadString(*adapter, "device", &out->adapter.device, error) &&
++         ReadString(*adapter, "description",
++                    &out->adapter.description, error) &&
++         ReadBool(*adapter, "is_fallback_adapter",
++                  &out->adapter.is_fallback_adapter, error) &&
++         ReadStringList(dict, "features", &out->features, error) &&
++         ReadDoubleMap(dict, "limits", &out->limits, error) &&
++         ReadStringOrDefault(dict, "salt", &out->salt, error);
++}
++
++bool ParseAudio(const base::DictValue& dict, AudioConfig* out, std::string* error) {
++  return ReadString(dict, "mode", &out->mode, error) &&
++         ReadString(dict, "salt", &out->salt, error) &&
++         ReadInt(dict, "sample_rate", &out->sample_rate, error) &&
++         ReadDouble(dict, "base_latency", &out->base_latency, error) &&
++         ReadDouble(dict, "output_latency", &out->output_latency, error) &&
++         ReadInt(dict, "channel_count", &out->channel_count, error) &&
++         ReadInt(dict, "max_channel_count", &out->max_channel_count, error) &&
++         ReadBool(dict, "respect_core_quantization",
++                  &out->respect_core_quantization, error);
++}
++
++bool ParseRects(const base::DictValue& dict, RectsConfig* out, std::string* error) {
++  return ReadString(dict, "mode", &out->mode, error) &&
++         ReadString(dict, "salt", &out->salt, error) &&
++         ReadInt(dict, "delta_x", &out->delta_x, error) &&
++         ReadInt(dict, "delta_y", &out->delta_y, error) &&
++         ReadInt(dict, "delta_width", &out->delta_width, error) &&
++         ReadInt(dict, "delta_height", &out->delta_height, error) &&
++         ReadStringList(dict, "targets", &out->targets, error);
++}
++
++bool ParseFonts(const base::DictValue& dict, FontsConfig* out, std::string* error) {
++  return ReadString(dict, "mode", &out->mode, error) &&
++         ReadStringList(dict, "installed", &out->installed, error) &&
++         ReadString(dict, "salt", &out->salt, error) &&
++         ReadBool(dict, "preserve_metric_clusters",
++                  &out->preserve_metric_clusters, error);
++}
++
++bool ParseMediaDevices(const base::DictValue& dict,
++                       MediaDevicesConfig* out,
++                       std::string* error) {
++  auto read_entries = [&](const char* key,
++                           std::vector<MediaDeviceEntry>* target) {
++    const base::Value* value = dict.Find(key);
++    if (!value || !value->is_list()) {
++      *error = std::string("missing or non-list field: ") + key;
++      return false;
++    }
++    target->clear();
++    for (const base::Value& item : value->GetList()) {
++      if (!item.is_dict()) {
++        *error = std::string("non-object item in list field: ") + key;
++        return false;
++      }
++      MediaDeviceEntry entry;
++      const base::DictValue& item_dict = item.GetDict();
++      if (!ReadString(item_dict, "device_id", &entry.device_id, error) ||
++          !ReadString(item_dict, "group_id", &entry.group_id, error) ||
++          !ReadString(item_dict, "label", &entry.label, error)) {
++        return false;
++      }
++      ReadStringOrDefault(item_dict, "facing_mode", &entry.facing_mode, error);
++      target->push_back(entry);
++    }
++    return true;
++  };
++
++  if (!ReadString(dict, "mode", &out->mode, error) ||
++      !ReadString(dict, "id_scope", &out->id_scope, error) ||
++      !ReadString(dict, "salt", &out->salt, error)) {
++    return false;
++  }
++  return read_entries("audio_inputs", &out->audio_inputs) &&
++         read_entries("audio_outputs", &out->audio_outputs) &&
++         read_entries("video_inputs", &out->video_inputs);
++}
++
++bool ParseStorageNetwork(const base::DictValue& dict,
++                         StorageNetworkConfig* out,
++                         std::string* error) {
++  const base::Value* quota = dict.Find("quota_bytes");
++  const base::Value* usage = dict.Find("usage_bytes");
++  if (!quota || !usage || !quota->is_int() || !usage->is_int()) {
++    *error = "missing or non-integer field: quota_bytes/usage_bytes";
++    return false;
++  }
++  out->quota_bytes = static_cast<uint64_t>(quota->GetInt());
++  out->usage_bytes = static_cast<uint64_t>(usage->GetInt());
++  return ReadBool(dict, "persisted_default", &out->persisted_default, error) &&
++         ReadString(dict, "effective_type", &out->effective_type, error) &&
++         ReadInt(dict, "rtt", &out->rtt, error) &&
++         ReadDouble(dict, "downlink", &out->downlink, error) &&
++         ReadBool(dict, "save_data", &out->save_data, error) &&
++         ReadString(dict, "connection_type", &out->connection_type, error) &&
++         ReadStringOrDefault(dict, "salt", &out->salt, error);
++}
++
++bool ParseBatterySpeechGamepad(const base::DictValue& dict,
++                                BatterySpeechGamepad* out,
++                                std::string* error) {
++  const base::DictValue* battery = FindDict(dict, "battery", error);
++  if (!battery) return false;
++  const base::DictValue* gamepad = FindDict(dict, "gamepad", error);
++  if (!gamepad) return false;
++
++  if (!ReadBool(*battery, "enabled", &out->battery.enabled, error) ||
++      !ReadBool(*battery, "charging", &out->battery.charging, error) ||
++      !ReadDouble(*battery, "level", &out->battery.level, error) ||
++      !ReadInt(*battery, "charging_time", &out->battery.charging_time,
++               error) ||
++      !ReadInt(*battery, "discharging_time",
++               &out->battery.discharging_time, error)) {
++    return false;
++  }
++
++  if (!ReadBool(*gamepad, "enabled", &out->gamepad.enabled, error)) {
++    return false;
++  }
++
++  const base::Value* voices = dict.Find("speech_voices");
++  if (!voices || !voices->is_list()) {
++    *error = "missing or non-list field: speech_voices";
++    return false;
++  }
++  for (const base::Value& item : voices->GetList()) {
++    if (!item.is_dict()) {
++      *error = "non-object item in list field: speech_voices";
++      return false;
++    }
++    SpeechVoice voice;
++    voice.is_default = false;
++    voice.local_service = true;
++    const base::DictValue& voice_dict = item.GetDict();
++    if (!ReadString(voice_dict, "name", &voice.name, error) ||
++        !ReadString(voice_dict, "lang", &voice.lang, error)) {
++      return false;
++    }
++    ReadBoolOrDefault(voice_dict, "default", &voice.is_default, error);
++    ReadBoolOrDefault(voice_dict, "local_service", &voice.local_service, error);
++    ReadStringOrDefault(voice_dict, "voice_uri", &voice.voice_uri, error);
++    out->speech_voices.push_back(voice);
++  }
++  return true;
++}
++
++bool ParseSensors(const base::DictValue& dict,
++                  SensorsConfig* out,
++                  std::string* error) {
++  const base::DictValue* accel = FindDict(dict, "accelerometer", error);
++  if (!accel) return false;
++  const base::DictValue* gyro = FindDict(dict, "gyroscope", error);
++  if (!gyro) return false;
++  const base::DictValue* linear = FindDict(dict, "linear_acceleration", error);
++  if (!linear) return false;
++  const base::DictValue* gravity = FindDict(dict, "gravity", error);
++  if (!gravity) return false;
++  const base::DictValue* absolute = FindDict(dict, "absolute_orientation", error);
++  if (!absolute) return false;
++  const base::DictValue* relative = FindDict(dict, "relative_orientation", error);
++  if (!relative) return false;
++
++  auto read_vector = [&](const base::DictValue& source, Vector3D* target) {
++    return ReadDouble(source, "x", &target->x, error) &&
++           ReadDouble(source, "y", &target->y, error) &&
++           ReadDouble(source, "z", &target->z, error);
++  };
++  auto read_orientation = [&](const base::DictValue& source,
++                              Orientation3D* target) {
++    return ReadDouble(source, "alpha", &target->alpha, error) &&
++           ReadDouble(source, "beta", &target->beta, error) &&
++           ReadDouble(source, "gamma", &target->gamma, error);
++  };
++
++  return ReadBool(dict, "enabled", &out->enabled, error) &&
++         ReadInt(dict, "sampling_hz", &out->sampling_hz, error) &&
++         ReadString(dict, "motion_profile", &out->motion_profile, error) &&
++         read_vector(*accel, &out->accelerometer) &&
++         read_vector(*gyro, &out->gyroscope) &&
++         read_vector(*linear, &out->linear_acceleration) &&
++         read_vector(*gravity, &out->gravity) &&
++         read_orientation(*absolute, &out->absolute_orientation) &&
++         read_orientation(*relative, &out->relative_orientation) &&
++         ReadStringOrDefault(dict, "salt", &out->salt, error);
++}
++
++bool ParseNavigator(const base::DictValue& dict,
++                    NavigatorConfig* out,
++                    std::string* error) {
++  return ReadString(dict, "user_agent", &out->user_agent, error) &&
++         ReadString(dict, "app_version", &out->app_version, error) &&
++         ReadString(dict, "app_name", &out->app_name, error) &&
++         ReadString(dict, "app_code_name", &out->app_code_name, error) &&
++         ReadString(dict, "vendor", &out->vendor, error) &&
++         ReadString(dict, "vendor_sub", &out->vendor_sub, error) &&
++         ReadString(dict, "product", &out->product, error) &&
++         ReadString(dict, "product_sub", &out->product_sub, error) &&
++         ReadString(dict, "platform", &out->platform, error) &&
++         ReadInt(dict, "hardware_concurrency", &out->hardware_concurrency,
++                 error) &&
++         ReadInt(dict, "device_memory", &out->device_memory, error) &&
++         ReadInt(dict, "max_touch_points", &out->max_touch_points, error) &&
++         ReadString(dict, "language", &out->language, error) &&
++         ReadStringList(dict, "languages", &out->languages, error) &&
++         ReadBool(dict, "cookie_enabled", &out->cookie_enabled, error) &&
++         ReadBool(dict, "pdf_viewer_enabled", &out->pdf_viewer_enabled, error) &&
++         ReadBool(dict, "webdriver", &out->webdriver, error) &&
++         ReadBool(dict, "on_line", &out->on_line, error) &&
++         ReadBool(dict, "java_enabled", &out->java_enabled, error);
++}
++
++bool ParseUserAgentData(const base::DictValue& dict,
++                        UserAgentDataConfig* out,
++                        std::string* error) {
++  return ReadBrandList(dict, "brands", &out->brands, error) &&
++         ReadBrandList(dict, "full_version_list", &out->full_version_list,
++                       error) &&
++         ReadBool(dict, "mobile", &out->mobile, error) &&
++         ReadString(dict, "platform", &out->platform, error) &&
++         ReadString(dict, "platform_version", &out->platform_version, error) &&
++         ReadString(dict, "architecture", &out->architecture, error) &&
++         ReadString(dict, "bitness", &out->bitness, error) &&
++         ReadString(dict, "model", &out->model, error) &&
++         ReadBool(dict, "wow64", &out->wow64, error);
++}
++
++bool ParsePermissions(const base::DictValue& dict,
++                      PermissionsConfig* out,
++                      std::string* error) {
++  return ReadStringMap(dict, "policies", &out->policies, error);
++}
++
++bool ParseTimezone(const base::DictValue& dict,
++                   TimezoneConfig* out,
++                   std::string* error) {
++  return ReadString(dict, "iana_name", &out->iana_name, error) &&
++         ReadInt(dict, "offset_minutes", &out->offset_minutes, error) &&
++         ReadBool(dict, "dst_active", &out->dst_active, error) &&
++         ReadString(dict, "abbreviation", &out->abbreviation, error);
++}
++
++bool ParseLocale(const base::DictValue& dict,
++                 LocaleConfig* out,
++                 std::string* error) {
++  return ReadString(dict, "primary", &out->primary, error) &&
++         ReadString(dict, "intl_locale", &out->intl_locale, error) &&
++         ReadString(dict, "numbering_system", &out->numbering_system, error) &&
++         ReadString(dict, "calendar", &out->calendar, error) &&
++         ReadString(dict, "hour_cycle", &out->hour_cycle, error) &&
++         ReadString(dict, "currency", &out->currency, error);
++}
++
++bool ParseGeolocation(const base::DictValue& dict,
++                      GeolocationConfig* out,
++                      std::string* error) {
++  if (!ReadString(dict, "mode", &out->mode, error)) {
++    return false;
++  }
++  auto read_optional = [&](const char* key, std::optional<double>* target) {
++    const base::Value* value = dict.Find(key);
++    if (!value || value->is_none()) {
++      target->reset();
++      return true;
++    }
++    if (!value->is_double() && !value->is_int()) {
++      *error = std::string("non-numeric field: ") + key;
++      return false;
++    }
++    *target = value->GetDouble();
++    return true;
++  };
++  return read_optional("latitude", &out->latitude) &&
++         read_optional("longitude", &out->longitude) &&
++         read_optional("accuracy", &out->accuracy) &&
++         read_optional("altitude", &out->altitude) &&
++         read_optional("altitude_accuracy", &out->altitude_accuracy) &&
++         read_optional("heading", &out->heading) &&
++         read_optional("speed", &out->speed) &&
++         ReadInt(dict, "timestamp_jitter_ms", &out->timestamp_jitter_ms, error);
++}
++
++bool ParseProxy(const base::DictValue& dict, ProxyConfig* out, std::string* error) {
++  return ReadBool(dict, "enabled", &out->enabled, error) &&
++         ReadString(dict, "protocol", &out->protocol, error) &&
++         ReadString(dict, "host", &out->host, error) &&
++         ReadInt(dict, "port", &out->port, error) &&
++         ReadString(dict, "username", &out->username, error) &&
++         ReadString(dict, "password", &out->password, error) &&
++         ReadString(dict, "auth_method", &out->auth_method, error) &&
++         ReadInt(dict, "connect_timeout_ms", &out->connect_timeout_ms, error) &&
++         ReadInt(dict, "read_timeout_ms", &out->read_timeout_ms, error);
++}
++
++bool ParseWebRtc(const base::DictValue& dict,
++                 WebRtcConfig* out,
++                 std::string* error) {
++  return ReadString(dict, "mode", &out->mode, error) &&
++         ReadString(dict, "spoofed_public_ip_v4", &out->spoofed_public_ip_v4,
++                    error) &&
++         ReadString(dict, "spoofed_public_ip_v6", &out->spoofed_public_ip_v6,
++                    error) &&
++         ReadString(dict, "spoofed_local_ip_v4", &out->spoofed_local_ip_v4,
++                    error) &&
++         ReadBool(dict, "mdns_enabled", &out->mdns_enabled, error) &&
++         ReadBool(dict, "block_non_proxied_udp", &out->block_non_proxied_udp,
++                  error) &&
++         ReadString(dict, "ice_transport_policy", &out->ice_transport_policy,
++                    error);
++}
++
++bool ParseDns(const base::DictValue& dict, DnsConfig* out, std::string* error) {
++  return ReadString(dict, "mode", &out->mode, error) &&
++         ReadStringList(dict, "servers", &out->servers, error) &&
++         ReadString(dict, "doh_url", &out->doh_url, error) &&
++         ReadString(dict, "dot_host", &out->dot_host, error) &&
++         ReadBool(dict, "prevent_dns_leak", &out->prevent_dns_leak, error);
++}
++
++bool ParseHttpHeaders(const base::DictValue& dict,
++                      HttpHeadersConfig* out,
++                      std::string* error) {
++  return ReadString(dict, "accept_language", &out->accept_language, error) &&
++         ReadString(dict, "dnt", &out->dnt, error) &&
++         ReadString(dict, "sec_ch_ua", &out->sec_ch_ua, error) &&
++         ReadString(dict, "sec_ch_ua_mobile", &out->sec_ch_ua_mobile, error) &&
++         ReadString(dict, "sec_ch_ua_platform", &out->sec_ch_ua_platform,
++                    error) &&
++         ReadString(dict, "sec_ch_ua_platform_version",
++                    &out->sec_ch_ua_platform_version, error) &&
++         ReadString(dict, "sec_ch_ua_arch", &out->sec_ch_ua_arch, error) &&
++         ReadString(dict, "sec_ch_ua_bitness", &out->sec_ch_ua_bitness, error) &&
++         ReadString(dict, "sec_ch_ua_model", &out->sec_ch_ua_model, error) &&
++         ReadString(dict, "sec_ch_ua_full_version_list",
++                    &out->sec_ch_ua_full_version_list, error) &&
++         ReadStringMap(dict, "custom_headers", &out->custom_headers, error);
++}
++
++bool ParseGeoSync(const base::DictValue& dict,
++                  GeoSyncConfig* out,
++                  std::string* error) {
++  return ReadBool(dict, "enabled", &out->enabled, error) &&
++         ReadBool(dict, "lock_manual_overrides", &out->lock_manual_overrides,
++                  error) &&
++         ReadBool(dict, "sync_timezone", &out->sync_timezone, error) &&
++         ReadBool(dict, "sync_locale", &out->sync_locale, error) &&
++         ReadBool(dict, "sync_geolocation", &out->sync_geolocation, error) &&
++         ReadBool(dict, "sync_webrtc_ip", &out->sync_webrtc_ip, error);
++}
++
++bool ParseGeoIntelligence(const base::DictValue& dict,
++                          GeoIntelligenceConfig* out,
++                          std::string* error) {
++  return ReadString(dict, "exit_ip_v4", &out->exit_ip_v4, error) &&
++         ReadString(dict, "exit_ip_v6", &out->exit_ip_v6, error) &&
++         ReadString(dict, "country_code", &out->country_code, error) &&
++         ReadString(dict, "country_name", &out->country_name, error) &&
++         ReadString(dict, "region_code", &out->region_code, error) &&
++         ReadString(dict, "region_name", &out->region_name, error) &&
++         ReadString(dict, "city", &out->city, error) &&
++         ReadString(dict, "postal_code", &out->postal_code, error) &&
++         ReadInt(dict, "asn", &out->asn, error) &&
++         ReadString(dict, "isp", &out->isp, error) &&
++         ReadString(dict, "org", &out->org, error) &&
++         ReadBool(dict, "is_mobile_carrier", &out->is_mobile_carrier, error) &&
++         ReadBool(dict, "is_datacenter", &out->is_datacenter, error) &&
++         ReadInt(dict, "latency_ms", &out->latency_ms, error);
++}
++
++}  // namespace
++
++bool ParseProfileConfig(const std::string& json,
++                        ProfileConfig* config,
++                        std::string* error) {
++  // Chromium 159's JSONReader is a set of static methods: it hands back
++  // the parsed document in an optional rather than filling an out
++  // parameter.  ``ReadDict`` is the right entry point here because the
++  // root of the configuration is a JSON object, and it rejects a document
++  // whose root is anything else.
++  //
++  // The options are the strict RFC 8259 ones: no trailing commas and no
++  // comments.  A configuration that is not strict JSON is a configuration
++  // that two implementations may read differently.
++  std::optional<base::DictValue> root =
++      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
++  if (!root) {
++    *error = "the configuration is not a valid JSON object";
++    return false;
++  }
++  const base::DictValue& dict = *root;
++
++  ProfileConfig parsed;
++
++  // The identity block holds the profile id next to the seed config.
++  const base::DictValue* identity = FindDict(dict, "identity", error);
++  if (!identity) return false;
++  if (!ReadString(*identity, "id", &parsed.profile_id, error)) {
++    return false;
++  }
++
++  const base::DictValue* seed = FindDict(dict, "seed_config", error);
++  if (!seed) return false;
++  if (!ParseSeed(*seed, &parsed.seed_config, error)) return false;
++
++  const base::DictValue* build = FindDict(dict, "android_build", error);
++  if (!build) return false;
++  if (!ParseAndroidBuild(*build, &parsed.android_build, error)) return false;
++
++  const base::DictValue* abi = FindDict(dict, "android_abi_soc", error);
++  if (!abi) return false;
++  if (!ParseAndroidAbiSoc(*abi, &parsed.android_abi_soc, error)) return false;
++
++  const base::DictValue* navigator = FindDict(dict, "navigator", error);
++  if (!navigator) return false;
++  if (!ParseNavigator(*navigator, &parsed.navigator, error)) return false;
++
++  const base::DictValue* uad = FindDict(dict, "user_agent_data", error);
++  if (!uad) return false;
++  if (!ParseUserAgentData(*uad, &parsed.user_agent_data, error)) return false;
++
++  const base::DictValue* permissions = FindDict(dict, "permissions", error);
++  if (!permissions) return false;
++  if (!ParsePermissions(*permissions, &parsed.permissions, error)) return false;
++
++  const base::DictValue* screen = FindDict(dict, "screen", error);
++  if (!screen) return false;
++  if (!ParseScreen(*screen, &parsed.screen, error)) return false;
++
++  const base::DictValue* orientation = FindDict(dict, "orientation", error);
++  if (!orientation) return false;
++  if (!ParseOrientation(*orientation, &parsed.orientation, error)) return false;
++
++  const base::DictValue* viewport = FindDict(dict, "viewport", error);
++  if (!viewport) return false;
++  if (!ParseViewport(*viewport, &parsed.viewport, error)) return false;
++
++  const base::DictValue* media = FindDict(dict, "media_queries", error);
++  if (!media) return false;
++  if (!ParseMediaQueries(*media, &parsed.media_queries, error)) return false;
++
++  const base::DictValue* timezone = FindDict(dict, "timezone", error);
++  if (!timezone) return false;
++  if (!ParseTimezone(*timezone, &parsed.timezone, error)) return false;
++
++  const base::DictValue* locale = FindDict(dict, "locale", error);
++  if (!locale) return false;
++  if (!ParseLocale(*locale, &parsed.locale, error)) return false;
++
++  const base::DictValue* geolocation = FindDict(dict, "geolocation", error);
++  if (!geolocation) return false;
++  if (!ParseGeolocation(*geolocation, &parsed.geolocation, error)) return false;
++
++  const base::DictValue* canvas = FindDict(dict, "canvas_2d", error);
++  if (!canvas) return false;
++  if (!ParseCanvas(*canvas, &parsed.canvas_2d, error)) return false;
++
++  const base::DictValue* webgl = FindDict(dict, "webgl", error);
++  if (!webgl) return false;
++  if (!ParseWebGL(*webgl, &parsed.webgl, error)) return false;
++
++  const base::DictValue* webgpu = FindDict(dict, "webgpu", error);
++  if (!webgpu) return false;
++  if (!ParseWebGPU(*webgpu, &parsed.webgpu, error)) return false;
++
++  const base::DictValue* audio = FindDict(dict, "audio", error);
++  if (!audio) return false;
++  if (!ParseAudio(*audio, &parsed.audio, error)) return false;
++
++  const base::DictValue* rects = FindDict(dict, "rects", error);
++  if (!rects) return false;
++  if (!ParseRects(*rects, &parsed.rects, error)) return false;
++
++  const base::DictValue* fonts = FindDict(dict, "fonts", error);
++  if (!fonts) return false;
++  if (!ParseFonts(*fonts, &parsed.fonts, error)) return false;
++
++  const base::DictValue* media_devices = FindDict(dict, "media_devices", error);
++  if (!media_devices) return false;
++  if (!ParseMediaDevices(*media_devices, &parsed.media_devices, error))
++    return false;
++
++  const base::DictValue* storage = FindDict(dict, "storage_network", error);
++  if (!storage) return false;
++  if (!ParseStorageNetwork(*storage, &parsed.storage_network, error))
++    return false;
++
++  const base::DictValue* battery = FindDict(dict, "battery_speech_gamepad", error);
++  if (!battery) return false;
++  if (!ParseBatterySpeechGamepad(*battery,
++                                  &parsed.battery_speech_gamepad, error)) {
++    return false;
++  }
++
++  const base::DictValue* sensors = FindDict(dict, "sensors", error);
++  if (!sensors) return false;
++  if (!ParseSensors(*sensors, &parsed.sensors, error)) return false;
++
++  const base::DictValue* proxy = FindDict(dict, "proxy", error);
++  if (!proxy) return false;
++  if (!ParseProxy(*proxy, &parsed.proxy, error)) return false;
++
++  const base::DictValue* geo_sync = FindDict(dict, "geo_sync", error);
++  if (!geo_sync) return false;
++  if (!ParseGeoSync(*geo_sync, &parsed.geo_sync, error)) return false;
++
++  const base::DictValue* geo_intel = FindDict(dict, "geo_intelligence", error);
++  if (!geo_intel) return false;
++  if (!ParseGeoIntelligence(*geo_intel, &parsed.geo_intelligence, error))
++    return false;
++
++  const base::DictValue* webrtc = FindDict(dict, "webrtc", error);
++  if (!webrtc) return false;
++  if (!ParseWebRtc(*webrtc, &parsed.webrtc, error)) return false;
++
++  const base::DictValue* dns = FindDict(dict, "dns", error);
++  if (!dns) return false;
++  if (!ParseDns(*dns, &parsed.dns, error)) return false;
++
++  const base::DictValue* headers = FindDict(dict, "http_headers", error);
++  if (!headers) return false;
++  if (!ParseHttpHeaders(*headers, &parsed.http_headers, error))
++    return false;
++
++  *config = std::move(parsed);
++  return true;
++}
++
++bool LoadProfileConfigFromCommandLine(ProfileConfig* config, std::string* error) {
++  const std::string path = base::CommandLine::ForCurrentProcess()
++                               ->GetSwitchValueASCII("nova-config");
++  if (path.empty()) {
++    *error = "the --nova-config switch is missing";
++    return false;
++  }
++
++  // The path comes from the command line, so it is validated before it is
++  // opened: it must be an absolute path to a regular file.
++  const base::FilePath file_path(base::FilePath::FromUTF8Unsafe(path));
++  if (!file_path.IsAbsolute()) {
++    *error = "the --nova-config path must be absolute: " + path;
++    return false;
++  }
++
++  std::string json;
++  if (!base::ReadFileToStringWithMaxSize(file_path, &json, 8 * 1024 * 1024)) {
++    *error = "the configuration file could not be read: " + path;
++    return false;
++  }
++
++  return ParseProfileConfig(json, config, error);
++}
++
++}  // namespace nova
+diff --git a/third_party/blink/renderer/core/nova/nova_core_config.h b/third_party/blink/renderer/core/nova/nova_core_config.h
+new file mode 100644
+index 0000000000..aeafb0a91c
+--- /dev/null
++++ b/third_party/blink/renderer/core/nova/nova_core_config.h
+@@ -0,0 +1,559 @@
++// NOVA Profile Core -- the browser-side fingerprint engine.
++//
++// This file defines the configuration structures that the control plane
++// hands to the browser process, together with the deterministic derivation
++// logic that mirrors the Python side exactly.
++//
++// The design rule is simple and absolute: **every** value that reaches the
++// renderer must come from the configuration, never from a JavaScript hook.
++// A JS hook is trivially detectable (Function.prototype.toString,
++// Object.getOwnPropertyDescriptor, Proxy traps), so the injection happens
++// below Blink, inside the C++ process, before the renderer is created.
++//
++// The config arrives as JSON on the command line:
++//
++//     --nova-config=/path/to/nova_core.json
++//
++// and is parsed by the browser process before any child process (renderer,
++// GPU, network service) is forked.
++
++#ifndef NOVA_PROFILE_CORE_CONFIG_H_
++#define NOVA_PROFILE_CORE_CONFIG_H_
++
++#include <cstdint>
++#include <map>
++#include <optional>
++#include <string>
++#include <vector>
++
++namespace nova {
++
++// ---------------------------------------------------------------------------
++// Identity and seed
++// ---------------------------------------------------------------------------
++
++// The root of the fingerprint. Everything else is derived from it.
++struct SeedConfig {
++  // 64-character hex string.
++  std::string master_seed;
++  uint32_t seed_epoch = 0;
++  uint32_t nudge_step = 0;
++  std::string hkdf_version;
++  std::string preset_id;
++  std::string core_version;
++};
++
++// ---------------------------------------------------------------------------
++// Android device
++// ---------------------------------------------------------------------------
++
++struct AndroidBuild {
++  std::string version_release;
++  int sdk_int = 0;
++  std::string security_patch;
++  std::string build_id;
++  std::string display;
++  std::string version_incremental;
++  std::string model;
++  std::string device;
++  std::string product;
++  std::string manufacturer;
++  std::string brand;
++  std::string hardware;
++  std::string board;
++  std::string bootloader;
++  std::string fingerprint;
++  std::string host;
++  std::string user;
++  std::string tags;
++  std::string type;
++  std::string serial;
++};
++
++struct AndroidAbiSoc {
++  std::vector<std::string> supported_abis;
++  std::vector<std::string> supported_64_bit_abis;
++  std::vector<std::string> supported_32_bit_abis;
++  std::string primary_abi;
++  bool is_64_bit = true;
++  std::string soc_vendor;
++  std::string soc_model;
++  std::string cpu_cluster_layout;
++  std::string gpu_architecture;
++};
++
++// ---------------------------------------------------------------------------
++// Screen and viewport
++// ---------------------------------------------------------------------------
++
++struct Screen {
++  int width = 0;
++  int height = 0;
++  int avail_width = 0;
++  int avail_height = 0;
++  int avail_left = 0;
++  int avail_top = 0;
++  int color_depth = 24;
++  int pixel_depth = 24;
++  double device_pixel_ratio = 1.0;
++  int density_dpi = 0;
++};
++
++struct Orientation {
++  std::string type;
++  int angle = 0;
++  bool lock_supported = true;
++};
++
++struct SafeAreaInsets {
++  int top = 0;
++  int right = 0;
++  int bottom = 0;
++  int left = 0;
++};
++
++struct Viewport {
++  int inner_width = 0;
++  int inner_height = 0;
++  int outer_width = 0;
++  int outer_height = 0;
++  int screen_x = 0;
++  int screen_y = 0;
++  double visual_viewport_scale = 1.0;
++  SafeAreaInsets safe_area_insets;
++  int scrollbar_width = 0;
++};
++
++struct MediaQueries {
++  std::string prefers_color_scheme = "light";
++  std::string prefers_reduced_motion = "no-preference";
++  std::string prefers_contrast = "no-preference";
++  std::string forced_colors = "none";
++  std::string pointer = "coarse";
++  std::vector<std::string> any_pointer{"coarse"};
++  std::string hover = "none";
++  std::vector<std::string> any_hover{"none"};
++  std::string color_gamut = "srgb";
++  std::string dynamic_range = "standard";
++};
++
++// ---------------------------------------------------------------------------
++// Canvas, WebGL and WebGPU
++// ---------------------------------------------------------------------------
++
++struct Canvas2DConfig {
++  std::string mode = "noise";
++  std::string salt;
++  double noise_strength = 0.0;
++  bool persist_across_restarts = true;
++  std::vector<std::string> targets;
++};
++
++struct WebGLImageNoise {
++  bool enabled = true;
++  // A decimal string with at least 17 significant digits.  It is parsed
++  // into a double without any intermediate rounding.
++  std::string value;
++};
++
++struct WebGLParameters {
++  int max_texture_size = 0;
++  int max_cube_map_texture_size = 0;
++  int max_3d_texture_size = 0;
++  int max_array_texture_layers = 0;
++  int max_renderbuffer_size = 0;
++  std::vector<int> max_viewport_dims;
++  int max_vertex_attribs = 0;
++  int max_vertex_uniform_vectors = 0;
++  int max_vertex_uniform_components = 0;
++  int max_fragment_uniform_vectors = 0;
++  int max_fragment_uniform_components = 0;
++  int max_varying_vectors = 0;
++  int max_combined_texture_image_units = 0;
++  int max_vertex_texture_image_units = 0;
++  int max_texture_image_units = 0;
++  int max_color_attachments = 0;
++  int max_draw_buffers = 0;
++  int max_samples = 0;
++  int max_uniform_buffer_bindings = 0;
++  std::vector<double> aliased_line_width_range;
++  std::vector<double> aliased_point_size_range;
++  int sample_buffers = 0;
++  int samples = 0;
++  int max_texture_max_anisotropy_ext = 0;
++};
++
++struct ShaderPrecisionRange {
++  int range_min = 0;
++  int range_max = 0;
++  int precision = 0;
++};
++
++struct ShaderPrecision {
++  std::map<std::string, ShaderPrecisionRange> vertex_shader;
++  std::map<std::string, ShaderPrecisionRange> fragment_shader;
++};
++
++struct WebGLConfig {
++  std::string mode = "noise";
++  std::string unmasked_vendor;
++  std::string unmasked_renderer;
++  std::string vendor;
++  std::string renderer;
++  std::string version;
++  std::string shading_language_version;
++  WebGLImageNoise image_noise;
++  // The per-unit salt of the draw surface.  The pixel-noise value carries
++  // only about 56 bits, which at 100 million profiles collides with a
++  // probability of roughly 6.7 percent; the salt is what the readback is
++  // keyed on, and it is 128 bits wide.
++  std::string salt;
++  bool read_pixels_sync = true;
++  std::vector<std::string> extensions;
++  WebGLParameters parameters;
++  ShaderPrecision shader_precision;
++};
++
++struct WebGPUAdapter {
++  std::string vendor;
++  std::string architecture;
++  std::string device;
++  std::string description;
++  bool is_fallback_adapter = false;
++};
++
++struct WebGPUConfig {
++  bool enabled = false;
++  WebGPUAdapter adapter;
++  std::vector<std::string> features;
++  std::map<std::string, double> limits;
++  // The per-device salt.  The adapter and the limit table belong to the
++  // GPU *model* and are shared by a whole family of units, exactly as on
++  // real hardware; the salt identifies the individual unit within it.
++  std::string salt;
++};
++
++// ---------------------------------------------------------------------------
++// Signals
++// ---------------------------------------------------------------------------
++
++struct AudioConfig {
++  std::string mode = "native_quantized";
++  std::string salt;
++  int sample_rate = 48000;
++  double base_latency = 0.0;
++  double output_latency = 0.0;
++  int channel_count = 2;
++  int max_channel_count = 2;
++  bool respect_core_quantization = true;
++};
++
++struct RectsConfig {
++  std::string mode = "noise";
++  std::string salt;
++  int delta_x = 0;
++  int delta_y = 0;
++  int delta_width = 0;
++  int delta_height = 0;
++  std::vector<std::string> targets;
++};
++
++struct FontsConfig {
++  std::string mode = "android_preset";
++  std::vector<std::string> installed;
++  std::string salt;
++  bool preserve_metric_clusters = true;
++};
++
++struct MediaDeviceEntry {
++  std::string device_id;
++  std::string group_id;
++  std::string label;
++  std::string facing_mode;
++};
++
++struct MediaDevicesConfig {
++  std::string mode = "deterministic_mock";
++  std::string id_scope = "per_profile_and_origin";
++  std::string salt;
++  std::vector<MediaDeviceEntry> audio_inputs;
++  std::vector<MediaDeviceEntry> audio_outputs;
++  std::vector<MediaDeviceEntry> video_inputs;
++};
++
++struct StorageNetworkConfig {
++  uint64_t quota_bytes = 0;
++  uint64_t usage_bytes = 0;
++  bool persisted_default = false;
++  std::string effective_type = "4g";
++  int rtt = 0;
++  double downlink = 0.0;
++  bool save_data = false;
++  std::string connection_type = "wifi";
++  // The per-unit salt of the storage surface.  The quota is one of a
++  // handful of round numbers and the usage is a fraction of it, so
++  // without the salt the surface carries barely a dozen bits.
++  std::string salt;
++};
++
++struct BatteryConfig {
++  bool enabled = true;
++  bool charging = false;
++  double level = 1.0;
++  int charging_time = 0;
++  int discharging_time = 0;
++};
++
++struct SpeechVoice {
++  std::string name;
++  std::string lang;
++  bool is_default = false;
++  bool local_service = true;
++  std::string voice_uri;
++};
++
++struct GamepadConfig {
++  bool enabled = false;
++};
++
++struct BatterySpeechGamepad {
++  BatteryConfig battery;
++  std::vector<SpeechVoice> speech_voices;
++  GamepadConfig gamepad;
++};
++
++struct Vector3D {
++  double x = 0.0;
++  double y = 0.0;
++  double z = 0.0;
++};
++
++struct Orientation3D {
++  double alpha = 0.0;
++  double beta = 0.0;
++  double gamma = 0.0;
++};
++
++struct SensorsConfig {
++  bool enabled = true;
++  int sampling_hz = 60;
++  std::string motion_profile = "stationary_micro_jitter";
++  Vector3D accelerometer;
++  Vector3D gyroscope;
++  Vector3D linear_acceleration;
++  Vector3D gravity;
++  Orientation3D absolute_orientation;
++  Orientation3D relative_orientation;
++  // The per-unit salt of the motion surface.  The gravity reading is
++  // about 9.81 on every device on Earth, so the salt is what makes
++  // the surface able to tell a hundred million units apart.
++  std::string salt;
++};
++
++// ---------------------------------------------------------------------------
++// Navigator, client hints and permissions
++// ---------------------------------------------------------------------------
++
++struct BrandVersion {
++  std::string brand;
++  std::string version;
++};
++
++struct NavigatorConfig {
++  std::string user_agent;
++  std::string app_version;
++  std::string app_name;
++  std::string app_code_name;
++  std::string vendor;
++  std::string vendor_sub;
++  std::string product;
++  std::string product_sub;
++  std::string platform;
++  int hardware_concurrency = 8;
++  int device_memory = 8;
++  int max_touch_points = 5;
++  std::string language;
++  std::vector<std::string> languages;
++  bool cookie_enabled = true;
++  bool pdf_viewer_enabled = true;
++  bool webdriver = false;
++  bool on_line = true;
++  bool java_enabled = false;
++};
++
++struct UserAgentDataConfig {
++  std::vector<BrandVersion> brands;
++  std::vector<BrandVersion> full_version_list;
++  bool mobile = true;
++  std::string platform = "Android";
++  std::string platform_version;
++  std::string architecture;
++  std::string bitness;
++  std::string model;
++  bool wow64 = false;
++};
++
++struct PermissionsConfig {
++  std::map<std::string, std::string> policies;
++};
++
++// ---------------------------------------------------------------------------
++// Timezone, locale and geolocation
++// ---------------------------------------------------------------------------
++
++struct TimezoneConfig {
++  std::string iana_name;
++  int offset_minutes = 0;
++  bool dst_active = false;
++  std::string abbreviation;
++};
++
++struct LocaleConfig {
++  std::string primary;
++  std::string intl_locale;
++  std::string numbering_system = "latn";
++  std::string calendar = "gregory";
++  std::string hour_cycle = "h23";
++  std::string currency;
++};
++
++struct GeolocationConfig {
++  std::string mode = "prompt";
++  std::optional<double> latitude;
++  std::optional<double> longitude;
++  std::optional<double> accuracy;
++  std::optional<double> altitude;
++  std::optional<double> altitude_accuracy;
++  std::optional<double> heading;
++  std::optional<double> speed;
++  int timestamp_jitter_ms = 0;
++};
++
++// ---------------------------------------------------------------------------
++// Network
++// ---------------------------------------------------------------------------
++
++struct ProxyConfig {
++  bool enabled = false;
++  std::string protocol = "direct";
++  std::string host;
++  int port = 0;
++  std::string username;
++  std::string password;
++  std::string auth_method = "none";
++  int connect_timeout_ms = 30000;
++  int read_timeout_ms = 60000;
++};
++
++struct WebRtcConfig {
++  std::string mode = "proxy_only";
++  std::string spoofed_public_ip_v4;
++  std::string spoofed_public_ip_v6;
++  std::string spoofed_local_ip_v4;
++  bool mdns_enabled = true;
++  bool block_non_proxied_udp = true;
++  std::string ice_transport_policy = "relay";
++};
++
++struct DnsConfig {
++  std::string mode = "proxy_remote";
++  std::vector<std::string> servers;
++  std::string doh_url;
++  std::string dot_host;
++  bool prevent_dns_leak = true;
++};
++
++struct HttpHeadersConfig {
++  std::string accept_language;
++  std::string dnt;
++  std::string sec_ch_ua;
++  std::string sec_ch_ua_mobile = "?1";
++  std::string sec_ch_ua_platform = "\"Android\"";
++  std::string sec_ch_ua_platform_version;
++  std::string sec_ch_ua_arch;
++  std::string sec_ch_ua_bitness;
++  std::string sec_ch_ua_model;
++  std::string sec_ch_ua_full_version_list;
++  std::map<std::string, std::string> custom_headers;
++};
++
++struct GeoIntelligenceConfig {
++  std::string exit_ip_v4;
++  std::string exit_ip_v6;
++  std::string country_code;
++  std::string country_name;
++  std::string region_code;
++  std::string region_name;
++  std::string city;
++  std::string postal_code;
++  int asn = 0;
++  std::string isp;
++  std::string org;
++  bool is_mobile_carrier = false;
++  bool is_datacenter = false;
++  int latency_ms = 0;
++};
++
++struct GeoSyncConfig {
++  bool enabled = true;
++  bool lock_manual_overrides = true;
++  bool sync_timezone = true;
++  bool sync_locale = true;
++  bool sync_geolocation = true;
++  bool sync_webrtc_ip = true;
++};
++
++// ---------------------------------------------------------------------------
++// The aggregate configuration
++// ---------------------------------------------------------------------------
++
++struct ProfileConfig {
++  std::string profile_id;
++  SeedConfig seed_config;
++  AndroidBuild android_build;
++  AndroidAbiSoc android_abi_soc;
++  NavigatorConfig navigator;
++  UserAgentDataConfig user_agent_data;
++  PermissionsConfig permissions;
++  Screen screen;
++  Orientation orientation;
++  Viewport viewport;
++  MediaQueries media_queries;
++  TimezoneConfig timezone;
++  LocaleConfig locale;
++  GeolocationConfig geolocation;
++  Canvas2DConfig canvas_2d;
++  WebGLConfig webgl;
++  WebGPUConfig webgpu;
++  AudioConfig audio;
++  RectsConfig rects;
++  FontsConfig fonts;
++  MediaDevicesConfig media_devices;
++  StorageNetworkConfig storage_network;
++  BatterySpeechGamepad battery_speech_gamepad;
++  SensorsConfig sensors;
++  ProxyConfig proxy;
++  GeoSyncConfig geo_sync;
++  GeoIntelligenceConfig geo_intelligence;
++  WebRtcConfig webrtc;
++  DnsConfig dns;
++  HttpHeadersConfig http_headers;
++};
++
++// Parses the JSON document produced by the control plane.
++//
++// Returns true on success.  On failure the function writes a human readable
++// diagnostic into |error| and leaves |config| untouched.
++bool ParseProfileConfig(const std::string& json, ProfileConfig* config,
++                        std::string* error);
++
++// Reads the configuration that the browser process was launched with.
++//
++// The browser process reads ``--nova-config=<path>`` from its command line.
++// The path is validated before the file is opened so that a malformed
++// switch cannot be used to read an arbitrary file.
++bool LoadProfileConfigFromCommandLine(ProfileConfig* config, std::string* error);
++
++}  // namespace nova
++
++#endif  // NOVA_PROFILE_CORE_CONFIG_H_
+diff --git a/third_party/blink/renderer/core/nova/nova_pixel_noise.cc b/third_party/blink/renderer/core/nova/nova_pixel_noise.cc
+new file mode 100644
+index 0000000000..506cd2ea4e
+--- /dev/null
++++ b/third_party/blink/renderer/core/nova/nova_pixel_noise.cc
+@@ -0,0 +1,266 @@
++// NOVA Profile Core -- deterministic pixel noise (implementation).
++
++#include "nova_pixel_noise.h"
++
++#include <cmath>
++#include <cstdio>
++#include <cstring>
++#include <string>
++#include <vector>
++
++#include "third_party/boringssl/src/include/openssl/digest.h"
++#include "third_party/boringssl/src/include/openssl/hmac.h"
++#include "third_party/boringssl/src/include/openssl/sha.h"
++
++namespace nova {
++namespace {
++
++// ---------------------------------------------------------------------------
++// HKDF-SHA256
++//
++// The browser already links BoringSSL, so no additional dependency is
++// introduced.  The implementation mirrors RFC 5869 exactly and matches
++// the Python SeedDeriver byte for byte -- that equivalence is what lets
++// the control plane predict the browser's output.
++// ---------------------------------------------------------------------------
++
++constexpr size_t kHashLen = 32;
++
++std::vector<uint8_t> HmacSha256(const uint8_t* key,
++                                size_t key_len,
++                                const uint8_t* data,
++                                size_t data_len) {
++  unsigned char result[kHashLen];
++  unsigned int result_len = 0;
++  HMAC(EVP_sha256(), key, static_cast<int>(key_len), data, data_len, result,
++       &result_len);
++  return std::vector<uint8_t>(result, result + result_len);
++}
++
++std::vector<uint8_t> HkdfExtract(const std::vector<uint8_t>& salt,
++                                  const std::vector<uint8_t>& ikm) {
++  std::vector<uint8_t> effective_salt = salt;
++  if (effective_salt.empty()) {
++    effective_salt.assign(kHashLen, 0);
++  }
++  return HmacSha256(effective_salt.data(), effective_salt.size(), ikm.data(),
++                    ikm.size());
++}
++
++std::vector<uint8_t> HkdfExpand(const std::vector<uint8_t>& prk,
++                                 const std::string& info,
++                                 size_t length) {
++  std::vector<uint8_t> okm;
++  okm.reserve(length);
++  std::vector<uint8_t> block;
++  uint8_t counter = 1;
++  while (okm.size() < length) {
++    std::vector<uint8_t> input;
++    input.insert(input.end(), block.begin(), block.end());
++    input.insert(input.end(), info.begin(), info.end());
++    input.push_back(counter);
++    block = HmacSha256(prk.data(), prk.size(), input.data(), input.size());
++    okm.insert(okm.end(), block.begin(), block.end());
++    ++counter;
++  }
++  okm.resize(length);
++  return okm;
++}
++
++// The domain salt must match novaprofile/core/seed.py exactly.
++const char kPixelDomainSalt[] = "nova/v1/webgl_pixel";
++
++// Parses a 64-character hex string into 32 bytes.
++bool HexToBytes(const std::string& hex, uint8_t* out, size_t out_len) {
++  if (hex.size() != out_len * 2) {
++    return false;
++  }
++  auto nibble = [](char c) -> int {
++    if (c >= '0' && c <= '9') return c - '0';
++    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
++    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
++    return -1;
++  };
++  for (size_t i = 0; i < out_len; ++i) {
++    int hi = nibble(hex[i * 2]);
++    int lo = nibble(hex[i * 2 + 1]);
++    if (hi < 0 || lo < 0) {
++      return false;
++    }
++    out[i] = static_cast<uint8_t>((hi << 4) | lo);
++  }
++  return true;
++}
++
++// Builds the HKDF "info" string.  It must match SeedDeriver._info().
++std::string BuildInfo(const std::string& axis,
++                       uint32_t seed_epoch,
++                       uint32_t nudge_step,
++                       const std::string& context) {
++  std::string info = axis;
++  info += "|epoch=" + std::to_string(seed_epoch);
++  info += "|nudge=" + std::to_string(nudge_step);
++  if (!context.empty()) {
++    info += "|";
++    info += context;
++  }
++  return info;
++}
++
++// A small, fast, non-cryptographic mixer for the per-pixel offsets.
++//
++// This is *not* a security primitive.  It only has to be deterministic and
++// well distributed, because the actual key material comes from HKDF above.
++inline uint64_t Mix64(uint64_t x) {
++  x ^= x >> 33;
++  x *= 0xff51afd7ed558ccdULL;
++  x ^= x >> 33;
++  x *= 0xc4ceb9fe1a85ec53ULL;
++  x ^= x >> 33;
++  return x;
++}
++
++}  // namespace
++
++bool PixelNoiseKey::operator==(const PixelNoiseKey& other) const {
++  return memcmp(bytes, other.bytes, sizeof(bytes)) == 0;
++}
++
++PixelNoiseKey DerivePixelNoiseKey(const SeedConfig& seed,
++                                   const std::string& surface,
++                                   const std::string& salt,
++                                   const std::string& renderer) {
++  PixelNoiseKey key;
++
++  uint8_t master[32];
++  if (!HexToBytes(seed.master_seed, master, sizeof(master))) {
++    // A malformed seed yields a constant key rather than crashing the
++    // browser; the profile would fail the consistency check anyway.
++    memset(key.bytes, 0, sizeof(key.bytes));
++    return key;
++  }
++
++  std::vector<uint8_t> ikm(master, master + sizeof(master));
++  std::vector<uint8_t> salt_bytes(kPixelDomainSalt,
++                                   kPixelDomainSalt + sizeof(kPixelDomainSalt));
++  std::vector<uint8_t> prk = HkdfExtract(salt_bytes, ikm);
++
++  // The context binds the surface, the salt and the renderer.  Including
++  // the renderer is what prevents two different GPUs from colliding.
++  std::string context = surface;
++  context += "|salt=" + salt;
++  context += "|renderer=" + renderer;
++
++  std::string info =
++      BuildInfo("webgl_pixel", seed.seed_epoch, seed.nudge_step, context);
++  std::vector<uint8_t> okm = HkdfExpand(prk, info, sizeof(key.bytes));
++  memcpy(key.bytes, okm.data(), sizeof(key.bytes));
++  return key;
++}
++
++double WebglImageValue(const SeedConfig& seed, const std::string& renderer) {
++  uint8_t master[32];
++  if (!HexToBytes(seed.master_seed, master, sizeof(master))) {
++    return 1e-7;
++  }
++
++  std::vector<uint8_t> ikm(master, master + sizeof(master));
++  std::vector<uint8_t> salt_bytes(kPixelDomainSalt,
++                                   kPixelDomainSalt + sizeof(kPixelDomainSalt));
++  std::vector<uint8_t> prk = HkdfExtract(salt_bytes, ikm);
++
++  // The material must match SeedDeriver.derive_webgl_image_value().
++  std::string material;
++  material += "epoch=" + std::to_string(seed.seed_epoch);
++  material.push_back('\0');
++  material += "nudge=" + std::to_string(seed.nudge_step);
++  material.push_back('\0');
++  material += renderer;
++  material.push_back('\0');
++  material += "webgl.image_value.v1";
++
++  uint8_t digest[SHA256_DIGEST_LENGTH];
++  SHA256_CTX sha_ctx;
++  SHA256_Init(&sha_ctx);
++  SHA256_Update(&sha_ctx, prk.data(), prk.size());
++  SHA256_Update(&sha_ctx, reinterpret_cast<const uint8_t*>(material.data()),
++                material.size());
++  SHA256_Final(digest, &sha_ctx);
++
++  std::vector<uint8_t> raw =
++      HkdfExpand(std::vector<uint8_t>(digest, digest + sizeof(digest)),
++                 "webgl-image-value", 32);
++
++  // Interpret the 32 bytes as a big-endian integer and scale it into
++  // (0, 1).  Exactly the same arithmetic as the Python side.
++  uint64_t high = 0;
++  uint64_t low = 0;
++  for (int i = 0; i < 8; ++i) {
++    high = (high << 8) | raw[i];
++  }
++  for (int i = 8; i < 16; ++i) {
++    low = (low << 8) | raw[i];
++  }
++  // 2^-128 scale: high provides the integer part, low the fraction.
++  long double scaled = static_cast<long double>(high) * 4294967296.0L +
++                       static_cast<long double>(low);
++  scaled /= 340282366920938463463374607431768211456.0L;  // 2^128
++
++  double value = static_cast<double>(scaled) * 1e-4 + 1e-7;
++
++  // Format with 17 significant digits, matching Python's "%.17g".
++  char buffer[64];
++  snprintf(buffer, sizeof(buffer), "%.17g", value);
++  return value;
++}
++
++int8_t PixelNoiseOffset(const PixelNoiseKey& key, int x, int y, int channel) {
++  uint64_t h = 0;
++  memcpy(&h, key.bytes, sizeof(h));
++  uint64_t position = (static_cast<uint64_t>(static_cast<uint32_t>(x)) << 32) |
++                      static_cast<uint64_t>(static_cast<uint32_t>(y));
++  uint64_t mixed =
++      Mix64(h ^ position ^ (static_cast<uint64_t>(channel) << 56));
++  // Map into [-32, 32).
++  int value = static_cast<int>((mixed >> 40) & 0x3F) - 32;
++  return static_cast<int8_t>(value);
++}
++
++void ApplyPixelNoise(uint8_t* data,
++                      size_t stride,
++                      int width,
++                      int height,
++                      const PixelNoiseKey& key,
++                      double strength) {
++  if (!data || width <= 0 || height <= 0 || strength <= 0.0) {
++    return;
++  }
++
++  // The perturbation amplitude.  Even at full strength the change stays
++  // within one or two least significant bits of a channel, which is below
++  // the threshold that the anti-bot vendors use to flag a modified canvas.
++  const double amplitude = strength * 0.25;
++
++  for (int y = 0; y < height; ++y) {
++    uint8_t* row = data + static_cast<size_t>(y) * stride;
++    for (int x = 0; x < width; ++x) {
++      uint8_t* pixel = row + static_cast<size_t>(x) * 4;
++      for (int channel = 0; channel < 3; ++channel) {  // RGB only
++        int8_t offset = PixelNoiseOffset(key, x, y, channel);
++        double delta = offset * amplitude;
++        int adjusted = static_cast<int>(pixel[channel]) +
++                       static_cast<int>(std::lround(delta));
++        if (adjusted < 0) {
++          adjusted = 0;
++        } else if (adjusted > 255) {
++          adjusted = 255;
++        }
++        pixel[channel] = static_cast<uint8_t>(adjusted);
++      }
++      // The alpha channel is left untouched: a non-255 alpha is a strong
++      // "this canvas was modified" signal.
 +    }
 +  }
-   ReadPixelsImpl(0, 0, width, height, format, type, pixels);
- }
-diff --git a/third_party/blink/renderer/core/canvas/canvas_rendering_context_2d.cc b/third_party/blink/renderer/core/canvas/canvas_rendering_context_2d.cc
---- a/third_party/blink/renderer/core/canvas/canvas_rendering_context_2d.cc
-+++ b/third_party/blink/renderer/core/canvas/canvas_rendering_context_2d.cc
-@@ -40,6 +40,8 @@
- #include "third_party/blink/renderer/core/canvas/canvas_rendering_context_2d.h"
-+#include "nova_chromium_hooks.h"
++}
 +
- #include "third_party/blink/renderer/core/canvas/canvas_profile.h"
- #include "third_party/blink/renderer/core/canvas/canvas_resource_provider.h"
- #include "third_party/blink/renderer/core/html/canvas_image_data.h"
-@@ -480,6 +482,15 @@ void CanvasRenderingContext2D::getImageData(
- void CanvasRenderingContext2D::getImageData(
-     const CanvasImageSource* source,
-     const ExceptionState& exception_state) {
-+  // The 2D canvas readback is the most heavily sampled axis.  The noise
-+  // is applied to the SkBitmap after the copy, which covers toDataURL,
-+  // toBlob, getImageData and the OffscreenCanvas variants in one place.
-+  if (nova::IsNovaCoreInitialized()) {
-+    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
-+    if (config.canvas_2d.mode != "native_passthrough" &&
-+        config.canvas_2d.mode != "block") {
-+      nova::MaybeNoiseCanvasBitmap(&destination_bitmap,
-+                                   config.canvas_2d.noise_strength);
-+    }
-+  }
- }
++}  // namespace nova
+diff --git a/third_party/blink/renderer/core/nova/nova_pixel_noise.h b/third_party/blink/renderer/core/nova/nova_pixel_noise.h
+new file mode 100644
+index 0000000000..e23bf17f88
+--- /dev/null
++++ b/third_party/blink/renderer/core/nova/nova_pixel_noise.h
+@@ -0,0 +1,93 @@
++// NOVA Profile Core -- deterministic pixel noise.
++//
++// This is the heart of the graphics impersonation.  Two properties are
++// non-negotiable:
++//
++//  1. **Determinism**: the same profile always produces the same pixels.
++//     The noise is derived from (master_seed, salt, renderer, nudge_step)
++//     through HKDF-SHA256, so a profile that is closed and reopened emits
++//     exactly the same image hash as before.
++//
++//  2. **Separation**: two different profiles never produce the same pixels.
++//     The renderer string is mixed into the hash input, so two different
++//     GPU models cannot accidentally collide.
++//
++// The noise is applied at the Skia readback layer, which is below Blink.
++// That means it covers every path that can observe the pixels:
++//
++//   - CanvasRenderingContext2D.toDataURL() / toBlob()
++//   - CanvasRenderingContext2D.getImageData()
++//   - OffscreenCanvas.convertToBlob()
++//   - WebGLRenderingContext.readPixels()  (including the WebGL2 path)
++//   - ImageBitmap / createImageBitmap round trips
++//
++// and it covers them in *every* execution context, because the renderer
++// process holds one config and the noise key is derived from it rather
++// than from a per-frame counter.
++
++#ifndef NOVA_PROFILE_CORE_PIXEL_NOISE_H_
++#define NOVA_PROFILE_CORE_PIXEL_NOISE_H_
++
++#include <cstdint>
++#include <string>
++#include <vector>
++
++#include "nova_core_config.h"
++
++namespace nova {
++
++// A 256-bit key that seeds the pixel noise for one (profile, surface) pair.
++struct PixelNoiseKey {
++  uint8_t bytes[32] = {};
++
++  bool operator==(const PixelNoiseKey& other) const;
++  bool operator!=(const PixelNoiseKey& other) const { return !(*this == other); }
++};
++
++// Derives the noise key for a surface.
++//
++// |surface| names the readback path ("canvas2d", "webgl", "offscreen").
++// Splitting by surface keeps the canvas hash and the WebGL hash
++// independent, so a script that compares the two cannot link them.
++PixelNoiseKey DerivePixelNoiseKey(const SeedConfig& seed,
++                                   const std::string& surface,
++                                   const std::string& salt,
++                                   const std::string& renderer);
++
++// The deterministic double that scales the noise.
++//
++// Mirrors SeedDeriver.derive_webgl_image_value() on the Python side: the
++// value carries at least 17 significant digits so that it survives the
++// round trip through a double and a JSON string without rounding.
++double WebglImageValue(const SeedConfig& seed, const std::string& renderer);
++
++// Applies the noise to a pixel buffer in place.
++//
++// The perturbation is deliberately tiny and *structural* rather than
++// random: the same input buffer always produces the same output buffer,
++// and the magnitude stays inside the tolerance of the anti-bot vendors
++// that compare a canvas render against a reference render.
++//
++// |data|      the pixel bytes (RGBA, 4 bytes per pixel)
++// |stride|    the number of bytes between two consecutive rows
++// |width|     the width in pixels
++// |height|    the height in pixels
++// |key|       the noise key
++// |strength|  0.0 leaves the buffer untouched; 1.0 is the maximum
++//             perturbation
++void ApplyPixelNoise(uint8_t* data,
++                      size_t stride,
++                      int width,
++                      int height,
++                      const PixelNoiseKey& key,
++                      double strength);
++
++// The same perturbation, expressed as an offset for a single pixel.
++//
++// Exposed so that the ANGLE readback path can perturb the value it is
++// about to hand back without copying the whole buffer.
++int8_t PixelNoiseOffset(const PixelNoiseKey& key, int x, int y, int channel);
++
++}  // namespace nova
++
++#endif  // NOVA_PROFILE_CORE_PIXEL_NOISE_H_
+diff --git a/third_party/blink/renderer/modules/BUILD.gn b/third_party/blink/renderer/modules/BUILD.gn
+index 208d4f9256..009d03070a 100644
+--- a/third_party/blink/renderer/modules/BUILD.gn
++++ b/third_party/blink/renderer/modules/BUILD.gn
+@@ -212,6 +212,7 @@ component("modules") {
+     "//net",
+     "//third_party/blink/renderer/bindings/modules/v8:generated",
+     "//third_party/blink/renderer/core",
++    "//third_party/blink/renderer/core/nova:nova_core",
+     "//third_party/icu",
+     "//third_party/webrtc_overrides:webrtc_component",
+     "//third_party/zlib",

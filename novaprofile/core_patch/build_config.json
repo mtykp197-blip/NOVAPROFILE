@@ -1,0 +1,1572 @@
+{
+  "schema_version": 1,
+  "description": "The Chromium versions NOVAPROFILE can build a native core for. The branch number of a milestone is the third component of its version (120.0.6099.144 -> 6099); see Chromium's infra/config/milestones.json and https://chromiumdash.appspot.com/branches.",
+  "chromium_repo": "https://chromium.googlesource.com/chromium/src.git",
+  "depot_tools_url": "https://chromium.googlesource.com/chromium/tools/depot_tools.git",
+  "oldest_major": 100,
+  "newest_major": 160,
+  "latest_alias": "latest",
+  "patch_series": [
+    "patches/0001-nova-profile-core.patch",
+    "patches/0002-nova-profile-hardware-surfaces.patch"
+  ],
+  "out_dir": "out/nova",
+  "ninja_target": "chrome",
+  "versions": [
+    {
+      "major": 100,
+      "branch": 4896,
+      "beta_branch": 1000,
+      "branch_ref": "refs/branch-heads/4896",
+      "version": "100.0.4896.127",
+      "tag": "100.0.4896.127",
+      "tag_pattern": "100.0.4896.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 101,
+      "branch": 4951,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/4951",
+      "version": "101.0.4951.67",
+      "tag": "101.0.4951.67",
+      "tag_pattern": "101.0.4951.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 102,
+      "branch": 5005,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/5005",
+      "version": "102.0.5005.113",
+      "tag": "102.0.5005.113",
+      "tag_pattern": "102.0.5005.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 103,
+      "branch": 5060,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/5060",
+      "version": "103.0.5060.114",
+      "tag": "103.0.5060.114",
+      "tag_pattern": "103.0.5060.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 104,
+      "branch": 5112,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/5112",
+      "version": "104.0.5112.211",
+      "tag": "104.0.5112.211",
+      "tag_pattern": "104.0.5112.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 105,
+      "branch": 5195,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/5195",
+      "version": "105.0.5195.171",
+      "tag": "105.0.5195.171",
+      "tag_pattern": "105.0.5195.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 106,
+      "branch": 5249,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/5249",
+      "version": "106.0.5249.126",
+      "tag": "106.0.5249.126",
+      "tag_pattern": "106.0.5249.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 107,
+      "branch": 5304,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/5304",
+      "version": "107.0.5304.130",
+      "tag": "107.0.5304.130",
+      "tag_pattern": "107.0.5304.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 108,
+      "branch": 5359,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/5359",
+      "version": "108.0.5359.128",
+      "tag": "108.0.5359.128",
+      "tag_pattern": "108.0.5359.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 109,
+      "branch": 5414,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/5414",
+      "version": "109.0.5414.120",
+      "tag": "109.0.5414.120",
+      "tag_pattern": "109.0.5414.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 110,
+      "branch": 5481,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/5481",
+      "version": "110.0.5481.177",
+      "tag": "110.0.5481.177",
+      "tag_pattern": "110.0.5481.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 111,
+      "branch": 5563,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/5563",
+      "version": "111.0.5563.202",
+      "tag": "111.0.5563.202",
+      "tag_pattern": "111.0.5563.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 112,
+      "branch": 5615,
+      "beta_branch": 1120,
+      "branch_ref": "refs/branch-heads/5615",
+      "version": "112.0.5615.138",
+      "tag": "112.0.5615.138",
+      "tag_pattern": "112.0.5615.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 113,
+      "branch": 5672,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/5672",
+      "version": "113.0.5672.164",
+      "tag": "113.0.5672.164",
+      "tag_pattern": "113.0.5672.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 114,
+      "branch": 5735,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/5735",
+      "version": "114.0.5735.198",
+      "tag": "114.0.5735.198",
+      "tag_pattern": "114.0.5735.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 115,
+      "branch": 5790,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/5790",
+      "version": "115.0.5790.171",
+      "tag": "115.0.5790.171",
+      "tag_pattern": "115.0.5790.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 116,
+      "branch": 5845,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/5845",
+      "version": "116.0.5845.188",
+      "tag": "116.0.5845.188",
+      "tag_pattern": "116.0.5845.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 117,
+      "branch": 5938,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/5938",
+      "version": "117.0.5938.193",
+      "tag": "117.0.5938.193",
+      "tag_pattern": "117.0.5938.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 118,
+      "branch": 5993,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/5993",
+      "version": "118.0.5993.199",
+      "tag": "118.0.5993.199",
+      "tag_pattern": "118.0.5993.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 119,
+      "branch": 6045,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/6045",
+      "version": "119.0.6045.200",
+      "tag": "119.0.6045.200",
+      "tag_pattern": "119.0.6045.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 120,
+      "branch": 6099,
+      "beta_branch": 1200,
+      "branch_ref": "refs/branch-heads/6099",
+      "version": "120.0.6099.225",
+      "tag": "120.0.6099.225",
+      "tag_pattern": "120.0.6099.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 121,
+      "branch": 6167,
+      "beta_branch": 1210,
+      "branch_ref": "refs/branch-heads/6167",
+      "version": "121.0.6167.184",
+      "tag": "121.0.6167.184",
+      "tag_pattern": "121.0.6167.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 122,
+      "branch": 6261,
+      "beta_branch": 1220,
+      "branch_ref": "refs/branch-heads/6261",
+      "version": "122.0.6261.129",
+      "tag": "122.0.6261.129",
+      "tag_pattern": "122.0.6261.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 123,
+      "branch": 6312,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/6312",
+      "version": "123.0.6312.123",
+      "tag": "123.0.6312.123",
+      "tag_pattern": "123.0.6312.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 124,
+      "branch": 6367,
+      "beta_branch": 1240,
+      "branch_ref": "refs/branch-heads/6367",
+      "version": "124.0.6367.208",
+      "tag": "124.0.6367.208",
+      "tag_pattern": "124.0.6367.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 125,
+      "branch": 6422,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/6422",
+      "version": "125.0.6422.142",
+      "tag": "125.0.6422.142",
+      "tag_pattern": "125.0.6422.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 126,
+      "branch": 6478,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/6478",
+      "version": "126.0.6478.127",
+      "tag": "126.0.6478.127",
+      "tag_pattern": "126.0.6478.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 127,
+      "branch": 6533,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/6533",
+      "version": "127.0.6533.120",
+      "tag": "127.0.6533.120",
+      "tag_pattern": "127.0.6533.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 128,
+      "branch": 6613,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/6613",
+      "version": "128.0.6613.138",
+      "tag": "128.0.6613.138",
+      "tag_pattern": "128.0.6613.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 129,
+      "branch": 6668,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/6668",
+      "version": "129.0.6668.101",
+      "tag": "129.0.6668.101",
+      "tag_pattern": "129.0.6668.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 130,
+      "branch": 6723,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/6723",
+      "version": "130.0.6723.116",
+      "tag": "130.0.6723.116",
+      "tag_pattern": "130.0.6723.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 131,
+      "branch": 6778,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/6778",
+      "version": "131.0.6778.86",
+      "tag": "131.0.6778.86",
+      "tag_pattern": "131.0.6778.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 132,
+      "branch": 6834,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/6834",
+      "version": "132.0.6834.111",
+      "tag": "132.0.6834.111",
+      "tag_pattern": "132.0.6834.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 133,
+      "branch": 6943,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/6943",
+      "version": "133.0.6943.142",
+      "tag": "133.0.6943.142",
+      "tag_pattern": "133.0.6943.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 134,
+      "branch": 6998,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/6998",
+      "version": "134.0.6998.54",
+      "tag": "134.0.6998.54",
+      "tag_pattern": "134.0.6998.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 135,
+      "branch": 7049,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/7049",
+      "version": "135.0.7049.115",
+      "tag": "135.0.7049.115",
+      "tag_pattern": "135.0.7049.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 136,
+      "branch": 7103,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/7103",
+      "version": "136.0.7103.114",
+      "tag": "136.0.7103.114",
+      "tag_pattern": "136.0.7103.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 137,
+      "branch": 7151,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/7151",
+      "version": "137.0.7151.105",
+      "tag": "137.0.7151.105",
+      "tag_pattern": "137.0.7151.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 138,
+      "branch": 7204,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/7204",
+      "version": "138.0.7204.101",
+      "tag": "138.0.7204.101",
+      "tag_pattern": "138.0.7204.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 139,
+      "branch": 7258,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/7258",
+      "version": "139.0.7258.67",
+      "tag": "139.0.7258.67",
+      "tag_pattern": "139.0.7258.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 140,
+      "branch": 7339,
+      "beta_branch": 1400,
+      "branch_ref": "refs/branch-heads/7339",
+      "version": "140.0.7339.90",
+      "tag": "140.0.7339.90",
+      "tag_pattern": "140.0.7339.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 141,
+      "branch": 7390,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/7390",
+      "version": "141.0.7390.0",
+      "tag": "141.0.7390.0",
+      "tag_pattern": "141.0.7390.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 142,
+      "branch": 7444,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/7444",
+      "version": "142.0.7444.60",
+      "tag": "142.0.7444.60",
+      "tag_pattern": "142.0.7444.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 143,
+      "branch": 7499,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/7499",
+      "version": "143.0.7499.4",
+      "tag": "143.0.7499.4",
+      "tag_pattern": "143.0.7499.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 144,
+      "branch": 7559,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/7559",
+      "version": "144.0.7559.0",
+      "tag": "144.0.7559.0",
+      "tag_pattern": "144.0.7559.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 145,
+      "branch": 7632,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/7632",
+      "version": "145.0.7632.0",
+      "tag": "145.0.7632.0",
+      "tag_pattern": "145.0.7632.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 146,
+      "branch": 7680,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/7680",
+      "version": "146.0.7680.0",
+      "tag": "146.0.7680.0",
+      "tag_pattern": "146.0.7680.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 147,
+      "branch": 7727,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/7727",
+      "version": "147.0.7727.0",
+      "tag": "147.0.7727.0",
+      "tag_pattern": "147.0.7727.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 148,
+      "branch": 7778,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/7778",
+      "version": "148.0.7778.0",
+      "tag": "148.0.7778.0",
+      "tag_pattern": "148.0.7778.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 149,
+      "branch": 7827,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/7827",
+      "version": "149.0.7827.0",
+      "tag": "149.0.7827.0",
+      "tag_pattern": "149.0.7827.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 150,
+      "branch": 7871,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/7871",
+      "version": "150.0.7871.0",
+      "tag": "150.0.7871.0",
+      "tag_pattern": "150.0.7871.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 151,
+      "branch": 7922,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/7922",
+      "version": "151.0.7922.0",
+      "tag": "151.0.7922.0",
+      "tag_pattern": "151.0.7922.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 152,
+      "branch": 7977,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/7977",
+      "version": "152.0.7977.0",
+      "tag": "152.0.7977.0",
+      "tag_pattern": "152.0.7977.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 153,
+      "branch": 8010,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/8010",
+      "version": "153.0.8010.0",
+      "tag": "153.0.8010.0",
+      "tag_pattern": "153.0.8010.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 154,
+      "branch": 8037,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/8037",
+      "version": "154.0.8037.0",
+      "tag": "154.0.8037.0",
+      "tag_pattern": "154.0.8037.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 155,
+      "branch": 8059,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/8059",
+      "version": "155.0.8059.0",
+      "tag": "155.0.8059.0",
+      "tag_pattern": "155.0.8059.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 156,
+      "branch": 8078,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/8078",
+      "version": "156.0.8078.0",
+      "tag": "156.0.8078.0",
+      "tag_pattern": "156.0.8078.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 157,
+      "branch": 8103,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/8103",
+      "version": "157.0.8103.0",
+      "tag": "157.0.8103.0",
+      "tag_pattern": "157.0.8103.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 158,
+      "branch": 8127,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/8127",
+      "version": "158.0.8127.0",
+      "tag": "158.0.8127.0",
+      "tag_pattern": "158.0.8127.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 159,
+      "branch": 8154,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/8154",
+      "version": "159.0.8154.0",
+      "tag": "159.0.8154.0",
+      "tag_pattern": "159.0.8154.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    },
+    {
+      "major": 160,
+      "branch": 8177,
+      "beta_branch": 0,
+      "branch_ref": "refs/branch-heads/8177",
+      "version": "160.0.8177.0",
+      "tag": "160.0.8177.0",
+      "tag_pattern": "160.0.8177.*",
+      "patches": [
+        "patches/0001-nova-profile-core.patch",
+        "patches/0002-nova-profile-hardware-surfaces.patch"
+      ],
+      "gn_args": {
+        "target_os": "android",
+        "target_cpu": "arm64",
+        "is_debug": "false",
+        "is_official_build": "false",
+        "treat_warnings_as_errors": "false",
+        "use_remoteexec": "false",
+        "chrome_public_apk": "false",
+        "blink_symbol_level": "1",
+        "dawn_use_built_dxc": "false"
+      },
+      "channel": "stable"
+    }
+  ],
+  "latest": {
+    "major": 160,
+    "branch": 8177,
+    "beta_branch": 0,
+    "branch_ref": "refs/branch-heads/8177",
+    "version": "160.0.8177.0",
+    "tag": "160.0.8177.0",
+    "tag_pattern": "160.0.8177.*",
+    "patches": [
+      "patches/0001-nova-profile-core.patch",
+      "patches/0002-nova-profile-hardware-surfaces.patch"
+    ],
+    "gn_args": {
+      "target_os": "android",
+      "target_cpu": "arm64",
+      "is_debug": "false",
+      "is_official_build": "false",
+      "treat_warnings_as_errors": "false",
+      "use_remoteexec": "false",
+      "chrome_public_apk": "false",
+      "blink_symbol_level": "1",
+      "dawn_use_built_dxc": "false"
+    },
+    "channel": "stable"
+  },
+  "build_notes": {
+    "android_requires_linux": "Chromium asserts host_os == \"linux\" for an Android target. A Windows host builds the desktop browser; the native core is the same code either way.",
+    "dawn_use_built_dxc": "The DirectX shader compiler is a host tool that needs the ATL headers, which the Visual Studio Build Tools installer does not install by default. Only the D3D12 backend uses it.",
+    "gn_args_file": "The arguments live in the output directory's args.gn. GN reads that file automatically, so no shell has to quote them."
+  }
+}

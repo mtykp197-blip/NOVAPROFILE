@@ -1,0 +1,39 @@
+# The GN arguments for the NOVA native core.
+#
+# The target is Windows x64.
+#
+# Chromium only builds for Android on Linux -- the build asserts
+# ``host_os == "linux"`` for an Android target -- so a Windows host
+# builds the desktop browser.  The native core is the same code either
+# way: the same Blink accessors, the same hooks, the same
+# configuration.  Building it here proves that the patch series
+# compiles and links against the patched Blink.
+#
+# The arguments live in the output directory's ``args.gn``.  GN reads
+# that file automatically, so the command line carries no quoting at all
+# -- and GN's quoting and the shell's quoting disagree often enough
+# that a command line is the wrong place for this.
+
+target_os = "win"
+target_cpu = "x64"
+
+is_debug = false
+is_official_build = false
+treat_warnings_as_errors = false
+use_remoteexec = false
+
+# The symbols keep the build small; the core is a set of accessors, not
+# something anybody debugs in the field.
+blink_symbol_level = 1
+
+# The DirectX shader compiler is not built.
+#
+# Dawn builds it because the D3D12 backend needs it, and it is a host
+# tool: it is compiled for Windows even in an Android build.  The ATL
+# headers it includes are part of a Visual Studio component that the
+# Build Tools installer does not install by default, and the build stops
+# with "atlbase.h file not found".
+#
+# The ATL is only needed by the DirectX backend.  Turning the compiler
+# off removes a component the build has no use for.
+dawn_use_built_dxc = false

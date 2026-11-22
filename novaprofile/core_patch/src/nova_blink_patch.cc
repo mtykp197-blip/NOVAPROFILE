@@ -1,28 +1,58 @@
 // NOVA Profile Core -- Blink integration.
 //
-// This file wires the configuration into Blink.  It is deliberately placed
-// *inside* Blink rather than in a JavaScript shim, because anything that
-// runs in the JS world is observable:
+// This file is the *hook layer* of the NOVA profile engine.  It is
+// deliberately placed *inside* Blink rather than in a JavaScript shim,
+// because anything that runs in the JS world is observable:
 //
 //   - Function.prototype.toString() returns the shim's source
 //   - Object.getOwnPropertyDescriptor() reveals an accessor
 //   - A Proxy traps every property access
 //   - navigator.webdriver is set to true
 //
-// By overriding the native C++ accessors instead, the page sees ordinary
-// native properties: the same shape, the same enumerability, the same
-// `toString()` output as a stock Android Chrome.
+// The hooks are therefore called from *below* Blink, in the C++ accessors
+// themselves, so that the page sees ordinary native properties: the same
+// shape, the same enumerability, the same `toString()` output as a stock
+// Android Chrome.
 //
-// The patch touches five places in Blink:
+// The division of labour
+// ---------------------------------------------------------------------------
 //
-//   1. NavigatorID            -- userAgent, platform, hardwareConcurrency, ...
-//   2. NavigatorUAData        -- the client hints: brands, platform version,
-//                                architecture, bitness and model
-//   3. Screen                -- screen metrics and the device pixel ratio
-//   4. WebGLRenderingContext -- the unmasked renderer and readPixels
-//   5. CanvasRenderingContext2D -- the pixel readback paths
+// The patched accessors live in the Blink sources themselves:
 //
-// Every one of them reads from a single process-wide NovaConfig, which is
+//   third_party/blink/renderer/core/execution_context/navigator_base.cc
+//   third_party/blink/renderer/core/frame/navigator_id.cc
+//   third_party/blink/renderer/core/frame/navigator_ua.cc
+//   third_party/blink/renderer/core/frame/navigator_ua_data.cc
+//   third_party/blink/renderer/core/frame/navigator.cc
+//   third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+//   third_party/blink/renderer/core/frame/navigator_device_memory.cc
+//   third_party/blink/renderer/core/frame/navigator_language.cc
+//   third_party/blink/renderer/core/events/navigator_events.cc
+//   third_party/blink/renderer/core/frame/screen.cc
+//   third_party/blink/renderer/core/frame/local_dom_window.cc
+//   third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+//   third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
+//
+// Each of those accessors keeps its *own* original body as the fallback:
+// when the profile configuration has not been loaded, the accessor returns
+// exactly the value it returned before the patch.  The stock behaviour is
+// therefore the body of the accessor, not a call to a separate helper.
+//
+// This is deliberate.  The helpers this file used to call -- the
+// ``NavigatorID::Standard*`` family, the ``NavigatorUAData::Default*``
+// family and the ``Screen::Standard*`` family -- no longer exist in
+// Chromium 159: Blink was reorganised, the accessors were moved into
+// per-feature translation units, and the shared "standard value" helpers
+// were dissolved into the accessors themselves.  Calling them would not
+// link, and re-introducing them would put the stock value in a second
+// place that the patched accessor could drift away from.
+//
+// So this file does *not* define the accessors.  It defines the
+// configuration, the derivation of the per-surface noise keys, and the
+// entry points the patched accessors call.  The accessor bodies and their
+// fallbacks live in exactly one place: the Blink source.
+//
+// Every accessor reads from a single process-wide ProfileConfig, which is
 // why the main frame, a cross-origin iframe, a sandboxed iframe, a Web
 // Worker, a SharedWorker and a ServiceWorker all report identical values:
 // they are separate JS worlds but the same native process.
@@ -34,24 +64,11 @@
 #include <string>
 #include <vector>
 
-#include "base/check.h"
 #include "base/command_line.h"
 #include "base/files/file_path.h"
+#include "base/location.h"
 #include "base/logging.h"
-#include "base/memory/ref_counted.h"
-#include "base/synchronization/lazy_init.h"
 #include "base/synchronization/lock.h"
-#include "cc/paint/sk_bitmap.h"
-#include "content/public/browser/browser_process.h"
-#include "gpu/config/gpu_switches.h"
-#include "gpu/config/webgl_context.h"
-#include "third_party/blink/public/platform/webgl/webgl_rendering_context.h"
-#include "third_party/blink/renderer/core/canvas/canvas_rendering_context_2d.h"
-#include "third_party/blink/renderer/core/html/navigator_id.h"
-#include "third_party/blink/renderer/core/html/navigator_ua_data.h"
-#include "third_party/blink/renderer/core/screen/screen.h"
-#include "third_party/blink/renderer/platform/bindings/v8_binding.h"
-#include "third_party/blink/renderer/platform/webgl/webgl_context_provider.h"
 
 namespace nova {
 
@@ -122,8 +139,11 @@ class NovaConfigHolder {
         return;
       }
     }
-    const base::CommandLine& command_line = base::CommandLine::ForCurrentProcess();
-    const std::string path = command_line.GetSwitchValueASCII("nova-config");
+    const base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+    if (!command_line) {
+      return;
+    }
+    const std::string path = command_line->GetSwitchValueASCII("nova-config");
     if (path.empty()) {
       return;
     }
@@ -136,7 +156,7 @@ class NovaConfigHolder {
     Initialize(config);
   }
 
-  ProfileConfig Get() {
+  ProfileConfig GetConfig() {
     base::AutoLock guard(lock_);
     return *config_;
   }
@@ -148,7 +168,7 @@ class NovaConfigHolder {
   // The accessor exists because the client hints are read on every
   // request: copying the whole configuration for each of them would put
   // a measurable cost on the hot path.
-  const ProfileConfig& GetRef() {
+  const ProfileConfig& GetConfigRef() {
     base::AutoLock guard(lock_);
     return *config_;
   }
@@ -213,387 +233,6 @@ bool InitializeNovaCore(const base::CommandLine& command_line) {
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// NavigatorID
-// ---------------------------------------------------------------------------
-
-String NavigatorID::userAgent() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorID::StandardUserAgent();
-  }
-  return String::FromUTF8(holder.Get().navigator.user_agent);
-}
-
-String NavigatorID::appVersion() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorID::StandardAppVersion();
-  }
-  return String::FromUTF8(holder.Get().navigator.app_version);
-}
-
-String NavigatorID::appName() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorID::StandardAppName();
-  }
-  return String::FromUTF8(holder.Get().navigator.app_name);
-}
-
-String NavigatorID::appCodeName() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorID::StandardAppCodeName();
-  }
-  return String::FromUTF8(holder.Get().navigator.app_code_name);
-}
-
-String NavigatorID::vendor() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorID::StandardVendor();
-  }
-  return String::FromUTF8(holder.Get().navigator.vendor);
-}
-
-String NavigatorID::vendorSub() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorID::StandardVendorSub();
-  }
-  return String::FromUTF8(holder.Get().navigator.vendor_sub);
-}
-
-String NavigatorID::product() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorID::StandardProduct();
-  }
-  return String::FromUTF8(holder.Get().navigator.product);
-}
-
-String NavigatorID::productSub() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorID::StandardProductSub();
-  }
-  return String::FromUTF8(holder.Get().navigator.product_sub);
-}
-
-String NavigatorID::platform() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorID::StandardPlatform();
-  }
-  return String::FromUTF8(holder.Get().navigator.platform);
-}
-
-unsigned NavigatorID::hardwareConcurrency() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorID::StandardHardwareConcurrency();
-  }
-  return static_cast<unsigned>(holder.Get().navigator.hardware_concurrency);
-}
-
-double NavigatorID::deviceMemory() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorID::StandardDeviceMemory();
-  }
-  return static_cast<double>(holder.Get().navigator.device_memory);
-}
-
-int NavigatorID::maxTouchPoints() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorID::StandardMaxTouchPoints();
-  }
-  return holder.Get().navigator.max_touch_points;
-}
-
-String NavigatorID::language() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorID::StandardLanguage();
-  }
-  return String::FromUTF8(holder.Get().navigator.language);
-}
-
-Vector<String> NavigatorID::languages() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorID::StandardLanguages();
-  }
-  Vector<String> result;
-  for (const std::string& language : holder.Get().navigator.languages) {
-    result.push_back(String::FromUTF8(language));
-  }
-  return result;
-}
-
-bool NavigatorID::webdriver() const {
-  // Always false.  A profile that reports true is trivially identified.
-  return false;
-}
-
-// ---------------------------------------------------------------------------
-// NavigatorUAData -- the client hints
-//
-// The client hints are the axis an anti-bot vendor reads first: the brand
-// list gives the browser build away, and the high-entropy values give the
-// device away.  A profile that patches the User-Agent but not these
-// contradicts itself in the very first request a page makes.
-//
-// The accessors are patched at the Blink level for the same reason the
-// User-Agent is: a JavaScript shim would be observable through
-// Object.getOwnPropertyDescriptor() and Function.prototype.toString().
-// ---------------------------------------------------------------------------
-
-Vector<NavigatorUABrandVersion> NavigatorUAData::brands() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorUAData::DefaultBrands();
-  }
-  const UserAgentDataConfig& uad = holder.GetRef().user_agent_data;
-  Vector<NavigatorUABrandVersion> result;
-  for (const BrandVersion& brand : uad.brands) {
-    result.push_back(NavigatorUABrandVersion(
-        String::FromUTF8(brand.brand), String::FromUTF8(brand.version)));
-  }
-  return result;
-}
-
-Vector<NavigatorUABrandVersion> NavigatorUAData::fullVersionList() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorUAData::DefaultFullVersionList();
-  }
-  const UserAgentDataConfig& uad = holder.GetRef().user_agent_data;
-  Vector<NavigatorUABrandVersion> result;
-  for (const BrandVersion& brand : uad.full_version_list) {
-    result.push_back(NavigatorUABrandVersion(
-        String::FromUTF8(brand.brand), String::FromUTF8(brand.version)));
-  }
-  return result;
-}
-
-bool NavigatorUAData::mobile() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorUAData::DefaultMobile();
-  }
-  return holder.GetRef().user_agent_data.mobile;
-}
-
-String NavigatorUAData::platform() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorUAData::DefaultPlatform();
-  }
-  return String::FromUTF8(holder.GetRef().user_agent_data.platform);
-}
-
-String NavigatorUAData::platformVersion() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorUAData::DefaultPlatformVersion();
-  }
-  return String::FromUTF8(holder.GetRef().user_agent_data.platform_version);
-}
-
-String NavigatorUAData::architecture() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorUAData::DefaultArchitecture();
-  }
-  return String::FromUTF8(holder.GetRef().user_agent_data.architecture);
-}
-
-String NavigatorUAData::bitness() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorUAData::DefaultBitness();
-  }
-  return String::FromUTF8(holder.GetRef().user_agent_data.bitness);
-}
-
-String NavigatorUAData::model() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorUAData::DefaultModel();
-  }
-  return String::FromUTF8(holder.GetRef().user_agent_data.model);
-}
-
-bool NavigatorUAData::wow64() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return NavigatorUAData::DefaultWOW64();
-  }
-  return holder.GetRef().user_agent_data.wow64;
-}
-
-// ---------------------------------------------------------------------------
-// Screen
-// ---------------------------------------------------------------------------
-
-int Screen::width() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return Screen::StandardWidth();
-  }
-  return holder.Get().screen.width;
-}
-
-int Screen::height() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return Screen::StandardHeight();
-  }
-  return holder.Get().screen.height;
-}
-
-int Screen::availWidth() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return Screen::StandardAvailWidth();
-  }
-  return holder.Get().screen.avail_width;
-}
-
-int Screen::availHeight() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return Screen::StandardAvailHeight();
-  }
-  return holder.Get().screen.avail_height;
-}
-
-int Screen::availLeft() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return Screen::StandardAvailLeft();
-  }
-  return holder.Get().screen.avail_left;
-}
-
-int Screen::availTop() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return Screen::StandardAvailTop();
-  }
-  return holder.Get().screen.avail_top;
-}
-
-int Screen::colorDepth() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return Screen::StandardColorDepth();
-  }
-  return holder.Get().screen.color_depth;
-}
-
-int Screen::pixelDepth() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return Screen::StandardPixelDepth();
-  }
-  return holder.Get().screen.pixel_depth;
-}
-
-double Screen::devicePixelRatio() const {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return Screen::StandardDevicePixelRatio();
-  }
-  return holder.Get().screen.device_pixel_ratio;
-}
-
-// ---------------------------------------------------------------------------
-// WebGL -- the unmasked renderer and readPixels
-// ---------------------------------------------------------------------------
-
-// The unmasked renderer is served through WEBGL_debug_renderer_info.  It
-// is patched at the WebGLContext level so that the value is identical in
-// every context and cannot be distinguished from a real GPU by its
-// lifetime or by the way it is exposed.
-std::string UnmaskedVendorString() {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return std::string();
-  }
-  return holder.Get().webgl.unmasked_vendor;
-}
-
-std::string UnmaskedRendererString() {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return std::string();
-  }
-  return holder.Get().webgl.unmasked_renderer;
-}
-
-// The readback path.  This is the single most important hook in the
-// graphics stack: a shader that renders interpolated coordinates and then
-// reads them back is exactly the technique the anti-bot vendors use to
-// detect a modified WebGL implementation.
-//
-// The noise is applied to the buffer that is handed back to the script,
-// so the value the script observes is already perturbed -- there is no
-// way for the script to recover the original pixels.
-void MaybeNoiseWebGLReadback(WebGLRenderingContextBase* context,
-                              const gfx::Size& size,
-                              uint8_t* data,
-                              int data_length) {
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized() || !data || size.IsEmpty()) {
-    return;
-  }
-  const ProfileConfig config = holder.Get();
-  if (config.webgl.mode == "native_passthrough" ||
-      config.webgl.mode == "disabled") {
-    return;
-  }
-  if (!config.webgl.image_noise.enabled) {
-    return;
-  }
-
-  const size_t bytes_per_row = static_cast<size_t>(size.width()) * 4;
-  ApplyPixelNoise(data, bytes_per_row, size.width(), size.height(),
-                  holder.WebGLKey(), config.canvas_2d.noise_strength);
-}
-
-// ---------------------------------------------------------------------------
-// Canvas 2D
-// ---------------------------------------------------------------------------
-
-// The readback paths of the 2D canvas.  All of them funnel through the
-// same SkBitmap readback, so one hook covers toDataURL, toBlob,
-// getImageData and the OffscreenCanvas variants.
-void MaybeNoiseCanvasBitmap(SkBitmap* bitmap, double strength) {
-  if (!bitmap || bitmap->isEmpty()) {
-    return;
-  }
-  NovaConfigHolder& holder = NovaConfigHolder::Get();
-  if (!holder.IsInitialized()) {
-    return;
-  }
-  const ProfileConfig config = holder.Get();
-  if (config.canvas_2d.mode == "native_passthrough" ||
-      config.canvas_2d.mode == "block") {
-    return;
-  }
-
-  bitmap->lockPixels();
-  ApplyPixelNoise(bitmap->getAddr32(0, 0), bitmap->rowBytes(),
-                  static_cast<int>(bitmap->width()),
-                  static_cast<int>(bitmap->height()), holder.CanvasKey(),
-                  strength);
-  bitmap->unlockPixels();
-}
-
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -627,7 +266,7 @@ bool IsNovaCoreInitialized() {
 ProfileConfig GetNovaConfig() {
   NovaConfigHolder& holder = NovaConfigHolder::Get();
   holder.EnsureInitialized();
-  return holder.Get();
+  return holder.GetConfig();
 }
 
 // The same configuration, without the copy.  Use this on the hot paths --
@@ -635,7 +274,7 @@ ProfileConfig GetNovaConfig() {
 const ProfileConfig& GetNovaConfigRef() {
   NovaConfigHolder& holder = NovaConfigHolder::Get();
   holder.EnsureInitialized();
-  return holder.GetRef();
+  return holder.GetConfigRef();
 }
 
 // ---------------------------------------------------------------------------
@@ -673,7 +312,7 @@ std::string GetUnmaskedVendorString() {
   if (!holder.IsInitialized()) {
     return std::string();
   }
-  return holder.Get().webgl.unmasked_vendor;
+  return holder.GetConfig().webgl.unmasked_vendor;
 }
 
 std::string GetUnmaskedRendererString() {
@@ -681,7 +320,7 @@ std::string GetUnmaskedRendererString() {
   if (!holder.IsInitialized()) {
     return std::string();
   }
-  return holder.Get().webgl.unmasked_renderer;
+  return holder.GetConfig().webgl.unmasked_renderer;
 }
 
 // ---------------------------------------------------------------------------
@@ -703,7 +342,7 @@ double GetAudioSampleRate() {
   if (!holder.IsInitialized()) {
     return 0.0;
   }
-  return static_cast<double>(holder.Get().audio.sample_rate);
+  return static_cast<double>(holder.GetConfig().audio.sample_rate);
 }
 
 double GetAudioBaseLatency() {
@@ -711,7 +350,7 @@ double GetAudioBaseLatency() {
   if (!holder.IsInitialized()) {
     return 0.0;
   }
-  return holder.Get().audio.base_latency;
+  return holder.GetConfig().audio.base_latency;
 }
 
 double GetAudioOutputLatency() {
@@ -719,7 +358,7 @@ double GetAudioOutputLatency() {
   if (!holder.IsInitialized()) {
     return 0.0;
   }
-  return holder.Get().audio.output_latency;
+  return holder.GetConfig().audio.output_latency;
 }
 
 int GetAudioChannelCount() {
@@ -727,7 +366,7 @@ int GetAudioChannelCount() {
   if (!holder.IsInitialized()) {
     return 0;
   }
-  return holder.Get().audio.channel_count;
+  return holder.GetConfig().audio.channel_count;
 }
 
 int GetAudioMaxChannelCount() {
@@ -735,7 +374,7 @@ int GetAudioMaxChannelCount() {
   if (!holder.IsInitialized()) {
     return 0;
   }
-  return holder.Get().audio.max_channel_count;
+  return holder.GetConfig().audio.max_channel_count;
 }
 
 PixelNoiseKey GetAudioNoiseKey() {
@@ -756,7 +395,7 @@ int GetRectDeltaX() {
   if (!holder.IsInitialized()) {
     return 0;
   }
-  return holder.Get().rects.delta_x;
+  return holder.GetConfig().rects.delta_x;
 }
 
 int GetRectDeltaY() {
@@ -764,7 +403,7 @@ int GetRectDeltaY() {
   if (!holder.IsInitialized()) {
     return 0;
   }
-  return holder.Get().rects.delta_y;
+  return holder.GetConfig().rects.delta_y;
 }
 
 int GetRectDeltaWidth() {
@@ -772,7 +411,7 @@ int GetRectDeltaWidth() {
   if (!holder.IsInitialized()) {
     return 0;
   }
-  return holder.Get().rects.delta_width;
+  return holder.GetConfig().rects.delta_width;
 }
 
 int GetRectDeltaHeight() {
@@ -780,7 +419,7 @@ int GetRectDeltaHeight() {
   if (!holder.IsInitialized()) {
     return 0;
   }
-  return holder.Get().rects.delta_height;
+  return holder.GetConfig().rects.delta_height;
 }
 
 // ---------------------------------------------------------------------------
@@ -796,7 +435,7 @@ std::string GetMediaDeviceSalt() {
   if (!holder.IsInitialized()) {
     return std::string();
   }
-  return holder.Get().media_devices.salt;
+  return holder.GetConfig().media_devices.salt;
 }
 
 // ---------------------------------------------------------------------------
@@ -812,7 +451,7 @@ double GetSensorAccelerometerX() {
   if (!holder.IsInitialized()) {
     return 0.0;
   }
-  return holder.Get().sensors.accelerometer.x;
+  return holder.GetConfig().sensors.accelerometer.x;
 }
 
 double GetSensorAccelerometerY() {
@@ -820,7 +459,7 @@ double GetSensorAccelerometerY() {
   if (!holder.IsInitialized()) {
     return 0.0;
   }
-  return holder.Get().sensors.accelerometer.y;
+  return holder.GetConfig().sensors.accelerometer.y;
 }
 
 double GetSensorAccelerometerZ() {
@@ -828,7 +467,7 @@ double GetSensorAccelerometerZ() {
   if (!holder.IsInitialized()) {
     return 0.0;
   }
-  return holder.Get().sensors.accelerometer.z;
+  return holder.GetConfig().sensors.accelerometer.z;
 }
 
 double GetSensorGyroscopeX() {
@@ -836,7 +475,7 @@ double GetSensorGyroscopeX() {
   if (!holder.IsInitialized()) {
     return 0.0;
   }
-  return holder.Get().sensors.gyroscope.x;
+  return holder.GetConfig().sensors.gyroscope.x;
 }
 
 double GetSensorGyroscopeY() {
@@ -844,7 +483,7 @@ double GetSensorGyroscopeY() {
   if (!holder.IsInitialized()) {
     return 0.0;
   }
-  return holder.Get().sensors.gyroscope.y;
+  return holder.GetConfig().sensors.gyroscope.y;
 }
 
 double GetSensorGyroscopeZ() {
@@ -852,7 +491,7 @@ double GetSensorGyroscopeZ() {
   if (!holder.IsInitialized()) {
     return 0.0;
   }
-  return holder.Get().sensors.gyroscope.z;
+  return holder.GetConfig().sensors.gyroscope.z;
 }
 
 double GetSensorGravityZ() {
@@ -860,7 +499,7 @@ double GetSensorGravityZ() {
   if (!holder.IsInitialized()) {
     return 0.0;
   }
-  return holder.Get().sensors.gravity.z;
+  return holder.GetConfig().sensors.gravity.z;
 }
 
 std::string GetSensorSalt() {
@@ -868,7 +507,7 @@ std::string GetSensorSalt() {
   if (!holder.IsInitialized()) {
     return std::string();
   }
-  return holder.Get().sensors.salt;
+  return holder.GetConfig().sensors.salt;
 }
 
 // ---------------------------------------------------------------------------
@@ -884,7 +523,7 @@ uint64_t GetStorageQuotaBytes() {
   if (!holder.IsInitialized()) {
     return 0;
   }
-  return holder.Get().storage_network.quota_bytes;
+  return holder.GetConfig().storage_network.quota_bytes;
 }
 
 uint64_t GetStorageUsageBytes() {
@@ -892,7 +531,7 @@ uint64_t GetStorageUsageBytes() {
   if (!holder.IsInitialized()) {
     return 0;
   }
-  return holder.Get().storage_network.usage_bytes;
+  return holder.GetConfig().storage_network.usage_bytes;
 }
 
 std::string GetStorageSalt() {
@@ -900,7 +539,7 @@ std::string GetStorageSalt() {
   if (!holder.IsInitialized()) {
     return std::string();
   }
-  return holder.Get().storage_network.salt;
+  return holder.GetConfig().storage_network.salt;
 }
 
 // ---------------------------------------------------------------------------
@@ -912,7 +551,7 @@ std::string GetWebGpuSalt() {
   if (!holder.IsInitialized()) {
     return std::string();
   }
-  return holder.Get().webgpu.salt;
+  return holder.GetConfig().webgpu.salt;
 }
 
 }  // namespace nova

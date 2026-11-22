@@ -31,6 +31,7 @@ profiles/
 
 # Test and measurement scratch output
 *.log
+*.log.err
 !scale_check_100m.log
 .nova_measurements.tmp/
 scratch/

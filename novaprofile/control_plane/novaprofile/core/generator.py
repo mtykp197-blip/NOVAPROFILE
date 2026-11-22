@@ -9,6 +9,7 @@ profile, and two different seeds never produce the same fingerprint.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -732,14 +733,54 @@ class ProfileGenerator:
     def _build_geolocation(self, deriver: SeedDeriver, geo: GeoTarget) -> Geolocation:
         if not deriver.derive_bool(Axis.GEO_TIMEZONE, 0.45, context="geo.enabled"):
             return Geolocation(mode="prompt")
-        # A city-level coordinate with a realistic accuracy radius.
-        lat = deriver.derive_float(Axis.GEO_TIMEZONE, -60.0, 70.0, context="lat")
-        lng = deriver.derive_float(Axis.GEO_TIMEZONE, -180.0, 180.0, context="lng")
+
+        # The coordinate belongs to the place the time zone names.
+        #
+        # The old implementation drew the latitude and the longitude
+        # uniformly from the whole globe, so a profile that claimed
+        # ``de-AT`` / ``Europe/Vienna`` reported a position in Central
+        # Asia.  A site that maps the exit IP to Austria and then reads
+        # the GPS coordinate sees two different countries, and the
+        # profile is worse than an honest one.
+        #
+        # The coordinate is the city itself plus a small jitter: a real
+        # person is not standing on the reference point of their city,
+        # and the accuracy radius has to cover the jitter, or the two
+        # contradict each other.
+        from .geo_coordinates import coordinates_for
+
+        base_lat, base_lng = coordinates_for(geo.timezone)
+        # The jitter stays inside a few kilometres, which is what a
+        # city-level geolocation fix looks like.
+        jitter_km = deriver.derive_float(Axis.GEO_TIMEZONE, 0.0, 8.0, context="geo.jitter_km")
+        lat_jitter = deriver.derive_float(
+            Axis.GEO_TIMEZONE, -jitter_km, jitter_km, context="geo.lat_jitter"
+        )
+        lng_jitter = deriver.derive_float(
+            Axis.GEO_TIMEZONE, -jitter_km, jitter_km, context="geo.lng_jitter"
+        )
+        # One degree of latitude is about 111 km; at the equator a
+        # degree of longitude is the same, and it shrinks towards the
+        # poles.
+        latitude = base_lat + lat_jitter / 111.0
+        longitude_scale = max(0.2, abs(_cos_degrees(base_lat)))
+        longitude = base_lng + lng_jitter / (111.0 * longitude_scale)
+
+        # The accuracy radius has to cover the jitter, otherwise the
+        # reported fix is more precise than the position it describes.
+        accuracy = round(
+            max(
+                deriver.derive_float(Axis.GEO_TIMEZONE, 50.0, 20000.0, "acc"),
+                abs(jitter_km) * 1000.0 * 1.4,
+            ),
+            1,
+        )
+
         return Geolocation(
             mode="allow_custom",
-            latitude=round(lat, 6),
-            longitude=round(lng, 6),
-            accuracy=round(deriver.derive_float(Axis.GEO_TIMEZONE, 50.0, 20000.0, "acc"), 1),
+            latitude=round(latitude, 6),
+            longitude=round(longitude, 6),
+            accuracy=accuracy,
             altitude=None,
             altitude_accuracy=None,
             heading=None,
@@ -1392,6 +1433,12 @@ def _architecture_for(abi: AndroidAbiSoc) -> str:
 
 
 @lru_cache(maxsize=512)
+def _cos_degrees(degrees: float) -> float:
+    """The cosine of an angle given in degrees."""
+
+    return math.cos(math.radians(degrees))
+
+
 def _zoneinfo(name: str):
     """Return the ``ZoneInfo`` of a timezone, or ``None``.
 

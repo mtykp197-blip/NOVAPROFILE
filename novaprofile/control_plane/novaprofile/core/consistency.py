@@ -1488,14 +1488,56 @@ def _preset_for_renderer(renderer: str):
     return None
 
 
+def _tzdata_available() -> bool:
+    """Whether the IANA time zone database is available on this machine.
+
+    Windows has no system copy of it.  Without the ``tzdata`` package
+    the whole database is missing, and then *every* zone fails to
+    resolve -- which would make every profile claim UTC with a zero
+    offset.  The checks below have to know the difference between
+    "this zone does not exist" and "the database is missing",
+    otherwise they would pass silently on a machine that cannot
+    possibly produce a correct profile.
+    """
+
+    try:
+        from zoneinfo import ZoneInfo
+
+        ZoneInfo("Europe/Vienna")
+    except Exception:
+        return False
+    return True
+
+
+def tzdata_status() -> tuple[bool, str]:
+    """Whether the time zone database is usable, and why not if it is not.
+
+    The control plane reports this in ``nova doctor``.  A machine
+    without the database produces profiles that claim UTC, which is one
+    of the loudest signals a site can detect, so it has to be visible
+    before the fleet is created rather than after.
+    """
+
+    if _tzdata_available():
+        return True, "the IANA time zone database is available"
+    return False, (
+        "the IANA time zone database is missing -- install the 'tzdata' package. "
+        "Without it every profile reports UTC with a zero offset."
+    )
+
+
 def _iana_offset(iana_name: str, dst_active: bool) -> int | None:
     """The UTC offset in minutes for an IANA zone, if the zone is known.
 
-    Uses the standard library's :mod:`zoneinfo` when the tzdata is present on
-    the machine; returns ``None`` when it is not, so the resolver degrades
-    to a warning rather than a false error.
+    Returns ``None`` only when the zone name is empty or the database is
+    genuinely missing.  A missing database is a *deployment* failure, not
+    a profile failure, so it is reported separately -- see
+    :func:`tzdata_status`.
     """
+
     if not iana_name:
+        return None
+    if not _tzdata_available():
         return None
     try:
         from zoneinfo import ZoneInfo
@@ -1585,4 +1627,5 @@ __all__ = [
     "ConsistencyReport",
     "ConsistencyError",
     "ConsistencyResolver",
+    "tzdata_status",
 ]

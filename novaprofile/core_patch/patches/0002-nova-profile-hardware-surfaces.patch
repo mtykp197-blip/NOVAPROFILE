@@ -1,249 +1,250 @@
-# NOVA Profile Core -- the hardware surfaces.
-#
-# Apply after 0001-nova-profile-core.patch:
-#
-#     git apply novaprofile/core_patch/patches/*.patch
-#
-# The first patch substitutes the *identity* surfaces: the User-Agent, the
-# client hints, the screen metrics, the WebGL renderer and the canvas
-# readback.  Those are the surfaces a vendor reaches for first, and they
-# are enough to tell two profiles apart.
-#
-# They are not enough to tell two profiles *apart*, though, and that is the
-# point of this patch.  A fingerprinting script is free to ignore the
-# canvas entirely and to cluster on the audio fingerprint alone, on the
-# geometry of a rectangle alone, on the list of media devices alone, on
-# the motion readings alone, on the storage estimate alone or on the WebGPU
-# adapter alone.  Every one of those is readable without touching any of
-# the surfaces the first patch covers.
-#
-# Left unpatched, all of them report the *host's* values: one Android
-# device's audio fingerprint shared by a hundred million profiles, one
-# rectangle geometry shared by all of them.  No amount of care elsewhere
-# survives that, because the collision guard's job is to make sure no two
-# profiles agree -- and here they would all agree.
-#
-# The substitutions follow the same rules as the first patch:
-#
-#   * no new DOM property is introduced, so a page cannot detect the patch
-#     by enumerating the prototype,
-#   * every substituted accessor keeps the stock behaviour as its
-#     fallback, so the browser's own pages stay consistent,
-#   * every value is served from the profile's own configuration, which is
-#     replicated into every process, so a cross-origin frame, a sandboxed
-#     frame, a worker and the main frame all report the same numbers.
-#
-# The reference implementation of these hooks lives in
-# ``novaprofile/core_patch/src/nova_blink_patch.cc``; the two must be kept
-# in step, and ``tests/test_core_patch_coverage.py`` enforces that every
-# accessor substituted here is also implemented there.
-#
-# The context lines of every hunk are stock Chromium code.
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: NOVA Profile <nova@example.invalid>
+Date: Sat, 22 Nov 2026 00:00:00 +0000
+Subject: [PATCH 2/2] nova: substitute the screen and the WebGL / canvas surfaces
 
-diff --git a/third_party/blink/renderer/core/html/media_devices.cc b/third_party/blink/renderer/core/html/media_devices.cc
---- a/third_party/blink/renderer/core/html/media_devices.cc
-+++ b/third_party/blink/renderer/core/html/media_devices.cc
-@@ -20,6 +20,8 @@
- #include "third_party/blink/renderer/core/html/media_devices.h"
+The first patch covers the values a page reads out of the navigator.
+This one covers the surfaces that are read on their own.
+
+The screen
+---------
+
+``screen.width``, ``screen.height``, ``screen.availWidth``,
+``screen.availHeight``, ``screen.availLeft``, ``screen.availTop``,
+``screen.colorDepth``, ``screen.pixelDepth`` and
+``window.devicePixelRatio`` describe the display the browser runs on.
+Every profile that runs on the same machine reports the same display,
+so the screen alone is enough to tell a profile from a real device.
+
+The canvas and the WebGL surfaces
+---------------------------------
+
+A canvas readback and a WebGL readback are hashed by the page, and the
+hash is stable across runs, so two profiles that differ in nothing but
+their configuration produce the same canvas hash.  The WebGL identity
+strings -- ``UNMASKED_VENDOR_WEBGL`` and ``UNMASKED_RENDERER_WEBGL`` --
+are the same story: they name the graphics stack of the host.
+
+The patch therefore substitutes the values of those surfaces and
+perturbs the readback buffers with a deterministic noise that is derived
+from the profile, so that the hashes are stable for a profile and
+different between profiles.
+
+diff --git a/third_party/blink/renderer/core/frame/local_dom_window.cc b/third_party/blink/renderer/core/frame/local_dom_window.cc
+index 36beb12a2f..fa14b40e91 100644
+--- a/third_party/blink/renderer/core/frame/local_dom_window.cc
++++ b/third_party/blink/renderer/core/frame/local_dom_window.cc
+@@ -26,6 +26,8 @@
+ 
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+ 
 +#include "nova_chromium_hooks.h"
 +
- #include "third_party/blink/renderer/core/html/media_device_info.h"
- #include "third_party/blink/renderer/core/frame/navigator_base.h"
- #include "third_party/blink/renderer/platform/permissions/public/permissions_manager.h"
-@@ -120,6 +122,20 @@ void MediaDevices::EnumerateDevices(
-                   ExceptionState& exception_state) {
-+  // The device identifiers are derived from the profile's own salt.  A
-+  // device id that repeats across two profiles is a stable identifier
-+  // that links them, so the ids are taken from the profile's own list
-+  // rather than from the host's.
-+  if (nova::IsNovaCoreInitialized()) {
-+    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
-+    if (config.media_devices.mode == "deterministic_mock" &&
-+        !config.media_devices.salt.empty()) {
-+      // The salt identifies the device list of this profile.  It is mixed
-+      // into the id so that two profiles never expose the same device
-+      // ids even when they carry the same labels.
-+      const std::string salt = nova::GetMediaDeviceSalt();
-+      for (const auto& entry : config.media_devices.audio_inputs) {
-+        devices->push_back(MediaDeviceInfo::Create(
-+            entry.device_id.empty() ? salt + entry.label : entry.device_id,
-+            MediaDeviceInfo::MediaDeviceKind::kAudioInput, entry.label,
-+            entry.group_id, entry.device_id));
-+      }
-+      for (const auto& entry : config.media_devices.audio_outputs) {
-+        devices->push_back(MediaDeviceInfo::Create(
-+            entry.device_id.empty() ? salt + entry.label : entry.device_id,
-+            MediaDeviceInfo::MediaDeviceKind::kAudioOutput, entry.label,
-+            entry.group_id, entry.device_id));
-+      }
-+      for (const auto& entry : config.media_devices.video_inputs) {
-+        devices->push_back(MediaDeviceInfo::Create(
-+            entry.device_id.empty() ? salt + entry.label : entry.device_id,
-+            MediaDeviceInfo::MediaDeviceKind::kVideoInput, entry.label,
-+            entry.group_id, entry.device_id));
-+      }
-+      return;
-+    }
-+  }
-   MediaDevices::GetSources internal_source_info = GetSources();
-   if (exception_state.HadException())
-     return;
-diff --git a/third_party/blink/renderer/modules/webaudio/audio_context.cc b/third_party/blink/renderer/modules/webaudio/audio_context.cc
---- a/third_party/blink/renderer/modules/webaudio/audio_context.cc
-+++ b/third_party/blink/renderer/modules/webaudio/audio_context.cc
-@@ -30,6 +30,8 @@
- #include "third_party/blink/renderer/modules/webaudio/audio_context.h"
-+#include "nova_chromium_hooks.h"
-+
- #include "third_party/blink/renderer/modules/webaudio/audio_buffer_source_node.h"
- #include "third_party/blink/renderer/modules/webaudio/audio_destination_node.h"
- #include "third_party/blink/renderer/modules/webaudio/audio_listener.h"
-@@ -120,6 +122,14 @@ double AudioContext::sampleRate() const {
-+  // The sample rate, the latencies and the channel count shape the audio
-+  // fingerprint: a script runs an oscillator through a compressor and
-+  // hashes the result.  Serving the profile's own values keeps that hash
-+  // different for every profile.
-+  if (nova::IsNovaCoreInitialized()) {
-+    const double rate = nova::GetAudioSampleRate();
-+    if (rate > 0.0) {
-+      return rate;
-+    }
-+  }
-   return 0;
+ #include <memory>
+ #include <optional>
+ #include <utility>
+@@ -1961,6 +1963,9 @@ CSSStyleDeclaration* LocalDOMWindow::getComputedStyle(
  }
-@@ -135,6 +145,14 @@ double AudioContext::baseLatency() const {
+ 
+ double LocalDOMWindow::devicePixelRatio() const {
 +  if (nova::IsNovaCoreInitialized()) {
-+    const double latency = nova::GetAudioBaseLatency();
-+    if (latency > 0.0) {
-+      return latency;
-+    }
++    return nova::GetNovaConfig().screen.device_pixel_ratio;
 +  }
-   return 0;
- }
-diff --git a/third_party/blink/renderer/core/layout/layout_object.cc b/third_party/blink/renderer/core/layout/layout_object.cc
---- a/third_party/blink/renderer/core/layout/layout_object.cc
-+++ b/third_party/blink/renderer/core/layout/layout_object.cc
-@@ -30,6 +30,8 @@
- #include "third_party/blink/renderer/core/layout/layout_object.h"
+   if (!GetFrame()) {
+     return 0.0;
+   }
+diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink/renderer/core/frame/screen.cc
+index 8bc2c67f4b..23af02db5a 100644
+--- a/third_party/blink/renderer/core/frame/screen.cc
++++ b/third_party/blink/renderer/core/frame/screen.cc
+@@ -28,6 +28,8 @@
+ 
+ #include "third_party/blink/renderer/core/frame/screen.h"
+ 
 +#include "nova_chromium_hooks.h"
 +
- #include "third_party/blink/renderer/core/layout/box.h"
- #include "third_party/blink/renderer/core/layout/box_fragmenter.h"
- #include "third_party/blink/renderer/core/layout/layout_adjust.h"
-@@ -700,6 +702,20 @@ PhysicalRect LayoutObject::AbsoluteBoundingBoxRect() const {
-+  // The geometry perturbation is applied here, at the single point where
-+  // every rectangle a script can measure is computed.  The offsets are
-+  // integer pixels on purpose: a fractional offset would move the
-+  // rectangle without moving the pixels that belong to it, and the hit
-+  // testing would no longer agree with what the page sees.
+ #include "base/no_destructor.h"
+ #include "base/numerics/safe_conversions.h"
+ #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-blink.h"
+@@ -89,18 +91,27 @@ bool Screen::AreWebExposedScreenPropertiesEqual(
+ }
+ 
+ int Screen::height() const {
 +  if (nova::IsNovaCoreInitialized()) {
-+    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
-+    if (config.rects.mode == "noise") {
-+      PhysicalRect perturbed = rect;
-+      perturbed.Offset(nova::GetRectDeltaX(), nova::GetRectDeltaY());
-+      perturbed.SetWidth(perturbed.Width() + nova::GetRectDeltaWidth());
-+      perturbed.SetHeight(perturbed.Height() + nova::GetRectDeltaHeight());
-+      return perturbed;
-+    }
++    return nova::GetNovaConfig().screen.height;
 +  }
-   return rect;
+   if (!DomWindow())
+     return 0;
+   return GetRect(/*available=*/false).height();
  }
-diff --git a/third_party/blink/renderer/core/frame/navigator.cc b/third_party/blink/renderer/core/frame/navigator.cc
---- a/third_party/blink/renderer/core/frame/navigator.cc
-+++ b/third_party/blink/renderer/core/frame/navigator.cc
-@@ -30,6 +30,8 @@
- #include "third_party/blink/renderer/core/frame/navigator.h"
-+#include "nova_chromium_hooks.h"
-+
- #include "third_party/blink/renderer/core/frame/local_frame.h"
- #include "third_party/blink/renderer/core/frame/navigator_base.h"
- #include "third_party/blink/renderer/core/page/focused_frame.h"
-diff --git a/third_party/blink/renderer/core/frame/device_motion_event.cc b/third_party/blink/renderer/core/frame/device_motion_event.cc
---- a/third_party/blink/renderer/core/frame/device_motion_event.cc
-+++ b/third_party/blink/renderer/core/frame/device_motion_event.cc
-@@ -20,6 +20,8 @@
- #include "third_party/blink/renderer/core/frame/device_motion_event.h"
-+#include "nova_chromium_hooks.h"
-+
- #include "third_party/blink/renderer/core/frame/navigator_base.h"
- #include "third_party/blink/renderer/platform/heap/heap.h"
- #include "third_party/blink/renderer/platform/wtf/vector.h"
-@@ -40,6 +42,22 @@ DeviceMotionEvent::Create(const DeviceMotionEventInit* init) {
-+  // The motion readings are readable on their own, and a script that
-+  // clusters on them never touches the canvas.  The readings are served
-+  // from the profile's own configuration, so two profiles never report
-+  // the same signal -- and the gravity reading agrees with the
-+  // accelerometer, which is what a real handset does.
+ 
+ int Screen::width() const {
 +  if (nova::IsNovaCoreInitialized()) {
-+    const double gravity = nova::GetSensorGravityZ();
-+    if (gravity > 0.0) {
-+      DOMFloatArray* acceleration = init->acceleration;
-+      DOMFloatArray* rotation_rate = init->rotationRate;
-+      if (acceleration) {
-+        acceleration->Set(0u, nova::GetSensorAccelerometerX());
-+        acceleration->Set(1u, nova::GetSensorAccelerometerY());
-+        acceleration->Set(2u, nova::GetSensorAccelerometerZ());
++    return nova::GetNovaConfig().screen.width;
++  }
+   if (!DomWindow())
+     return 0;
+   return GetRect(/*available=*/false).width();
+ }
+ 
+ unsigned Screen::colorDepth() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return static_cast<unsigned>(nova::GetNovaConfig().screen.color_depth);
++  }
+   // "If the user agent does not know the color depth or does not want to
+   // return it for privacy considerations, it should return 24."
+   //
+@@ -116,28 +127,43 @@ unsigned Screen::colorDepth() const {
+ }
+ 
+ unsigned Screen::pixelDepth() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return static_cast<unsigned>(nova::GetNovaConfig().screen.pixel_depth);
++  }
+   return colorDepth();
+ }
+ 
+ int Screen::availLeft() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return nova::GetNovaConfig().screen.avail_left;
++  }
+   if (!DomWindow())
+     return 0;
+   return GetRect(/*available=*/true).x();
+ }
+ 
+ int Screen::availTop() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return nova::GetNovaConfig().screen.avail_top;
++  }
+   if (!DomWindow())
+     return 0;
+   return GetRect(/*available=*/true).y();
+ }
+ 
+ int Screen::availHeight() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return nova::GetNovaConfig().screen.avail_height;
++  }
+   if (!DomWindow())
+     return 0;
+   return GetRect(/*available=*/true).height();
+ }
+ 
+ int Screen::availWidth() const {
++  if (nova::IsNovaCoreInitialized()) {
++    return nova::GetNovaConfig().screen.avail_width;
++  }
+   if (!DomWindow())
+     return 0;
+   return GetRect(/*available=*/true).width();
+diff --git a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
+index 7741973677..598c2f1000 100644
+--- a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
++++ b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.h"
+ 
++#include "nova_chromium_hooks.h"
++
+ #include <stdint.h>
+ 
+ #include <cmath>
+@@ -1642,6 +1644,30 @@ ImageData* BaseRenderingContext2D::getImageDataInternal(
+           snapshot->PaintImageForCurrentFrame().GetSkImageInfo().bounds();
+       DCHECK(!bounds.intersect(SkIRect::MakeXYWH(sx, sy, sw, sh)));
+     }
++
++    // The 2D canvas readback is the most heavily sampled axis.  The
++    // noise is applied to the buffer that the script receives, so the
++    // observed pixels are already perturbed and the original values
++    // cannot be recovered.  This is the single point where the readback
++    // happens, so it covers getImageData, toDataURL, toBlob and the
++    // OffscreenCanvas variants in one place.
++    if (nova::IsNovaCoreInitialized()) {
++      const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++      if (config.canvas_2d.mode != "native_passthrough" &&
++          config.canvas_2d.mode != "block") {
++        // The span is only used to reach the buffer, so the pointer and the
++        // size are taken from it directly: this translation unit does not
++        // have //base on its include path.
++        const auto bytes = image_data->RawByteSpan();
++        if (!bytes.empty() && sw > 0 && sh > 0) {
++          // The buffer is RGBA, so there are four bytes per pixel.
++          const size_t stride = static_cast<size_t>(sw) * 4;
++          nova::ApplyPixelNoise(bytes.data(), stride, sw, sh,
++                                nova::GetCanvasNoiseKey(),
++                                config.canvas_2d.noise_strength);
++        }
 +      }
-+      if (rotation_rate) {
-+        rotation_rate->Set(0u, nova::GetSensorGyroscopeX());
-+        rotation_rate->Set(1u, nova::GetSensorGyroscopeY());
-+        rotation_rate->Set(2u, nova::GetSensorGyroscopeZ());
-+      }
 +    }
-+  }
-   return MakeGarbageCollected<DeviceMotionEvent>(init);
- }
-diff --git a/third_party/blink/renderer/core/storage/storage_manager.cc b/third_party/blink/renderer/core/storage/storage_manager.cc
---- a/third_party/blink/renderer/core/storage/storage_manager.cc
-+++ b/third_party/blink/renderer/core/storage/storage_manager.cc
+   }
+ 
+   return image_data;
+diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+index c110f3816f..f0326307cd 100644
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 @@ -25,6 +25,8 @@
- #include "third_party/blink/renderer/core/storage/storage_manager.h"
+ 
+ #include "third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.h"
+ 
 +#include "nova_chromium_hooks.h"
 +
- #include "third_party/blink/renderer/core/storage/storage_area.h"
- #include "third_party/blink/renderer/core/storage/storage_error_code.h"
- #include "third_party/blink/renderer/platform/bindings/v8_per_context_data.h"
-@@ -95,6 +97,16 @@ void StorageManager::estimate(
-                ExceptionState& exception_state) {
-+  // The quota and the usage are readable on their own.  The usage has to
-+  // stay below the quota, and the pair has to differ from every other
-+  // profile's pair, or the fleet collapses into one bucket.
-+  if (nova::IsNovaCoreInitialized()) {
-+    const uint64_t quota = nova::GetStorageQuotaBytes();
-+    const uint64_t usage = nova::GetStorageUsageBytes();
-+    if (quota > 0) {
-+      resolver->Resolve(StorageManager::EstimateResult::Create(
-+          StorageManager::StorageUsageInfo{quota, usage, quota > 0}));
-+      return;
-+    }
-+  }
-  return StorageManager::EnqueueStorageUsageTrackingRequest(
-      std::move(resolver), std::move(exception_state));
- }
-diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
---- a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
-+++ b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
-@@ -20,6 +20,8 @@
- #include "third_party/blink/renderer/modules/webgpu/gpu_adapter.h"
-+#include "nova_chromium_hooks.h"
+ #include <inttypes.h>
+ 
+ #include <memory>
+@@ -4344,6 +4346,14 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+       return ScriptValue::CreateNull(script_state->GetIsolate());
+     case WebGLDebugRendererInfo::kUnmaskedRendererWebgl:
+       if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
++        // The unmasked renderer is served from the profile's own
++        // configuration.  The stock value stays as the fallback, so a
++        // context created before the configuration was loaded still
++        // reports the host's renderer.
++        const std::string nova_renderer = nova::GetUnmaskedRendererString();
++        if (!nova_renderer.empty()) {
++          return WebGLAny(script_state, String(nova_renderer));
++        }
+         return WebGLAny(script_state,
+                         String(ContextGL()->GetString(GL_RENDERER)));
+       }
+@@ -4353,6 +4363,12 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+       return ScriptValue::CreateNull(script_state->GetIsolate());
+     case WebGLDebugRendererInfo::kUnmaskedVendorWebgl:
+       if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
++        // The unmasked vendor is served from the profile's own
++        // configuration; see the comment above.
++        const std::string nova_vendor = nova::GetUnmaskedVendorString();
++        if (!nova_vendor.empty()) {
++          return WebGLAny(script_state, String(nova_vendor));
++        }
+         return WebGLAny(script_state,
+                         String(ContextGL()->GetString(GL_VENDOR)));
+       }
+@@ -5502,6 +5518,24 @@ void WebGLRenderingContextBase::ReadPixelsHelper(GLint x,
+     }
+     ContextGL()->ReadPixels(x, y, width, height, format, type, data);
+   }
 +
- #include "third_party/blink/renderer/modules/webgpu/gpu_device.h"
- #include "third_party/blink/renderer/modules/webgpu/gpu_queue.h"
- #include "third_party/blink/renderer/platform/heap/heap.h"
-@@ -60,6 +62,18 @@ bool GPUAdapter::ValidateDeviceDescriptor(
-                  const GPUDeviceDescriptor* descriptor,
-                  ExceptionState& exception_state) {
-+  // The adapter identity is readable on its own through
-+  // ``navigator.gpu.requestAdapter()``.  The salt identifies the unit
-+  // within the GPU's family: the adapter description and the limit table
-+  // belong to the GPU *model* and are shared by every unit that carries
-+  // that GPU, exactly as on real hardware.
++  // The deterministic noise is applied to the buffer that is handed back
++  // to the script, so the observed pixels are already perturbed and the
++  // original values cannot be recovered from the page.  The readback is
++  // the single most important hook in the graphics stack: a shader that
++  // renders interpolated coordinates and then reads them back is exactly
++  // the technique the anti-bot vendors use to detect a modified WebGL
++  // implementation.
 +  if (nova::IsNovaCoreInitialized()) {
-+    const std::string salt = nova::GetWebGpuSalt();
-+    if (!salt.empty()) {
-+      return GPUAdapter::ValidateFeatureDescriptor(
-+          descriptor, exception_state);
++    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++    if (config.webgl.mode != "native_passthrough" &&
++        config.webgl.mode != "disabled" &&
++        config.webgl.image_noise.enabled && data && width > 0 && height > 0) {
++      nova::ApplyPixelNoise(data, static_cast<size_t>(width) * 4, width,
++                            height, nova::GetWebGLNoiseKey(),
++                            config.canvas_2d.noise_strength);
 +    }
 +  }
-   return true;
  }
+ 
+ void WebGLRenderingContextBase::RenderbufferStorageImpl(

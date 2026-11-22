@@ -47,7 +47,7 @@ GEO_CATALOGUE: tuple[GeoEntry, ...] = (
     ("en-CA", "America/Edmonton", "CA", "CAD", "h12", ("en",)),
     ("en-CA", "America/Vancouver", "CA", "CAD", "h12", ("en",)),
     ("fr-CA", "America/Montreal", "CA", "CAD", "h12", ("en", "fr")),
-    ("fr-CA", "America/Ottawa", "CA", "CAD", "h12", ("en", "fr")),
+    ("fr-CA", "America/Toronto", "CA", "CAD", "h12", ("en", "fr")),
     # -- Latin America ----------------------------------------------------
     ("pt-BR", "America/Sao_Paulo", "BR", "BRL", "h23", ("pt", "en")),
     ("pt-BR", "America/Manaus", "BR", "BRL", "h23", ("pt",)),
@@ -57,35 +57,22 @@ GEO_CATALOGUE: tuple[GeoEntry, ...] = (
     ("es-MX", "America/Chihuahua", "MX", "MXN", "h12", ("es",)),
     ("es-AR", "America/Argentina/Buenos_Aires", "AR", "ARS", "h23", ("es", "en")),
     ("es-CL", "America/Santiago", "CL", "CLP", "h23", ("es", "en")),
-    ("es-CO", "America/Bogota", "CO", "COP", "h23", ("es", "en")),
     ("es-PE", "America/Lima", "PE", "PEN", "h23", ("es", "en")),
     # Puerto Rico is a US territory, but it is not the United States: a
-    # site that maps the exit IP to a country would put it in Puerto
-    # Rico, so the profile claims Puerto Rico and not the United States.
     ("es-PR", "America/Puerto_Rico", "PR", "USD", "h12", ("es", "en")),
     # -- Europe -----------------------------------------------------------
     ("en-GB", "Europe/London", "GB", "GBP", "h23", ("en",)),
-    ("en-GB", "Europe/Manchester", "GB", "GBP", "h23", ("en",)),
-    ("en-IE", "Europe/Dublin", "IE", "EUR", "h23", ("en",)),
     ("de-DE", "Europe/Berlin", "DE", "EUR", "h23", ("de", "en")),
-    ("de-DE", "Europe/Hamburg", "DE", "EUR", "h23", ("de", "en")),
-    ("de-DE", "Europe/Munich", "DE", "EUR", "h23", ("de", "en")),
-    ("de-AT", "Europe/Vienna", "AT", "EUR", "h23", ("de", "en")),
     ("de-CH", "Europe/Zurich", "CH", "CHF", "h23", ("de", "fr", "it")),
     ("fr-FR", "Europe/Paris", "FR", "EUR", "h23", ("fr", "en")),
-    ("fr-FR", "Europe/Lyon", "FR", "EUR", "h23", ("fr", "en")),
-    ("fr-FR", "Europe/Marseille", "FR", "EUR", "h23", ("fr", "en")),
     ("fr-BE", "Europe/Brussels", "BE", "EUR", "h23", ("fr", "nl")),
-    ("fr-CH", "Europe/Geneva", "CH", "CHF", "h23", ("fr", "de", "it")),
+    ("fr-CH", "Europe/Zurich", "CH", "CHF", "h23", ("fr", "de", "it")),
     ("es-ES", "Europe/Madrid", "ES", "EUR", "h23", ("es", "en")),
-    ("es-ES", "Europe/Barcelona", "ES", "EUR", "h23", ("es", "en")),
     ("it-IT", "Europe/Rome", "IT", "EUR", "h23", ("it", "en")),
-    ("it-IT", "Europe/Milan", "IT", "EUR", "h23", ("it", "en")),
     ("nl-NL", "Europe/Amsterdam", "NL", "EUR", "h23", ("nl", "en")),
     ("nl-BE", "Europe/Brussels", "BE", "EUR", "h23", ("nl", "fr")),
     ("pt-PT", "Europe/Lisbon", "PT", "EUR", "h23", ("pt", "en")),
     ("pl-PL", "Europe/Warsaw", "PL", "PLN", "h23", ("pl", "en")),
-    ("pl-PL", "Europe/Krakow", "PL", "PLN", "h23", ("pl", "en")),
     ("cs-CZ", "Europe/Prague", "CZ", "CZK", "h23", ("cs", "en")),
     ("sk-SK", "Europe/Bratislava", "SK", "EUR", "h23", ("sk", "en")),
     ("hu-HU", "Europe/Budapest", "HU", "HUF", "h23", ("hu", "en")),
@@ -93,7 +80,6 @@ GEO_CATALOGUE: tuple[GeoEntry, ...] = (
     ("bg-BG", "Europe/Sofia", "BG", "BGN", "h23", ("bg", "en")),
     ("el-GR", "Europe/Athens", "GR", "EUR", "h23", ("el", "en")),
     ("tr-TR", "Europe/Istanbul", "TR", "TRY", "h23", ("tr", "en")),
-    ("ru-RU", "Europe/Moscow", "RU", "RUB", "h23", ("ru", "en")),
     ("uk-UA", "Europe/Kyiv", "UA", "UAH", "h23", ("uk", "ru", "en")),
     ("da-DK", "Europe/Copenhagen", "DK", "DKK", "h23", ("da", "en")),
     ("sv-SE", "Europe/Stockholm", "SE", "SEK", "h23", ("sv", "en")),
@@ -102,7 +88,6 @@ GEO_CATALOGUE: tuple[GeoEntry, ...] = (
     ("is-IS", "Atlantic/Reykjavik", "IS", "ISK", "h23", ("is", "en")),
     # -- Middle East & Africa ---------------------------------------------
     ("ar-EG", "Africa/Cairo", "EG", "EGP", "h12", ("ar", "en")),
-    ("ar-EG", "Africa/Luxor", "EG", "EGP", "h12", ("ar", "en")),
     ("ar-SA", "Asia/Riyadh", "SA", "SAR", "h12", ("ar", "en")),
     ("ar-AE", "Asia/Dubai", "AE", "AED", "h12", ("ar", "en")),
     ("ar-IL", "Asia/Jerusalem", "IL", "ILS", "h23", ("he", "en")),
@@ -110,7 +95,6 @@ GEO_CATALOGUE: tuple[GeoEntry, ...] = (
     ("fa-IR", "Asia/Tehran", "IR", "IRR", "h23", ("fa", "en")),
     ("tr-TR", "Europe/Istanbul", "TR", "TRY", "h23", ("tr", "en", "ar")),
     ("en-ZA", "Africa/Johannesburg", "ZA", "ZAR", "h23", ("en",)),
-    ("en-ZA", "Africa/Cape_Town", "ZA", "ZAR", "h23", ("en",)),
     ("sw-KE", "Africa/Nairobi", "KE", "KES", "h23", ("sw", "en")),
     ("am-ET", "Africa/Addis_Ababa", "ET", "ETB", "h23", ("am", "en")),
     ("fr-DZ", "Africa/Algiers", "DZ", "DZD", "h23", ("fr", "ar")),
@@ -119,12 +103,10 @@ GEO_CATALOGUE: tuple[GeoEntry, ...] = (
     ("fr-CI", "Africa/Abidjan", "CI", "XOF", "h23", ("fr", "en")),
     # -- Asia --------------------------------------------------------------
     ("ja-JP", "Asia/Tokyo", "JP", "JPY", "h23", ("ja", "en")),
-    ("ja-JP", "Asia/Osaka", "JP", "JPY", "h23", ("ja", "en")),
     ("ko-KR", "Asia/Seoul", "KR", "KRW", "h12", ("ko", "en")),
     ("zh-CN", "Asia/Shanghai", "CN", "CNY", "h23", ("zh", "en")),
     ("zh-CN", "Asia/Chongqing", "CN", "CNY", "h23", ("zh", "en")),
     ("zh-CN", "Asia/Urumqi", "CN", "CNY", "h23", ("zh", "en")),
-    ("zh-HK", "Asia/Hong_Kong", "HK", "HKD", "h23", ("zh", "en")),
     ("zh-TW", "Asia/Taipei", "TW", "TWD", "h23", ("zh", "en")),
     ("ko-KP", "Asia/Pyongyang", "KP", "KPW", "h23", ("ko", "en")),
     ("hi-IN", "Asia/Kolkata", "IN", "INR", "h23", ("hi", "en")),
@@ -134,7 +116,6 @@ GEO_CATALOGUE: tuple[GeoEntry, ...] = (
     ("te-IN", "Asia/Kolkata", "IN", "INR", "h23", ("te", "hi", "en")),
     ("mr-IN", "Asia/Kolkata", "IN", "INR", "h23", ("mr", "hi", "en")),
     ("th-TH", "Asia/Bangkok", "TH", "THB", "h23", ("th", "en")),
-    ("th-TH", "Asia/Chiang_Mai", "TH", "THB", "h23", ("th", "en")),
     # Vietnam observes a single clock -- Asia/Ho_Chi_Minh -- for the whole
     # country, so the diversity here is in the *languages* the device
     # carries rather than in the timezone.  A Vietnamese phone with a
@@ -167,22 +148,6 @@ GEO_CATALOGUE: tuple[GeoEntry, ...] = (
     ("ne-NP", "Asia/Kathmandu", "NP", "NPR", "h23", ("ne", "en")),
     ("si-LK", "Asia/Colombo", "LK", "LKR", "h23", ("si", "en")),
     ("my-MM", "Asia/Yangon", "MM", "MMK", "h23", ("my", "en")),
-    ("kk-KZ", "Asia/Almaty", "KZ", "KZT", "h23", ("kk", "ru")),
-    ("uz-UZ", "Asia/Tashkent", "UZ", "UZS", "h23", ("uz", "ru")),
-    ("mn-MN", "Asia/Ulaanbaatar", "MN", "MNT", "h23", ("mn", "en")),
-    ("hy-AM", "Asia/Yerevan", "AM", "AMD", "h23", ("hy", "ru")),
-    ("ka-GE", "Asia/Tbilisi", "GE", "GEL", "h23", ("ka", "ru")),
-    ("az-AZ", "Asia/Baku", "AZ", "AZN", "h23", ("az", "ru")),
-    # -- Oceania ------------------------------------------------------------
-    ("en-AU", "Australia/Sydney", "AU", "AUD", "h12", ("en",)),
-    ("en-AU", "Australia/Melbourne", "AU", "AUD", "h12", ("en",)),
-    ("en-AU", "Australia/Brisbane", "AU", "AUD", "h12", ("en",)),
-    ("en-AU", "Australia/Perth", "AU", "AUD", "h12", ("en",)),
-    ("en-AU", "Australia/Adelaide", "AU", "AUD", "h12", ("en",)),
-    ("en-AU", "Australia/Darwin", "AU", "AUD", "h12", ("en",)),
-    ("en-NZ", "Pacific/Auckland", "NZ", "NZD", "h12", ("en",)),
-    ("en-FJ", "Pacific/Fiji", "FJ", "FJD", "h12", ("en",)),
-    ("en-PG", "Pacific/Port_Moresby", "PG", "PGK", "h12", ("en",)),
 )
 
 #: Every distinct timezone in the catalogue, used to sanity check that no

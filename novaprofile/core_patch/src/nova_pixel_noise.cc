@@ -8,8 +8,9 @@
 #include <string>
 #include <vector>
 
-#include "third_party/boringssl/include/openssl/hmac.h"
-#include "third_party/boringssl/include/openssl/sha.h"
+#include "third_party/boringssl/src/include/openssl/digest.h"
+#include "third_party/boringssl/src/include/openssl/hmac.h"
+#include "third_party/boringssl/src/include/openssl/sha.h"
 
 namespace nova {
 namespace {

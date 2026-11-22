@@ -5,14 +5,29 @@
 // per patched accessor, so the diff against the Chromium tree stays
 // reviewable.
 //
-//   third_party/blink/renderer/core/html/navigator_id.cc
-//   third_party/blink/renderer/core/html/navigator_ua_data.cc
-//   third_party/blink/renderer/core/screen/screen.cc
-//   third_party/blink/renderer/modules/webgl/webgl_rendering_context.cc
-//   third_party/blink/renderer/core/canvas/canvas_rendering_context_2d.cc
-//   content/browser/browser_main_loop.cc
-//   content/gpu/gpu_main.cc
-//   content/browser/net/browser_context.cc
+//   third_party/blink/renderer/core/events/navigator_events.cc
+//   third_party/blink/renderer/core/execution_context/navigator_base.cc
+//   third_party/blink/renderer/core/frame/navigator.cc
+//   third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+//   third_party/blink/renderer/core/frame/navigator_device_memory.cc
+//   third_party/blink/renderer/core/frame/navigator_id.cc
+//   third_party/blink/renderer/core/frame/navigator_language.cc
+//   third_party/blink/renderer/core/frame/navigator_ua.cc
+//   third_party/blink/renderer/core/frame/navigator_ua_data.cc
+//   third_party/blink/renderer/core/frame/screen.cc
+//   third_party/blink/renderer/core/frame/local_dom_window.cc
+//   third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+//   third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
+//   content/public/browser/content_main_runner.cc
+//
+// The hooks layer itself lives in
+//
+//   third_party/blink/renderer/core/nova/nova_core_config.{h,cc}
+//   third_party/blink/renderer/core/nova/nova_pixel_noise.{h,cc}
+//   third_party/blink/renderer/core/nova/nova_blink_patch.cc
+//
+// and is built as the target
+// ``//third_party/blink/renderer/core/nova:nova_core``.
 
 #ifndef NOVA_PROFILE_CORE_CHROMIUM_HOOKS_H_
 #define NOVA_PROFILE_CORE_CHROMIUM_HOOKS_H_
@@ -22,6 +37,8 @@
 
 #include <cstdint>
 #include <string>
+
+#include "base/command_line.h"
 
 namespace nova {
 

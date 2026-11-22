@@ -2,15 +2,19 @@
 
 #include "nova_core_config.h"
 
-#include <base/files/file_util.h>
-#include <base/logging.h>
-#include <base/path_service.h>
-
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
+#include "base/command_line.h"
+#include "base/files/file_path.h"
+#include "base/files/file_util.h"
 #include "base/json/json_reader.h"
-#include "base/json/json_value.h"
+#include "base/logging.h"
+#include "base/path_service.h"
+#include "base/values.h"
 #include "url/gurl.h"
 
 namespace nova {
@@ -21,7 +25,7 @@ namespace {
 // the parser strict: a profile that is missing a field is rejected rather
 // than silently half-applied.
 
-bool ReadString(const base::Value::Dict& dict,
+bool ReadString(const base::DictValue& dict,
                 const char* key,
                 std::string* out,
                 std::string* error) {
@@ -34,20 +38,26 @@ bool ReadString(const base::Value::Dict& dict,
   return true;
 }
 
-bool ReadStringOrDefault(const base::Value::Dict& dict,
+// A missing or misshaped field leaves |out| alone, so the caller seeds it
+// with the value it wants to fall back to.  The signature matches the
+// strict readers above.
+bool ReadStringOrDefault(const base::DictValue& dict,
                           const char* key,
-                          const std::string& fallback,
-                          std::string* out) {
+                          std::string* out,
+                          std::string* error) {
   const base::Value* value = dict.Find(key);
-  if (!value || !value->is_string()) {
-    *out = fallback;
+  if (!value) {
     return true;
+  }
+  if (!value->is_string()) {
+    *error = std::string("non-string field: ") + key;
+    return false;
   }
   *out = value->GetString();
   return true;
 }
 
-bool ReadInt(const base::Value::Dict& dict,
+bool ReadInt(const base::DictValue& dict,
              const char* key,
              int* out,
              std::string* error) {
@@ -60,20 +70,38 @@ bool ReadInt(const base::Value::Dict& dict,
   return true;
 }
 
-bool ReadIntOrDefault(const base::Value::Dict& dict,
-                       const char* key,
-                       int fallback,
-                       int* out) {
+// The seed epoch and the nudge step are unsigned, so they need their own
+// overload: an ``int*`` cannot bind to a ``uint32_t*``.
+bool ReadInt(const base::DictValue& dict,
+             const char* key,
+             uint32_t* out,
+             std::string* error) {
   const base::Value* value = dict.Find(key);
   if (!value || !value->is_int()) {
-    *out = fallback;
+    *error = std::string("missing or non-integer field: ") + key;
+    return false;
+  }
+  *out = static_cast<uint32_t>(value->GetInt());
+  return true;
+}
+
+bool ReadIntOrDefault(const base::DictValue& dict,
+                       const char* key,
+                       int* out,
+                       std::string* error) {
+  const base::Value* value = dict.Find(key);
+  if (!value) {
     return true;
+  }
+  if (!value->is_int()) {
+    *error = std::string("non-integer field: ") + key;
+    return false;
   }
   *out = value->GetInt();
   return true;
 }
 
-bool ReadDouble(const base::Value::Dict& dict,
+bool ReadDouble(const base::DictValue& dict,
                 const char* key,
                 double* out,
                 std::string* error) {
@@ -86,7 +114,7 @@ bool ReadDouble(const base::Value::Dict& dict,
   return true;
 }
 
-bool ReadBool(const base::Value::Dict& dict,
+bool ReadBool(const base::DictValue& dict,
               const char* key,
               bool* out,
               std::string* error) {
@@ -99,20 +127,23 @@ bool ReadBool(const base::Value::Dict& dict,
   return true;
 }
 
-bool ReadBoolOrDefault(const base::Value::Dict& dict,
+bool ReadBoolOrDefault(const base::DictValue& dict,
                        const char* key,
-                       bool fallback,
-                       bool* out) {
+                       bool* out,
+                       std::string* error) {
   const base::Value* value = dict.Find(key);
-  if (!value || !value->is_bool()) {
-    *out = fallback;
+  if (!value) {
     return true;
+  }
+  if (!value->is_bool()) {
+    *error = std::string("non-boolean field: ") + key;
+    return false;
   }
   *out = value->GetBool();
   return true;
 }
 
-bool ReadStringList(const base::Value::Dict& dict,
+bool ReadStringList(const base::DictValue& dict,
                     const char* key,
                     std::vector<std::string>* out,
                     std::string* error) {
@@ -132,7 +163,7 @@ bool ReadStringList(const base::Value::Dict& dict,
   return true;
 }
 
-bool ReadIntList(const base::Value::Dict& dict,
+bool ReadIntList(const base::DictValue& dict,
                  const char* key,
                  std::vector<int>* out,
                  std::string* error) {
@@ -152,7 +183,7 @@ bool ReadIntList(const base::Value::Dict& dict,
   return true;
 }
 
-bool ReadDoubleList(const base::Value::Dict& dict,
+bool ReadDoubleList(const base::DictValue& dict,
                      const char* key,
                      std::vector<double>* out,
                      std::string* error) {
@@ -172,7 +203,7 @@ bool ReadDoubleList(const base::Value::Dict& dict,
   return true;
 }
 
-const base::Value::Dict* FindDict(const base::Value::Dict& parent,
+const base::DictValue* FindDict(const base::DictValue& parent,
                                    const char* key,
                                    std::string* error) {
   const base::Value* value = parent.Find(key);
@@ -183,7 +214,7 @@ const base::Value::Dict* FindDict(const base::Value::Dict& parent,
   return &value->GetDict();
 }
 
-bool ReadStringMap(const base::Value::Dict& dict,
+bool ReadStringMap(const base::DictValue& dict,
                    const char* key,
                    std::map<std::string, std::string>* out,
                    std::string* error) {
@@ -203,7 +234,7 @@ bool ReadStringMap(const base::Value::Dict& dict,
   return true;
 }
 
-bool ReadDoubleMap(const base::Value::Dict& dict,
+bool ReadDoubleMap(const base::DictValue& dict,
                    const char* key,
                    std::map<std::string, double>* out,
                    std::string* error) {
@@ -224,7 +255,7 @@ bool ReadDoubleMap(const base::Value::Dict& dict,
 }
 
 // Reads a vector of {brand, version} objects.
-bool ReadBrandList(const base::Value::Dict& dict,
+bool ReadBrandList(const base::DictValue& dict,
                    const char* key,
                    std::vector<BrandVersion>* out,
                    std::string* error) {
@@ -249,15 +280,15 @@ bool ReadBrandList(const base::Value::Dict& dict,
   return true;
 }
 
-bool ReadShaderPrecision(const base::Value::Dict& dict,
+bool ReadShaderPrecision(const base::DictValue& dict,
                          ShaderPrecision* out,
                          std::string* error) {
-  const base::Value::Dict* vertex = FindDict(dict, "vertex_shader", error);
+  const base::DictValue* vertex = FindDict(dict, "vertex_shader", error);
   if (!vertex) return false;
-  const base::Value::Dict* fragment = FindDict(dict, "fragment_shader", error);
+  const base::DictValue* fragment = FindDict(dict, "fragment_shader", error);
   if (!fragment) return false;
 
-  auto read_stage = [&](const base::Value::Dict& stage,
+  auto read_stage = [&](const base::DictValue& stage,
                          std::map<std::string, ShaderPrecisionRange>* target) {
     for (const auto& pair : stage) {
       if (!pair.second.is_dict()) {
@@ -283,7 +314,7 @@ bool ReadShaderPrecision(const base::Value::Dict& dict,
 // Section parsers
 // ---------------------------------------------------------------------------
 
-bool ParseSeed(const base::Value::Dict& dict, SeedConfig* out, std::string* error) {
+bool ParseSeed(const base::DictValue& dict, SeedConfig* out, std::string* error) {
   return ReadString(dict, "master_seed", &out->master_seed, error) &&
          ReadInt(dict, "seed_epoch", &out->seed_epoch, error) &&
          ReadInt(dict, "nudge_step", &out->nudge_step, error) &&
@@ -292,7 +323,7 @@ bool ParseSeed(const base::Value::Dict& dict, SeedConfig* out, std::string* erro
          ReadString(dict, "core_version", &out->core_version, error);
 }
 
-bool ParseAndroidBuild(const base::Value::Dict& dict,
+bool ParseAndroidBuild(const base::DictValue& dict,
                        AndroidBuild* out,
                        std::string* error) {
   return ReadString(dict, "version_release", &out->version_release, error) &&
@@ -317,7 +348,7 @@ bool ParseAndroidBuild(const base::Value::Dict& dict,
          ReadString(dict, "serial", &out->serial, error);
 }
 
-bool ParseAndroidAbiSoc(const base::Value::Dict& dict,
+bool ParseAndroidAbiSoc(const base::DictValue& dict,
                         AndroidAbiSoc* out,
                         std::string* error) {
   return ReadStringList(dict, "supported_abis", &out->supported_abis, error) &&
@@ -333,7 +364,7 @@ bool ParseAndroidAbiSoc(const base::Value::Dict& dict,
          ReadString(dict, "gpu_architecture", &out->gpu_architecture, error);
 }
 
-bool ParseScreen(const base::Value::Dict& dict, Screen* out, std::string* error) {
+bool ParseScreen(const base::DictValue& dict, Screen* out, std::string* error) {
   return ReadInt(dict, "width", &out->width, error) &&
          ReadInt(dict, "height", &out->height, error) &&
          ReadInt(dict, "avail_width", &out->avail_width, error) &&
@@ -346,7 +377,7 @@ bool ParseScreen(const base::Value::Dict& dict, Screen* out, std::string* error)
          ReadInt(dict, "density_dpi", &out->density_dpi, error);
 }
 
-bool ParseOrientation(const base::Value::Dict& dict,
+bool ParseOrientation(const base::DictValue& dict,
                       Orientation* out,
                       std::string* error) {
   return ReadString(dict, "type", &out->type, error) &&
@@ -354,10 +385,10 @@ bool ParseOrientation(const base::Value::Dict& dict,
          ReadBool(dict, "lock_supported", &out->lock_supported, error);
 }
 
-bool ParseViewport(const base::Value::Dict& dict,
+bool ParseViewport(const base::DictValue& dict,
                    Viewport* out,
                    std::string* error) {
-  const base::Value::Dict* insets = FindDict(dict, "safe_area_insets", error);
+  const base::DictValue* insets = FindDict(dict, "safe_area_insets", error);
   if (!insets) return false;
   return ReadInt(dict, "inner_width", &out->inner_width, error) &&
          ReadInt(dict, "inner_height", &out->inner_height, error) &&
@@ -367,14 +398,14 @@ bool ParseViewport(const base::Value::Dict& dict,
          ReadInt(dict, "screen_y", &out->screen_y, error) &&
          ReadDouble(dict, "visual_viewport_scale",
                     &out->visual_viewport_scale, error) &&
-         ReadInt(insets, "top", &out->safe_area_insets.top, error) &&
-         ReadInt(insets, "right", &out->safe_area_insets.right, error) &&
-         ReadInt(insets, "bottom", &out->safe_area_insets.bottom, error) &&
-         ReadInt(insets, "left", &out->safe_area_insets.left, error) &&
+         ReadInt(*insets, "top", &out->safe_area_insets.top, error) &&
+         ReadInt(*insets, "right", &out->safe_area_insets.right, error) &&
+         ReadInt(*insets, "bottom", &out->safe_area_insets.bottom, error) &&
+         ReadInt(*insets, "left", &out->safe_area_insets.left, error) &&
          ReadInt(dict, "scrollbar_width", &out->scrollbar_width, error);
 }
 
-bool ParseMediaQueries(const base::Value::Dict& dict,
+bool ParseMediaQueries(const base::DictValue& dict,
                        MediaQueries* out,
                        std::string* error) {
   return ReadString(dict, "prefers_color_scheme", &out->prefers_color_scheme,
@@ -391,7 +422,7 @@ bool ParseMediaQueries(const base::Value::Dict& dict,
          ReadString(dict, "dynamic_range", &out->dynamic_range, error);
 }
 
-bool ParseCanvas(const base::Value::Dict& dict,
+bool ParseCanvas(const base::DictValue& dict,
                  Canvas2DConfig* out,
                  std::string* error) {
   return ReadString(dict, "mode", &out->mode, error) &&
@@ -402,28 +433,28 @@ bool ParseCanvas(const base::Value::Dict& dict,
          ReadStringList(dict, "targets", &out->targets, error);
 }
 
-bool ParseWebGL(const base::Value::Dict& dict,
+bool ParseWebGL(const base::DictValue& dict,
                 WebGLConfig* out,
                 std::string* error) {
-  const base::Value::Dict* noise = FindDict(dict, "image_noise", error);
+  const base::DictValue* noise = FindDict(dict, "image_noise", error);
   if (!noise) return false;
-  const base::Value::Dict* extensions = FindDict(dict, "extensions", error);
+  const base::DictValue* extensions = FindDict(dict, "extensions", error);
   if (!extensions) return false;
-  const base::Value::Dict* parameters = FindDict(dict, "parameters", error);
+  const base::DictValue* parameters = FindDict(dict, "parameters", error);
   if (!parameters) return false;
-  const base::Value::Dict* precision = FindDict(dict, "shader_precision", error);
+  const base::DictValue* precision = FindDict(dict, "shader_precision", error);
   if (!precision) return false;
 
-  if (!ReadString(noise->GetDict(), "value", &out->image_noise.value, error) ||
-      !ReadBool(noise->GetDict(), "enabled", &out->image_noise.enabled, error)) {
+  if (!ReadString(*noise, "value", &out->image_noise.value, error) ||
+      !ReadBool(*noise, "enabled", &out->image_noise.enabled, error)) {
     return false;
   }
-  if (!ReadStringList(extensions->GetDict(), "supported", &out->extensions,
+  if (!ReadStringList(*extensions, "supported", &out->extensions,
                       error)) {
     return false;
   }
 
-  const base::Value::Dict& p = parameters->GetDict();
+  const base::DictValue& p = *parameters;
   WebGLParameters& params = out->parameters;
   bool ok = ReadInt(p, "max_texture_size", &params.max_texture_size, error) &&
             ReadInt(p, "max_cube_map_texture_size",
@@ -479,31 +510,31 @@ bool ParseWebGL(const base::Value::Dict& dict,
          ReadString(dict, "shading_language_version",
                     &out->shading_language_version, error) &&
          ReadBool(dict, "read_pixels_sync", &out->read_pixels_sync, error) &&
-         ReadShaderPrecision(precision->GetDict(), &out->shader_precision,
+         ReadShaderPrecision(*precision, &out->shader_precision,
                              error) &&
-         ReadStringOrDefault(dict, "salt", "", &out->salt);
+         ReadStringOrDefault(dict, "salt", &out->salt, error);
 }
 
-bool ParseWebGPU(const base::Value::Dict& dict,
+bool ParseWebGPU(const base::DictValue& dict,
                  WebGPUConfig* out,
                  std::string* error) {
-  const base::Value::Dict* adapter = FindDict(dict, "adapter", error);
+  const base::DictValue* adapter = FindDict(dict, "adapter", error);
   if (!adapter) return false;
   return ReadBool(dict, "enabled", &out->enabled, error) &&
-         ReadString(adapter->GetDict(), "vendor", &out->adapter.vendor, error) &&
-         ReadString(adapter->GetDict(), "architecture",
+         ReadString(*adapter, "vendor", &out->adapter.vendor, error) &&
+         ReadString(*adapter, "architecture",
                     &out->adapter.architecture, error) &&
-         ReadString(adapter->GetDict(), "device", &out->adapter.device, error) &&
-         ReadString(adapter->GetDict(), "description",
+         ReadString(*adapter, "device", &out->adapter.device, error) &&
+         ReadString(*adapter, "description",
                     &out->adapter.description, error) &&
-         ReadBool(adapter->GetDict(), "is_fallback_adapter",
+         ReadBool(*adapter, "is_fallback_adapter",
                   &out->adapter.is_fallback_adapter, error) &&
          ReadStringList(dict, "features", &out->features, error) &&
          ReadDoubleMap(dict, "limits", &out->limits, error) &&
-         ReadStringOrDefault(dict, "salt", "", &out->salt);
+         ReadStringOrDefault(dict, "salt", &out->salt, error);
 }
 
-bool ParseAudio(const base::Value::Dict& dict, AudioConfig* out, std::string* error) {
+bool ParseAudio(const base::DictValue& dict, AudioConfig* out, std::string* error) {
   return ReadString(dict, "mode", &out->mode, error) &&
          ReadString(dict, "salt", &out->salt, error) &&
          ReadInt(dict, "sample_rate", &out->sample_rate, error) &&
@@ -515,7 +546,7 @@ bool ParseAudio(const base::Value::Dict& dict, AudioConfig* out, std::string* er
                   &out->respect_core_quantization, error);
 }
 
-bool ParseRects(const base::Value::Dict& dict, RectsConfig* out, std::string* error) {
+bool ParseRects(const base::DictValue& dict, RectsConfig* out, std::string* error) {
   return ReadString(dict, "mode", &out->mode, error) &&
          ReadString(dict, "salt", &out->salt, error) &&
          ReadInt(dict, "delta_x", &out->delta_x, error) &&
@@ -525,7 +556,7 @@ bool ParseRects(const base::Value::Dict& dict, RectsConfig* out, std::string* er
          ReadStringList(dict, "targets", &out->targets, error);
 }
 
-bool ParseFonts(const base::Value::Dict& dict, FontsConfig* out, std::string* error) {
+bool ParseFonts(const base::DictValue& dict, FontsConfig* out, std::string* error) {
   return ReadString(dict, "mode", &out->mode, error) &&
          ReadStringList(dict, "installed", &out->installed, error) &&
          ReadString(dict, "salt", &out->salt, error) &&
@@ -533,7 +564,7 @@ bool ParseFonts(const base::Value::Dict& dict, FontsConfig* out, std::string* er
                   &out->preserve_metric_clusters, error);
 }
 
-bool ParseMediaDevices(const base::Value::Dict& dict,
+bool ParseMediaDevices(const base::DictValue& dict,
                        MediaDevicesConfig* out,
                        std::string* error) {
   auto read_entries = [&](const char* key,
@@ -550,13 +581,13 @@ bool ParseMediaDevices(const base::Value::Dict& dict,
         return false;
       }
       MediaDeviceEntry entry;
-      const base::Value::Dict& item_dict = item.GetDict();
+      const base::DictValue& item_dict = item.GetDict();
       if (!ReadString(item_dict, "device_id", &entry.device_id, error) ||
           !ReadString(item_dict, "group_id", &entry.group_id, error) ||
           !ReadString(item_dict, "label", &entry.label, error)) {
         return false;
       }
-      ReadStringOrDefault(item_dict, "facing_mode", "", &entry.facing_mode);
+      ReadStringOrDefault(item_dict, "facing_mode", &entry.facing_mode, error);
       target->push_back(entry);
     }
     return true;
@@ -572,7 +603,7 @@ bool ParseMediaDevices(const base::Value::Dict& dict,
          read_entries("video_inputs", &out->video_inputs);
 }
 
-bool ParseStorageNetwork(const base::Value::Dict& dict,
+bool ParseStorageNetwork(const base::DictValue& dict,
                          StorageNetworkConfig* out,
                          std::string* error) {
   const base::Value* quota = dict.Find("quota_bytes");
@@ -592,25 +623,25 @@ bool ParseStorageNetwork(const base::Value::Dict& dict,
          ReadStringOrDefault(dict, "salt", &out->salt, error);
 }
 
-bool ParseBatterySpeechGamepad(const base::Value::Dict& dict,
+bool ParseBatterySpeechGamepad(const base::DictValue& dict,
                                 BatterySpeechGamepad* out,
                                 std::string* error) {
-  const base::Value::Dict* battery = FindDict(dict, "battery", error);
+  const base::DictValue* battery = FindDict(dict, "battery", error);
   if (!battery) return false;
-  const base::Value::Dict* gamepad = FindDict(dict, "gamepad", error);
+  const base::DictValue* gamepad = FindDict(dict, "gamepad", error);
   if (!gamepad) return false;
 
-  if (!ReadBool(battery->GetDict(), "enabled", &out->battery.enabled, error) ||
-      !ReadBool(battery->GetDict(), "charging", &out->battery.charging, error) ||
-      !ReadDouble(battery->GetDict(), "level", &out->battery.level, error) ||
-      !ReadInt(battery->GetDict(), "charging_time", &out->battery.charging_time,
+  if (!ReadBool(*battery, "enabled", &out->battery.enabled, error) ||
+      !ReadBool(*battery, "charging", &out->battery.charging, error) ||
+      !ReadDouble(*battery, "level", &out->battery.level, error) ||
+      !ReadInt(*battery, "charging_time", &out->battery.charging_time,
                error) ||
-      !ReadInt(battery->GetDict(), "discharging_time",
+      !ReadInt(*battery, "discharging_time",
                &out->battery.discharging_time, error)) {
     return false;
   }
 
-  if (!ReadBool(gamepad->GetDict(), "enabled", &out->gamepad.enabled, error)) {
+  if (!ReadBool(*gamepad, "enabled", &out->gamepad.enabled, error)) {
     return false;
   }
 
@@ -625,41 +656,43 @@ bool ParseBatterySpeechGamepad(const base::Value::Dict& dict,
       return false;
     }
     SpeechVoice voice;
-    const base::Value::Dict& voice_dict = item.GetDict();
+    voice.is_default = false;
+    voice.local_service = true;
+    const base::DictValue& voice_dict = item.GetDict();
     if (!ReadString(voice_dict, "name", &voice.name, error) ||
         !ReadString(voice_dict, "lang", &voice.lang, error)) {
       return false;
     }
-    ReadBoolOrDefault(voice_dict, "default", false, &voice.is_default);
-    ReadBoolOrDefault(voice_dict, "local_service", true, &voice.local_service);
-    ReadStringOrDefault(voice_dict, "voice_uri", "", &voice.voice_uri);
+    ReadBoolOrDefault(voice_dict, "default", &voice.is_default, error);
+    ReadBoolOrDefault(voice_dict, "local_service", &voice.local_service, error);
+    ReadStringOrDefault(voice_dict, "voice_uri", &voice.voice_uri, error);
     out->speech_voices.push_back(voice);
   }
   return true;
 }
 
-bool ParseSensors(const base::Value::Dict& dict,
+bool ParseSensors(const base::DictValue& dict,
                   SensorsConfig* out,
                   std::string* error) {
-  const base::Value::Dict* accel = FindDict(dict, "accelerometer", error);
+  const base::DictValue* accel = FindDict(dict, "accelerometer", error);
   if (!accel) return false;
-  const base::Value::Dict* gyro = FindDict(dict, "gyroscope", error);
+  const base::DictValue* gyro = FindDict(dict, "gyroscope", error);
   if (!gyro) return false;
-  const base::Value::Dict* linear = FindDict(dict, "linear_acceleration", error);
+  const base::DictValue* linear = FindDict(dict, "linear_acceleration", error);
   if (!linear) return false;
-  const base::Value::Dict* gravity = FindDict(dict, "gravity", error);
+  const base::DictValue* gravity = FindDict(dict, "gravity", error);
   if (!gravity) return false;
-  const base::Value::Dict* absolute = FindDict(dict, "absolute_orientation", error);
+  const base::DictValue* absolute = FindDict(dict, "absolute_orientation", error);
   if (!absolute) return false;
-  const base::Value::Dict* relative = FindDict(dict, "relative_orientation", error);
+  const base::DictValue* relative = FindDict(dict, "relative_orientation", error);
   if (!relative) return false;
 
-  auto read_vector = [&](const base::Value::Dict& source, Vector3D* target) {
+  auto read_vector = [&](const base::DictValue& source, Vector3D* target) {
     return ReadDouble(source, "x", &target->x, error) &&
            ReadDouble(source, "y", &target->y, error) &&
            ReadDouble(source, "z", &target->z, error);
   };
-  auto read_orientation = [&](const base::Value::Dict& source,
+  auto read_orientation = [&](const base::DictValue& source,
                               Orientation3D* target) {
     return ReadDouble(source, "alpha", &target->alpha, error) &&
            ReadDouble(source, "beta", &target->beta, error) &&
@@ -669,16 +702,16 @@ bool ParseSensors(const base::Value::Dict& dict,
   return ReadBool(dict, "enabled", &out->enabled, error) &&
          ReadInt(dict, "sampling_hz", &out->sampling_hz, error) &&
          ReadString(dict, "motion_profile", &out->motion_profile, error) &&
-         read_vector(accel->GetDict(), &out->accelerometer) &&
-         read_vector(gyro->GetDict(), &out->gyroscope) &&
-         read_vector(linear->GetDict(), &out->linear_acceleration) &&
-         read_vector(gravity->GetDict(), &out->gravity) &&
-         read_orientation(absolute->GetDict(), &out->absolute_orientation) &&
-         read_orientation(relative->GetDict(), &out->relative_orientation) &&
+         read_vector(*accel, &out->accelerometer) &&
+         read_vector(*gyro, &out->gyroscope) &&
+         read_vector(*linear, &out->linear_acceleration) &&
+         read_vector(*gravity, &out->gravity) &&
+         read_orientation(*absolute, &out->absolute_orientation) &&
+         read_orientation(*relative, &out->relative_orientation) &&
          ReadStringOrDefault(dict, "salt", &out->salt, error);
 }
 
-bool ParseNavigator(const base::Value::Dict& dict,
+bool ParseNavigator(const base::DictValue& dict,
                     NavigatorConfig* out,
                     std::string* error) {
   return ReadString(dict, "user_agent", &out->user_agent, error) &&
@@ -703,7 +736,7 @@ bool ParseNavigator(const base::Value::Dict& dict,
          ReadBool(dict, "java_enabled", &out->java_enabled, error);
 }
 
-bool ParseUserAgentData(const base::Value::Dict& dict,
+bool ParseUserAgentData(const base::DictValue& dict,
                         UserAgentDataConfig* out,
                         std::string* error) {
   return ReadBrandList(dict, "brands", &out->brands, error) &&
@@ -718,13 +751,13 @@ bool ParseUserAgentData(const base::Value::Dict& dict,
          ReadBool(dict, "wow64", &out->wow64, error);
 }
 
-bool ParsePermissions(const base::Value::Dict& dict,
+bool ParsePermissions(const base::DictValue& dict,
                       PermissionsConfig* out,
                       std::string* error) {
   return ReadStringMap(dict, "policies", &out->policies, error);
 }
 
-bool ParseTimezone(const base::Value::Dict& dict,
+bool ParseTimezone(const base::DictValue& dict,
                    TimezoneConfig* out,
                    std::string* error) {
   return ReadString(dict, "iana_name", &out->iana_name, error) &&
@@ -733,7 +766,7 @@ bool ParseTimezone(const base::Value::Dict& dict,
          ReadString(dict, "abbreviation", &out->abbreviation, error);
 }
 
-bool ParseLocale(const base::Value::Dict& dict,
+bool ParseLocale(const base::DictValue& dict,
                  LocaleConfig* out,
                  std::string* error) {
   return ReadString(dict, "primary", &out->primary, error) &&
@@ -744,7 +777,7 @@ bool ParseLocale(const base::Value::Dict& dict,
          ReadString(dict, "currency", &out->currency, error);
 }
 
-bool ParseGeolocation(const base::Value::Dict& dict,
+bool ParseGeolocation(const base::DictValue& dict,
                       GeolocationConfig* out,
                       std::string* error) {
   if (!ReadString(dict, "mode", &out->mode, error)) {
@@ -752,7 +785,7 @@ bool ParseGeolocation(const base::Value::Dict& dict,
   }
   auto read_optional = [&](const char* key, std::optional<double>* target) {
     const base::Value* value = dict.Find(key);
-    if (!value || value->is_null()) {
+    if (!value || value->is_none()) {
       target->reset();
       return true;
     }
@@ -773,7 +806,7 @@ bool ParseGeolocation(const base::Value::Dict& dict,
          ReadInt(dict, "timestamp_jitter_ms", &out->timestamp_jitter_ms, error);
 }
 
-bool ParseProxy(const base::Value::Dict& dict, ProxyConfig* out, std::string* error) {
+bool ParseProxy(const base::DictValue& dict, ProxyConfig* out, std::string* error) {
   return ReadBool(dict, "enabled", &out->enabled, error) &&
          ReadString(dict, "protocol", &out->protocol, error) &&
          ReadString(dict, "host", &out->host, error) &&
@@ -785,7 +818,7 @@ bool ParseProxy(const base::Value::Dict& dict, ProxyConfig* out, std::string* er
          ReadInt(dict, "read_timeout_ms", &out->read_timeout_ms, error);
 }
 
-bool ParseWebRtc(const base::Value::Dict& dict,
+bool ParseWebRtc(const base::DictValue& dict,
                  WebRtcConfig* out,
                  std::string* error) {
   return ReadString(dict, "mode", &out->mode, error) &&
@@ -802,7 +835,7 @@ bool ParseWebRtc(const base::Value::Dict& dict,
                     error);
 }
 
-bool ParseDns(const base::Value::Dict& dict, DnsConfig* out, std::string* error) {
+bool ParseDns(const base::DictValue& dict, DnsConfig* out, std::string* error) {
   return ReadString(dict, "mode", &out->mode, error) &&
          ReadStringList(dict, "servers", &out->servers, error) &&
          ReadString(dict, "doh_url", &out->doh_url, error) &&
@@ -810,7 +843,7 @@ bool ParseDns(const base::Value::Dict& dict, DnsConfig* out, std::string* error)
          ReadBool(dict, "prevent_dns_leak", &out->prevent_dns_leak, error);
 }
 
-bool ParseHttpHeaders(const base::Value::Dict& dict,
+bool ParseHttpHeaders(const base::DictValue& dict,
                       HttpHeadersConfig* out,
                       std::string* error) {
   return ReadString(dict, "accept_language", &out->accept_language, error) &&
@@ -829,7 +862,7 @@ bool ParseHttpHeaders(const base::Value::Dict& dict,
          ReadStringMap(dict, "custom_headers", &out->custom_headers, error);
 }
 
-bool ParseGeoSync(const base::Value::Dict& dict,
+bool ParseGeoSync(const base::DictValue& dict,
                   GeoSyncConfig* out,
                   std::string* error) {
   return ReadBool(dict, "enabled", &out->enabled, error) &&
@@ -841,7 +874,7 @@ bool ParseGeoSync(const base::Value::Dict& dict,
          ReadBool(dict, "sync_webrtc_ip", &out->sync_webrtc_ip, error);
 }
 
-bool ParseGeoIntelligence(const base::Value::Dict& dict,
+bool ParseGeoIntelligence(const base::DictValue& dict,
                           GeoIntelligenceConfig* out,
                           std::string* error) {
   return ReadString(dict, "exit_ip_v4", &out->exit_ip_v4, error) &&
@@ -865,152 +898,153 @@ bool ParseGeoIntelligence(const base::Value::Dict& dict,
 bool ParseProfileConfig(const std::string& json,
                         ProfileConfig* config,
                         std::string* error) {
-  base::JSONReader::Options options;
-  options.allow_trailing_commas = false;
-  options.allow_nulls = true;
-
-  base::Value root;
-  base::JSONReader reader;
-  if (!reader.Read(json, options, &root)) {
-    *error = "the configuration is not valid JSON: " + reader.GetErrorMessage();
+  // Chromium 159's JSONReader is a set of static methods: it hands back
+  // the parsed document in an optional rather than filling an out
+  // parameter.  ``ReadDict`` is the right entry point here because the
+  // root of the configuration is a JSON object, and it rejects a document
+  // whose root is anything else.
+  //
+  // The options are the strict RFC 8259 ones: no trailing commas and no
+  // comments.  A configuration that is not strict JSON is a configuration
+  // that two implementations may read differently.
+  std::optional<base::DictValue> root =
+      base::JSONReader::ReadDict(json, base::JSON_PARSE_RFC);
+  if (!root) {
+    *error = "the configuration is not a valid JSON object";
     return false;
   }
-  if (!root.is_dict()) {
-    *error = "the configuration root must be a JSON object";
-    return false;
-  }
-  const base::Value::Dict& dict = root.GetDict();
+  const base::DictValue& dict = *root;
 
   ProfileConfig parsed;
 
   // The identity block holds the profile id next to the seed config.
-  const base::Value::Dict* identity = FindDict(dict, "identity", error);
+  const base::DictValue* identity = FindDict(dict, "identity", error);
   if (!identity) return false;
-  if (!ReadString(identity->GetDict(), "id", &parsed.profile_id, error)) {
+  if (!ReadString(*identity, "id", &parsed.profile_id, error)) {
     return false;
   }
 
-  const base::Value::Dict* seed = FindDict(dict, "seed_config", error);
+  const base::DictValue* seed = FindDict(dict, "seed_config", error);
   if (!seed) return false;
-  if (!ParseSeed(seed->GetDict(), &parsed.seed_config, error)) return false;
+  if (!ParseSeed(*seed, &parsed.seed_config, error)) return false;
 
-  const base::Value::Dict* build = FindDict(dict, "android_build", error);
+  const base::DictValue* build = FindDict(dict, "android_build", error);
   if (!build) return false;
-  if (!ParseAndroidBuild(build->GetDict(), &parsed.android_build, error)) return false;
+  if (!ParseAndroidBuild(*build, &parsed.android_build, error)) return false;
 
-  const base::Value::Dict* abi = FindDict(dict, "android_abi_soc", error);
+  const base::DictValue* abi = FindDict(dict, "android_abi_soc", error);
   if (!abi) return false;
-  if (!ParseAndroidAbiSoc(abi->GetDict(), &parsed.android_abi_soc, error)) return false;
+  if (!ParseAndroidAbiSoc(*abi, &parsed.android_abi_soc, error)) return false;
 
-  const base::Value::Dict* navigator = FindDict(dict, "navigator", error);
+  const base::DictValue* navigator = FindDict(dict, "navigator", error);
   if (!navigator) return false;
-  if (!ParseNavigator(navigator->GetDict(), &parsed.navigator, error)) return false;
+  if (!ParseNavigator(*navigator, &parsed.navigator, error)) return false;
 
-  const base::Value::Dict* uad = FindDict(dict, "user_agent_data", error);
+  const base::DictValue* uad = FindDict(dict, "user_agent_data", error);
   if (!uad) return false;
-  if (!ParseUserAgentData(uad->GetDict(), &parsed.user_agent_data, error)) return false;
+  if (!ParseUserAgentData(*uad, &parsed.user_agent_data, error)) return false;
 
-  const base::Value::Dict* permissions = FindDict(dict, "permissions", error);
+  const base::DictValue* permissions = FindDict(dict, "permissions", error);
   if (!permissions) return false;
-  if (!ParsePermissions(permissions->GetDict(), &parsed.permissions, error)) return false;
+  if (!ParsePermissions(*permissions, &parsed.permissions, error)) return false;
 
-  const base::Value::Dict* screen = FindDict(dict, "screen", error);
+  const base::DictValue* screen = FindDict(dict, "screen", error);
   if (!screen) return false;
-  if (!ParseScreen(screen->GetDict(), &parsed.screen, error)) return false;
+  if (!ParseScreen(*screen, &parsed.screen, error)) return false;
 
-  const base::Value::Dict* orientation = FindDict(dict, "orientation", error);
+  const base::DictValue* orientation = FindDict(dict, "orientation", error);
   if (!orientation) return false;
-  if (!ParseOrientation(orientation->GetDict(), &parsed.orientation, error)) return false;
+  if (!ParseOrientation(*orientation, &parsed.orientation, error)) return false;
 
-  const base::Value::Dict* viewport = FindDict(dict, "viewport", error);
+  const base::DictValue* viewport = FindDict(dict, "viewport", error);
   if (!viewport) return false;
-  if (!ParseViewport(viewport->GetDict(), &parsed.viewport, error)) return false;
+  if (!ParseViewport(*viewport, &parsed.viewport, error)) return false;
 
-  const base::Value::Dict* media = FindDict(dict, "media_queries", error);
+  const base::DictValue* media = FindDict(dict, "media_queries", error);
   if (!media) return false;
-  if (!ParseMediaQueries(media->GetDict(), &parsed.media_queries, error)) return false;
+  if (!ParseMediaQueries(*media, &parsed.media_queries, error)) return false;
 
-  const base::Value::Dict* timezone = FindDict(dict, "timezone", error);
+  const base::DictValue* timezone = FindDict(dict, "timezone", error);
   if (!timezone) return false;
-  if (!ParseTimezone(timezone->GetDict(), &parsed.timezone, error)) return false;
+  if (!ParseTimezone(*timezone, &parsed.timezone, error)) return false;
 
-  const base::Value::Dict* locale = FindDict(dict, "locale", error);
+  const base::DictValue* locale = FindDict(dict, "locale", error);
   if (!locale) return false;
-  if (!ParseLocale(locale->GetDict(), &parsed.locale, error)) return false;
+  if (!ParseLocale(*locale, &parsed.locale, error)) return false;
 
-  const base::Value::Dict* geolocation = FindDict(dict, "geolocation", error);
+  const base::DictValue* geolocation = FindDict(dict, "geolocation", error);
   if (!geolocation) return false;
-  if (!ParseGeolocation(geolocation->GetDict(), &parsed.geolocation, error)) return false;
+  if (!ParseGeolocation(*geolocation, &parsed.geolocation, error)) return false;
 
-  const base::Value::Dict* canvas = FindDict(dict, "canvas_2d", error);
+  const base::DictValue* canvas = FindDict(dict, "canvas_2d", error);
   if (!canvas) return false;
-  if (!ParseCanvas(canvas->GetDict(), &parsed.canvas_2d, error)) return false;
+  if (!ParseCanvas(*canvas, &parsed.canvas_2d, error)) return false;
 
-  const base::Value::Dict* webgl = FindDict(dict, "webgl", error);
+  const base::DictValue* webgl = FindDict(dict, "webgl", error);
   if (!webgl) return false;
-  if (!ParseWebGL(webgl->GetDict(), &parsed.webgl, error)) return false;
+  if (!ParseWebGL(*webgl, &parsed.webgl, error)) return false;
 
-  const base::Value::Dict* webgpu = FindDict(dict, "webgpu", error);
+  const base::DictValue* webgpu = FindDict(dict, "webgpu", error);
   if (!webgpu) return false;
-  if (!ParseWebGPU(webgpu->GetDict(), &parsed.webgpu, error)) return false;
+  if (!ParseWebGPU(*webgpu, &parsed.webgpu, error)) return false;
 
-  const base::Value::Dict* audio = FindDict(dict, "audio", error);
+  const base::DictValue* audio = FindDict(dict, "audio", error);
   if (!audio) return false;
-  if (!ParseAudio(audio->GetDict(), &parsed.audio, error)) return false;
+  if (!ParseAudio(*audio, &parsed.audio, error)) return false;
 
-  const base::Value::Dict* rects = FindDict(dict, "rects", error);
+  const base::DictValue* rects = FindDict(dict, "rects", error);
   if (!rects) return false;
-  if (!ParseRects(rects->GetDict(), &parsed.rects, error)) return false;
+  if (!ParseRects(*rects, &parsed.rects, error)) return false;
 
-  const base::Value::Dict* fonts = FindDict(dict, "fonts", error);
+  const base::DictValue* fonts = FindDict(dict, "fonts", error);
   if (!fonts) return false;
-  if (!ParseFonts(fonts->GetDict(), &parsed.fonts, error)) return false;
+  if (!ParseFonts(*fonts, &parsed.fonts, error)) return false;
 
-  const base::Value::Dict* media_devices = FindDict(dict, "media_devices", error);
+  const base::DictValue* media_devices = FindDict(dict, "media_devices", error);
   if (!media_devices) return false;
-  if (!ParseMediaDevices(media_devices->GetDict(), &parsed.media_devices, error))
+  if (!ParseMediaDevices(*media_devices, &parsed.media_devices, error))
     return false;
 
-  const base::Value::Dict* storage = FindDict(dict, "storage_network", error);
+  const base::DictValue* storage = FindDict(dict, "storage_network", error);
   if (!storage) return false;
-  if (!ParseStorageNetwork(storage->GetDict(), &parsed.storage_network, error))
+  if (!ParseStorageNetwork(*storage, &parsed.storage_network, error))
     return false;
 
-  const base::Value::Dict* battery = FindDict(dict, "battery_speech_gamepad", error);
+  const base::DictValue* battery = FindDict(dict, "battery_speech_gamepad", error);
   if (!battery) return false;
-  if (!ParseBatterySpeechGamepad(battery->GetDict(),
+  if (!ParseBatterySpeechGamepad(*battery,
                                   &parsed.battery_speech_gamepad, error)) {
     return false;
   }
 
-  const base::Value::Dict* sensors = FindDict(dict, "sensors", error);
+  const base::DictValue* sensors = FindDict(dict, "sensors", error);
   if (!sensors) return false;
-  if (!ParseSensors(sensors->GetDict(), &parsed.sensors, error)) return false;
+  if (!ParseSensors(*sensors, &parsed.sensors, error)) return false;
 
-  const base::Value::Dict* proxy = FindDict(dict, "proxy", error);
+  const base::DictValue* proxy = FindDict(dict, "proxy", error);
   if (!proxy) return false;
-  if (!ParseProxy(proxy->GetDict(), &parsed.proxy, error)) return false;
+  if (!ParseProxy(*proxy, &parsed.proxy, error)) return false;
 
-  const base::Value::Dict* geo_sync = FindDict(dict, "geo_sync", error);
+  const base::DictValue* geo_sync = FindDict(dict, "geo_sync", error);
   if (!geo_sync) return false;
-  if (!ParseGeoSync(geo_sync->GetDict(), &parsed.geo_sync, error)) return false;
+  if (!ParseGeoSync(*geo_sync, &parsed.geo_sync, error)) return false;
 
-  const base::Value::Dict* geo_intel = FindDict(dict, "geo_intelligence", error);
+  const base::DictValue* geo_intel = FindDict(dict, "geo_intelligence", error);
   if (!geo_intel) return false;
-  if (!ParseGeoIntelligence(geo_intel->GetDict(), &parsed.geo_intelligence, error))
+  if (!ParseGeoIntelligence(*geo_intel, &parsed.geo_intelligence, error))
     return false;
 
-  const base::Value::Dict* webrtc = FindDict(dict, "webrtc", error);
+  const base::DictValue* webrtc = FindDict(dict, "webrtc", error);
   if (!webrtc) return false;
-  if (!ParseWebRtc(webrtc->GetDict(), &parsed.webrtc, error)) return false;
+  if (!ParseWebRtc(*webrtc, &parsed.webrtc, error)) return false;
 
-  const base::Value::Dict* dns = FindDict(dict, "dns", error);
+  const base::DictValue* dns = FindDict(dict, "dns", error);
   if (!dns) return false;
-  if (!ParseDns(dns->GetDict(), &parsed.dns, error)) return false;
+  if (!ParseDns(*dns, &parsed.dns, error)) return false;
 
-  const base::Value::Dict* headers = FindDict(dict, "http_headers", error);
+  const base::DictValue* headers = FindDict(dict, "http_headers", error);
   if (!headers) return false;
-  if (!ParseHttpHeaders(headers->GetDict(), &parsed.http_headers, error))
+  if (!ParseHttpHeaders(*headers, &parsed.http_headers, error))
     return false;
 
   *config = std::move(parsed);

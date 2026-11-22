@@ -20,6 +20,213 @@ Read this file before changing anything.
 | R5 | **Measure, do not assume.** Every claim is a recorded measurement. | Claims without measurements are opinions. |
 | R6 | **Never delete without looking.** Observe carefully before removing a file. | The rule for cleanup; a deleted core file ends the project. |
 | R7 | **The account state is not part of the project.** | It must not reach a repository. |
+| R8 | **Do not stop and do not ask.** Work through the whole task without checking in. | An interruption costs more than a wrong turn that is caught by a test. |
+| R9 | **A plan is not a result.** A step is done when it is verified, not when it is written. | "Wrote the code" and "the code works" are different claims. |
+| R10 | **Use agents, but manage them tightly.** Parallel agents accelerate the work; unmanaged agents waste tokens and collide on files. | The token cost of a badly scoped agent exceeds the time it saves. |
+| R11 | **A test that makes its own input cannot fail.** Verify the artefact against the real thing, not against a copy of it. | 82 tests passed on a patch series that `git apply` rejected outright. |
+
+---
+
+## 0. R11 — A test that makes its own input cannot fail
+
+This rule exists because of a concrete failure, not because it reads
+well.
+
+### What happened
+
+The Chromium patch series carried 54 hunks.  **All 54 declared the
+wrong number of lines**, so `git apply` refused both patches with
+"corrupt patch".  The series had never applied to a real Chromium
+checkout.
+
+Eighty-two tests covered the patch machinery.  All of them passed.
+Every one of them built its patch from the same data the patch was
+checked against, so the tests were verifying that the code was
+self-consistent — and a self-consistent patch series is exactly what a
+broken one is.
+
+### The rule
+
+> **A test that makes its own input cannot fail.**  When the artefact is
+> meant to meet the outside world — a patch against a third-party tree,
+> a package that a customer installs, a profile that a site sees — the
+> verification has to run against that outside world.
+
+### What counts as a real verification
+
+| The artefact | A test that cannot fail | The verification that counts |
+|---|---|---|
+| A patch for Chromium | applying the patch to a patch the test generated | `git apply --check` against a **pristine Chromium checkout**, with no `--recount`, no `--3way`, no fuzz |
+| A released wheel | importing it from the source tree | installing it into a clean virtualenv and importing it there |
+| A profile | asserting the fields equal the schema | running it in a **real browser** and reading the surfaces back |
+| A configuration | parsing it with the project's own parser | parsing it with the **upstream** parser |
+
+### The habit
+
+When a component's whole purpose is to meet an external system, the
+first thing to arrange is **a copy of that external system**.  A 23 GB
+Chromium checkout costs an hour and a disk; it is cheaper than any
+number of hours of tests that cannot fail.
+
+Two rules follow:
+
+- **Fetch the real thing early**, even when nothing depends on it yet.
+- **Never verify an artefact against a copy the test itself produced.**
+  The copy carries the same mistake.
+
+---
+
+## 1. R10 — Use agents, but manage them tightly
+
+The user permits parallel agents.  They are worth using **when the work
+splits cleanly**, and they are a waste **when it does not**.
+
+### The rule
+
+> **One agent, one file group, one verification.**  Two agents must never
+> edit the same file.  And the agent that writes the code does not get
+> to decide whether the code works.
+
+### How to scope an agent
+
+Give it:
+
+1. **The exact file paths it may create or edit.**  A list, not a
+   directory.  "You own `novaprofile/control_plane/novaprofile/js_runtime/`"
+   is acceptable; "you own the backend" is not.
+2. **The interface it must satisfy**, copied from `AGENT_CONTRACT.md`.
+   The agent must not invent a new interface.
+3. **The tests it must make pass.**  Named, with the command to run them.
+4. **The command to run the tests**, and the instruction to report the
+   output rather than a claim.
+
+### The token budget
+
+| Rule | Reason |
+|---|---|
+| Do not paste whole files into the task description | the agent can read them |
+| Do not ask the agent to explore the whole repository | it will; give it the paths |
+| Do not ask for a summary of what it did | that is what its final message is |
+| Do not run two agents on the same subsystem | they will both rewrite the same file |
+| Do not let an agent run the full test suite | it will take longer than the work |
+
+The cost of an agent is roughly proportional to **how much of the
+repository it reads**, not to how much it writes.  An agent told to
+"investigate the collision module" will read the whole module and every
+test that touches it; an agent told "read `core/collision.py` and
+`tests/test_collision_and_persistence.py`, fix the X" will read two
+files.
+
+### What the agent must report back
+
+The agent's final message is the evidence.  It must contain:
+
+- the files it changed,
+- the command it ran and its **actual output**,
+- anything it could not do, and why.
+
+An agent that reports "done" without output has not verified anything
+(R9 applies to agents too).
+
+### While the agents run
+
+The main agent does **not** wait.  It takes the work that is not
+assigned to anybody: the parts that are on the critical path, or that
+need judgement about the whole project.  Waiting for an agent is the
+one thing that makes parallel agents slower than doing the work
+directly.
+
+#### The division of labour in practice
+
+The main agent keeps:
+
+- the **integration points** — the launcher, the CLI, the package
+  exports.  These are touched by every agent, so two agents editing
+  them would collide.
+- the **cross-cutting judgement** — deciding that a value is wrong
+  across the whole fleet is a decision about the product, not about one
+  module.
+- the **verification** — running the suite, fixing what broke,
+  checking that the agents' work fits together.
+
+The agents take:
+
+- the **self-contained modules** — a table, a builder, a harness.
+  A module that can be written against a fixed interface and verified
+  by its own test file is the ideal unit of delegation.
+- the **bulk work** — 117 coordinate entries, a version matrix, a
+  twelve-axis surface extractor.  This is where the parallelism pays
+  for itself, because it is mechanical and large.
+
+#### What never gets delegated
+
+| Task | Why it stays with the main agent |
+|---|---|
+| Fixing a bug in a shared module | two agents would edit the same file |
+| Changing a public interface | it affects every agent's work |
+| Deciding that the product is wrong | that is a product decision |
+| The final verification | only one agent can see the whole picture |
+
+#### The handoff contract
+
+An agent is given:
+
+1. the exact file paths it owns,
+2. the interface it must satisfy,
+3. the test command it must make pass,
+4. what it must report back.
+
+It is **not** given permission to edit anything else.  When an agent
+finds a bug outside its area, it reports it — it does not fix it.  That
+rule is what keeps the merge trivial.
+
+---
+
+## 0. R8 — Do not stop, do not ask
+
+The working rule for this project, and the one that matters most for
+getting a large task done.
+
+> **Do not stop to ask for permission, and do not stop to report progress
+> in the middle of a task.** Keep going until the work is finished.
+
+The user has granted full authority over this project.  Every decision
+that would normally be a question -- which approach, which library, how
+to structure a module, whether to keep a file -- is a decision to make,
+not a question to ask.
+
+What this means in practice:
+
+| Situation | What to do |
+|---|---|
+| A design choice with two valid answers | pick one, write down why, move on |
+| A dependency that is not installed | install it, or write the code against the documented API |
+| A test that fails | diagnose it, fix it, re-run -- do not report it and wait |
+| A file that looks like it might be garbage | read it, check its references, then decide |
+| A task that turns out to be bigger than expected | do it anyway, in order |
+| The user says "do everything" | do everything, in the order that unblocks the rest |
+
+**The one exception** is a decision that cannot be reversed cheaply and
+that would change the *product* rather than the *implementation* -- for
+example, deleting a core file, or changing the meaning of a public
+interface.  Those are recorded in `PROGRESS.md` rather than asked about,
+and the safer option is taken.
+
+### R9 — A plan is not a result
+
+A step counts as done when it has been **verified**, not when it has been
+written down.
+
+| Claim | How it is verified |
+|---|---|
+| "The code works" | the test passes |
+| "It is fast enough" | the measurement is filed in the ledger |
+| "It is portable" | it was run on the target platform |
+| "It is complete" | every surface of the axis is covered |
+
+Writing the code is the easy half.  The half that counts is the one
+that produces evidence.  A step that was written but not run is
+**not** done, and it must not be reported as done.
 
 ---
 

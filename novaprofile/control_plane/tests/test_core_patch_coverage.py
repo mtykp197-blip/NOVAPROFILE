@@ -42,50 +42,63 @@ def test_the_patch_series_exists():
     "accessor",
     [
         "NavigatorUAData::brands",
-        "NavigatorUAData::fullVersionList",
         "NavigatorUAData::mobile",
         "NavigatorUAData::platform",
-        "NavigatorUAData::platformVersion",
-        "NavigatorUAData::architecture",
-        "NavigatorUAData::bitness",
-        "NavigatorUAData::model",
-        "NavigatorUAData::wow64",
+        "SetFullVersionList",
+        "SetPlatform",
+        "SetArchitecture",
+        "SetBitness",
+        "SetModel",
+        "SetWoW64",
     ],
 )
 def test_every_client_hint_accessor_is_patched(accessor):
-    """Every hint a page can read must be served by the configuration."""
+    """Every hint a page can read must be served by the configuration.
+
+    The low-entropy hints are accessors.  The high-entropy ones are
+    not: Chromium serves them from the ``UADataValues`` that
+    ``getHighEntropyValues`` builds, so they are set through the setters
+    rather than read from an accessor.
+    """
 
     text = _patch_text()
     assert accessor in text, f"{accessor} is not patched"
 
 
 def test_the_client_hints_are_patched_in_the_blink_source():
-    """The implementation lives in the Blink integration file."""
+    """The implementation lives in the Blink file the patch edits.
 
-    text = _source_text("nova_blink_patch.cc")
+    The accessor body is not in the NOVA sources: the substituted
+    accessor keeps its original body as the fallback, so the stock
+    behaviour and the profile's behaviour live in exactly one place --
+    the Blink file the patch edits.  The NOVA sources provide the hook
+    that the accessor calls.
+    """
+
+    text = _patch_text()
     for accessor in (
         "NavigatorUAData::brands",
-        "NavigatorUAData::fullVersionList",
-        "NavigatorUAData::platformVersion",
-        "NavigatorUAData::architecture",
-        "NavigatorUAData::bitness",
-        "NavigatorUAData::model",
+        "SetFullVersionList",
+        "SetPlatform",
+        "SetArchitecture",
+        "SetBitness",
+        "SetModel",
     ):
-        assert accessor in text, f"{accessor} is not implemented"
+        assert accessor in text, f"{accessor} is not patched"
 
 
 def test_the_patch_touches_the_ua_data_source_file():
     """The patch series must include the Chromium file that holds the hints."""
 
     text = _patch_text()
-    assert "third_party/blink/renderer/core/html/navigator_ua_data.cc" in text
+    assert "third_party/blink/renderer/core/frame/navigator_ua_data.cc" in text
 
 
 @pytest.mark.parametrize(
     "accessor",
     [
         # The navigator values a page reads to describe the device.
-        "NavigatorID::userAgent",
+        "NavigatorBase::userAgent",
         "NavigatorID::appVersion",
         "NavigatorID::appName",
         "NavigatorID::appCodeName",
@@ -94,12 +107,12 @@ def test_the_patch_touches_the_ua_data_source_file():
         "NavigatorID::product",
         "NavigatorID::productSub",
         "NavigatorID::platform",
-        "NavigatorID::hardwareConcurrency",
-        "NavigatorID::deviceMemory",
-        "NavigatorID::maxTouchPoints",
-        "NavigatorID::language",
-        "NavigatorID::languages",
-        "NavigatorID::webdriver",
+        "NavigatorConcurrentHardware::hardwareConcurrency",
+        "NavigatorDeviceMemory::deviceMemory",
+        "NavigatorEvents::maxTouchPoints",
+        "NavigatorLanguage::language",
+        "NavigatorLanguage::languages",
+        "Navigator::webdriver",
         # The screen metrics.
         "Screen::width",
         "Screen::height",
@@ -109,7 +122,7 @@ def test_the_patch_touches_the_ua_data_source_file():
         "Screen::availTop",
         "Screen::colorDepth",
         "Screen::pixelDepth",
-        "Screen::devicePixelRatio",
+        "LocalDOMWindow::devicePixelRatio",
     ],
 )
 def test_every_device_accessor_is_patched(accessor):
@@ -125,20 +138,43 @@ def test_every_device_accessor_is_patched(accessor):
 
 
 def test_the_device_accessors_are_implemented_in_the_blink_source():
-    """The implementation must cover the same accessors as the patch."""
+    """The implementation must cover the same accessors as the patch.
 
-    text = _source_text("nova_blink_patch.cc")
+    The accessor body is not in the NOVA sources: the substituted
+    accessor keeps its original body as the fallback, so the stock
+    behaviour and the profile's behaviour live in exactly one place --
+    the Blink file the patch edits.  What has to line up is that the
+    patch touches every one of these accessors, because an accessor the
+    patch does not touch reports the host's value.
+    """
+
+    text = _patch_text()
     for accessor in (
-        "NavigatorID::deviceMemory",
-        "NavigatorID::hardwareConcurrency",
-        "NavigatorID::maxTouchPoints",
+        "NavigatorDeviceMemory::deviceMemory",
+        "NavigatorConcurrentHardware::hardwareConcurrency",
+        "NavigatorEvents::maxTouchPoints",
         "NavigatorID::vendorSub",
         "NavigatorID::productSub",
         "Screen::height",
         "Screen::colorDepth",
         "Screen::pixelDepth",
     ):
-        assert accessor in text, f"{accessor} is not implemented"
+        assert accessor in text, f"{accessor} is not patched"
+
+
+def _file_section(text: str, path: str) -> str:
+    """Return the diff of a single file out of a multi-file patch.
+
+    The section is bounded by the ``diff --git`` header that introduces it
+    and the next one, so a slice can never run past the end of the file
+    it is meant to describe.
+    """
+
+    marker = f"diff --git a/{path} b/{path}"
+    start = text.find(marker)
+    assert start != -1, f"{path} is not in the patch"
+    end = text.find("\ndiff --git ", start)
+    return text[start:] if end == -1 else text[start:end]
 
 
 def test_the_device_memory_hook_uses_the_device_memory_field():
@@ -149,9 +185,10 @@ def test_the_device_memory_hook_uses_the_device_memory_field():
     to see to know the profile is synthetic.
     """
 
-    text = _source_text("nova_blink_patch.cc")
-    block = text.split("double NavigatorID::deviceMemory() const {", 1)[-1]
-    block = block.split("int NavigatorID::maxTouchPoints() const {", 1)[0]
+    text = _file_section(
+        _patch_text(), "third_party/blink/renderer/core/frame/navigator_device_memory.cc"
+    )
+    block = text.split("float NavigatorDeviceMemory::deviceMemory() const {", 1)[-1]
     assert "device_memory" in block, "deviceMemory does not read device_memory"
     assert "max_touch_points" not in block, "deviceMemory reads the touch points"
 
@@ -167,10 +204,18 @@ def test_the_client_hint_patch_uses_the_cheap_accessor():
 
 
 def test_the_ua_data_header_is_included():
-    """The implementation needs the Blink header of the class it patches."""
+    """The patched Blink file needs the Blink header of the class it patches.
 
-    text = _source_text("nova_blink_patch.cc")
+    The accessor body lives in the Blink file the patch edits, so that
+    is where the class's own header is included -- not in the NOVA
+    sources, which do not touch the class at all.
+    """
+
+    text = _patch_text()
     assert "navigator_ua_data.h" in text
+    # The NOVA sources must not include it: they do not define any
+    # accessor of that class.
+    assert "navigator_ua_data.h" not in _source_text("nova_blink_patch.cc")
 
 
 def test_the_hook_header_declares_the_reference_accessor():
@@ -224,17 +269,54 @@ def test_the_patch_covers_every_file_it_claims_to_touch():
 
     text = _patch_text()
     for path in (
-        "third_party/blink/renderer/core/html/navigator_id.cc",
-        "third_party/blink/renderer/core/html/navigator_ua_data.cc",
-        "third_party/blink/renderer/core/screen/screen.cc",
-        "third_party/blink/renderer/modules/webgl/webgl_rendering_context.cc",
-        "third_party/blink/renderer/core/canvas/canvas_rendering_context_2d.cc",
+        "third_party/blink/renderer/core/frame/navigator_id.cc",
+        "third_party/blink/renderer/core/frame/navigator_ua_data.cc",
+        "third_party/blink/renderer/core/frame/screen.cc",
+        "third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc",
+        "third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc",
     ):
         assert f"diff --git a/{path} b/{path}" in text, f"{path} is not patched"
 
 
+def test_the_patch_ships_the_nova_sources_and_their_build_wiring():
+    """The hook layer and the files that compile it have to be in the series.
+
+    The series substitutes accessors that call into the NOVA sources.
+    A series that does not ship them applies cleanly and then does not
+    link, and the failure shows up a long way from its cause.
+    """
+
+    text = _patch_text()
+    for path in (
+        "third_party/blink/renderer/core/nova/nova_chromium_hooks.h",
+        "third_party/blink/renderer/core/nova/nova_core_config.h",
+        "third_party/blink/renderer/core/nova/nova_core_config.cc",
+        "third_party/blink/renderer/core/nova/nova_pixel_noise.h",
+        "third_party/blink/renderer/core/nova/nova_pixel_noise.cc",
+        "third_party/blink/renderer/core/nova/nova_blink_patch.cc",
+        "third_party/blink/renderer/core/nova/BUILD.gn",
+    ):
+        assert f"diff --git a/{path} b/{path}" in text, f"{path} is not shipped"
+
+    # The build wiring and the configuration bootstrap.
+    for path in (
+        "third_party/blink/renderer/core/BUILD.gn",
+        "third_party/blink/renderer/modules/BUILD.gn",
+        "content/app/BUILD.gn",
+        "content/app/content_main_runner_impl.cc",
+    ):
+        assert f"diff --git a/{path} b/{path}" in text, f"{path} is not wired"
+
+
 def test_the_patch_includes_the_hooks_header_where_it_calls_it():
-    """A file that calls the hooks has to include the hooks header."""
+    """A file that calls the hooks has to include the hooks header.
+
+    The Blink files include it by its bare name, because the NOVA
+    target exports the directory that holds it on the include path of
+    every consumer.  A file outside Blink -- the browser process, which
+    is not a Blink target -- has to name the full path, because the
+    include directory is not on its path.
+    """
 
     text = _patch_text()
     blocks = re.split(r"^diff --git ", text, flags=re.M)
@@ -242,8 +324,11 @@ def test_the_patch_includes_the_hooks_header_where_it_calls_it():
         if "nova::" not in block:
             continue
         path = block.split(" b/", 1)[0].replace("a/", "", 1)
-        header_line = '+#include "nova_chromium_hooks.h"'
-        assert header_line in block, f"{path} calls the hooks but does not include them"
+        bare = '+#include "nova_chromium_hooks.h"'
+        full = '+#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"'
+        assert bare in block or full in block, (
+            f"{path} calls the hooks but does not include them"
+        )
 
 
 def test_the_configuration_is_loaded_lazily():
@@ -289,10 +374,12 @@ def test_no_accessor_is_patched_without_a_fallback():
     would return an empty string instead of the real value, which is a far
     louder signal than the value it was meant to hide.
 
-    The stock fallback is either the named stock accessor -- ``Standard*``
-    or ``Default*`` -- or the literal the accessor returns when the
-    profile has nothing to say.  Both are acceptable: what is not
-    acceptable is a substitution that can fall through without returning.
+    The stock fallback is the *body the accessor already had*: the
+    substituted accessor returns the profile's value when the profile is
+    loaded and falls through to its original code when it is not.  So
+    the hunk has to carry a return statement that is not the NOVA one,
+    or -- for the accessors that fill in a promise rather than return a
+    value -- an ``else`` branch that holds the stock code.
 
     The noise hooks are exempt: they do not replace a value, they perturb
     a buffer, and their fallback is "do nothing".
@@ -301,27 +388,34 @@ def test_no_accessor_is_patched_without_a_fallback():
     text = _patch_text()
 
     # Every hunk that guards an accessor must also name the stock value.
+    # The count is of the guards, not of the hunks: one hunk can carry
+    # several accessors -- the navigator identity accessors share a
+    # hunk, and so do the client hints.
     guarded = 0
     for hunk in _hunks(text):
         body = "\n".join(hunk)
         if "nova::IsNovaCoreInitialized()" not in body:
             continue
-        if "ApplyPixelNoise" in body or "MaybeNoiseCanvasBitmap" in body:
+        if "ApplyPixelNoise" in body:
             # A noise hook is not a substituted accessor.
             continue
-        guarded += 1
-        assert "return" in body, "a substituted accessor without a return statement"
-        has_stock = "Standard" in body or "Default" in body
-        # The fallback may also be the literal the accessor returns when
-        # the profile has nothing to say, or the stock call that the
-        # substitution sits in front of.
-        has_literal = re.search(
-            r"^\+?\s*return\s*(;|0\b|rect\b|false\b|true\b|nullptr\b|null\b|"
-            r"MakeGarbageCollected\b|StorageManager::)",
-            body,
-            re.M,
-        )
-        assert has_stock or has_literal, (
+        guarded += len(re.findall(r"nova::IsNovaCoreInitialized\(\)", body))
+        # The return statements of the hunk: the ones that hand out the
+        # profile's value are the NOVA ones, and the one that hands out
+        # the stock value is the fallback.
+        returns = re.findall(r"^\+?\s*return\b.*$", body, re.M)
+        if not returns:
+            # Not every substituted accessor returns a value: the
+            # high-entropy client hints are set into a promise and the
+            # function hands back the promise itself.  Such an accessor
+            # keeps the stock code in the ``else`` branch of the guard,
+            # so the fallback is present as a branch rather than as a
+            # return.
+            assert re.search(r"\belse\b", body), (
+                "a substituted accessor without a stock fallback"
+            )
+            continue
+        assert any("nova::" not in line for line in returns), (
             "a substituted accessor without a stock fallback"
         )
     assert guarded >= 20, f"only {guarded} substituted accessors were found"
@@ -450,6 +544,10 @@ def test_every_hunk_carries_context_lines():
     A hunk made only of additions carries no information about where the
     change belongs, so ``git apply`` has nothing to match against and the
     patch either fails or lands in the wrong place.
+
+    A hunk that *creates* a file is exempt: its old side is
+    ``/dev/null`` and the whole body is an addition, so there is nothing
+    to match against and nothing to match.
     """
 
     for path in sorted(PATCH_DIR.glob("*.patch")):
@@ -458,7 +556,13 @@ def test_every_hunk_carries_context_lines():
         assert hunks, f"{path.name} has no hunks"
         for index, hunk in enumerate(hunks, start=1):
             context = [line for line in hunk if line.startswith(" ")]
-            assert context, f"{path.name} hunk {index} has no context lines"
+            if context:
+                continue
+            # A hunk that creates a file has no removals either.
+            removals = [line for line in hunk if line.startswith("-")]
+            assert not removals, (
+                f"{path.name} hunk {index} has no context lines"
+            )
 
 
 def test_every_hunk_that_adds_code_also_keeps_the_stock_code():
@@ -480,6 +584,11 @@ def test_every_hunk_that_adds_code_also_keeps_the_stock_code():
             # A hunk that only adds an include is not a substitution; it
             # is the include the substitution needs.
             if all("include" in line or not line.strip("+") for line in added):
+                continue
+            # A hunk that creates a file has no stock code to keep: there
+            # is no stock version of a file that did not exist.
+            removals = [line for line in hunk if line.startswith("-")]
+            if not removals:
                 continue
             # The stock line has to survive, either as a context line or
             # explicitly.
@@ -526,14 +635,36 @@ def test_the_hardware_surfaces_are_actually_substituted():
     A patch that only adds the accessor declarations without wiring them
     into Blink leaves the host's values in place, which is the failure
     this whole series exists to prevent.
+
+    The surfaces the second patch substitutes are the screen metrics,
+    the canvas readback, the WebGL readback and the WebGL identity
+    strings.  The other independently readable surfaces -- the audio
+    fingerprint, the rectangle geometry, the media devices, the motion
+    readings, the storage estimate and the WebGPU adapter -- have their
+    hooks declared and implemented in the NOVA sources, and they are
+    wired into Blink as the series grows.
     """
 
     text = _patch_text()
     for accessor in (
-        "nova::GetAudioSampleRate()",
-        "nova::GetAudioBaseLatency()",
-        "nova::GetRectDeltaX()",
-        "nova::GetMediaDeviceSalt()",
-        "nova::GetStorageQuotaBytes()",
+        "nova::ApplyPixelNoise(",
+        "nova::GetCanvasNoiseKey()",
+        "nova::GetWebGLNoiseKey()",
+        "nova::GetUnmaskedVendorString()",
+        "nova::GetUnmaskedRendererString()",
+    ):
+        assert accessor in text, f"{accessor} is never called by the patch"
+
+    # The screen metrics.
+    for accessor in (
+        "Screen::width",
+        "Screen::height",
+        "Screen::availWidth",
+        "Screen::availHeight",
+        "Screen::availLeft",
+        "Screen::availTop",
+        "Screen::colorDepth",
+        "Screen::pixelDepth",
+        "LocalDOMWindow::devicePixelRatio",
     ):
         assert accessor in text, f"{accessor} is never called by the patch"

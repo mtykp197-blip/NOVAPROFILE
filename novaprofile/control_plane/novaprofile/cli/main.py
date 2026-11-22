@@ -22,6 +22,7 @@ import platform
 import shutil
 import sys
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -151,7 +152,10 @@ def doctor() -> None:
     table = Table(title="NOVA Profile Engine -- environment")
     table.add_column("Check")
     table.add_column("Status")
-    table.add_column("Detail")
+    # The paths are long and they are the point of the table, so the
+    # column wraps instead of truncating: a truncated path is worse than
+    # no path, because it looks like one.
+    table.add_column("Detail", overflow="fold", no_wrap=False)
 
     table.add_row("NOVA version", "[green]ok[/green]", __version__)
     table.add_row(
@@ -168,8 +172,39 @@ def doctor() -> None:
         detail = f"not found (probed {len(probed)} locations; set NOVA_CHROME_PATH)"
         table.add_row("Browser binary", "[yellow]missing[/yellow]", detail)
 
+    # The time zone database.  Without it every profile claims UTC with
+    # a zero offset, which is one of the loudest signals a site can
+    # detect -- so the condition has to be visible here, before a fleet
+    # is created, rather than discovered in production.
+    from novaprofile.core.consistency import tzdata_status
+
+    tzdata_ok, tzdata_detail = tzdata_status()
+    if tzdata_ok:
+        table.add_row("Time zone database", "[green]ok[/green]", tzdata_detail)
+    else:
+        table.add_row("Time zone database", "[red]missing[/red]", tzdata_detail)
+
     db_path = deps.get_state_db_path()
     table.add_row("State DB", "[green]ok[/green]", str(db_path))
+
+    # The native core.
+    #
+    # The core is the Chromium build that carries the patch series.  A
+    # fleet that runs on a stock browser is still a fleet -- the control
+    # plane generates the profiles either way -- but the surfaces the
+    # patches own are served by the browser itself rather than by the
+    # core, so the operator has to know which of the two is in use.
+    try:
+        from novaprofile.core.native_core import core_status
+
+        core_ok, core_detail = core_status()
+    except Exception as exc:  # pragma: no cover - the import is optional
+        core_ok, core_detail = False, f"the check is unavailable: {exc}"
+
+    if core_ok:
+        table.add_row("Native core", "[green]ok[/green]", core_detail)
+    else:
+        table.add_row("Native core", "[yellow]missing[/yellow]", core_detail)
 
     for label, directory in (
         ("Home dir", home),
@@ -274,6 +309,56 @@ def serve(
     if auth.require_auth():
         console.print("[dim]Authentication is on; send the key in the X-Nova-Key header.[/dim]")
     uvicorn.run(create_app(), host=bind_host, port=bind_port, reload=reload)
+
+
+# --------------------------------------------------------------------------
+# the JavaScript runtime
+# --------------------------------------------------------------------------
+
+
+@app.command("runtime")
+def runtime(
+    preset_id: str = typer.Option("pixel-8-pro-android14", "--preset", help="Preset id."),
+    output: Annotated[  # noqa: B008
+        Path | None, typer.Option("--output", "-o", help="Write the script here.")
+    ] = None,
+    show_digest: Annotated[  # noqa: B008
+        bool, typer.Option("--digest/--no-digest", help="Print the digest of the script.")
+    ] = True,
+) -> None:
+    """Build the page-context JavaScript runtime for one profile.
+
+    The runtime is the fallback layer: it carries the fingerprint into the
+    page when the native Chromium core is not there.  The native core is
+    the better mechanism -- it does not go through JavaScript at all -- but
+    the runtime is what makes a stock browser usable in the meantime.
+
+    The digest identifies the script exactly.  Two profiles never produce
+    the same digest, and the same profile always produces the same one, so
+    the digest can be recorded next to a measurement.
+    """
+
+    from novaprofile.core.generator import ProfileGenerator
+    from novaprofile.js_runtime import JSRuntimeBuilder
+
+    try:
+        profile = ProfileGenerator().generate(preset_id)
+    except Exception as exc:  # the preset does not exist
+        console.print(Panel(f"[red]{exc}[/red]", border_style="red"))
+        raise typer.Exit(code=4) from None
+
+    builder = JSRuntimeBuilder()
+    script = builder.build(profile)
+    digest = builder.build_hash(profile)
+
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(script, encoding="utf-8")
+        console.print(f"[green]wrote[/green] {output} ({len(script)} bytes)")
+    if show_digest:
+        console.print(f"digest [cyan]{digest}[/cyan]")
+    if output is None:
+        sys.stdout.write(script)
 
 
 def main() -> None:

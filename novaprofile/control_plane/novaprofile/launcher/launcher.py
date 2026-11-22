@@ -39,6 +39,12 @@ from typing import Any
 
 from ..core.cores import CoreManager, CoreSelector
 from ..core.versions import CoreFallbackPolicy, CoreSelection
+from ..js_runtime.injector import (
+    JS_RUNTIME_FILENAME,
+    InjectionPoint,
+    remove_runtime,
+    write_runtime,
+)
 from .isolation import ProfileIsolation
 from .leak_guard import (
     LeakGuardConfig,
@@ -48,6 +54,16 @@ from .leak_guard import (
 
 #: Name of the encrypted config file handed to the browser core.
 CORE_CONFIG_FILENAME: str = "nova_core.json"
+
+#: The switch that points the browser at the JavaScript runtime.
+#:
+#: The native core reads the profile from ``--nova-config``.  The
+#: JavaScript layer is the fallback for a stock Chromium: the script is
+#: written into the user data directory and the path is passed here, so
+#: the payload never appears in the process arguments -- those are
+#: readable by every process on the machine, the user data directory is
+#: not.
+JS_RUNTIME_FLAG: str = "--nova-js-runtime"
 
 #: Default Chromium locations on Windows / POSIX.
 DEFAULT_CHROME_PATHS: tuple[str, ...] = (
@@ -156,6 +172,7 @@ class BrowserLauncher:
         leak_guard: LeakGuardConfig | None = None,
         core_manager: CoreManager | None = None,
         core_policy: CoreFallbackPolicy = CoreFallbackPolicy.NEAREST,
+        js_runtime: bool = True,
     ) -> None:
         self._chrome_path = chrome_path
         self._isolation = isolation or ProfileIsolation()
@@ -164,6 +181,10 @@ class BrowserLauncher:
         self._leak_guard = leak_guard or LeakGuardConfig()
         self._core_manager = core_manager
         self._core_policy = core_policy
+        # The JavaScript layer is on by default: it is the fallback that
+        # makes a stock Chromium carry the fingerprint at all.  It stands
+        # down by itself when the native core is present.
+        self._js_runtime_enabled = js_runtime
         self._launched: dict[str, LaunchedBrowser] = {}
 
     # -- core selection ----------------------------------------------------
@@ -372,6 +393,17 @@ class BrowserLauncher:
         config_path = user_data_dir / CORE_CONFIG_FILENAME
         args.append(f"--nova-config={config_path}")
 
+        # -- the JavaScript fallback layer ------------------------------------
+        # When the native core is present it does the work and the
+        # JavaScript layer stands down (it checks for the native marker).
+        # When it is absent -- a stock Chromium, or a build of the patch
+        # series that has not been compiled yet -- the script is what
+        # carries the fingerprint into the page.
+        if self._js_runtime_enabled:
+            runtime_path = user_data_dir / JS_RUNTIME_FILENAME
+            if runtime_path.exists():
+                args.append(f"{JS_RUNTIME_FLAG}={runtime_path}")
+
         # -- user supplied extras --------------------------------------------
         args.extend(self._extra_args)
 
@@ -468,6 +500,41 @@ class BrowserLauncher:
             return dict(config)
         return {"repr": repr(config)}
 
+    # -- the JavaScript fallback layer ---------------------------------------
+
+    def _write_js_runtime(self, config: Any, user_data_dir: Path) -> Path | None:
+        """Write the JavaScript runtime for ``config`` into ``user_data_dir``.
+
+        The runtime is the fallback layer: it carries the fingerprint into
+        the page when the native core is not there.  It is written next to
+        the core config and removed again when the browser exits -- a
+        fingerprint left on disk in the clear is a liability, because the
+        next profile in the same directory would be able to read it.
+
+        A failure here is not fatal.  A profile without the JavaScript
+        layer still runs, it just reports the host's real values, and the
+        probe would catch that.  Failing the launch instead would mean a
+        missing optional dependency takes the whole product down.
+        """
+
+        dump = getattr(config, "model_dump", None)
+        if not callable(dump):
+            return None
+        try:
+            from ..schema.profile import ProfileConfig
+
+            profile = ProfileConfig.model_validate(config.model_dump(mode="python"))
+            written = write_runtime(
+                profile,
+                user_data_dir,
+                injection_point=InjectionPoint.DOCUMENT_START,
+            )
+            return written.path
+        except Exception:
+            # The runtime is an enhancement.  The launch proceeds without
+            # it, and the reason is recorded rather than raised.
+            return None
+
     # -- launching ---------------------------------------------------------
 
     def launch(self, config: Any, *, extra_args: list[str] | None = None) -> LaunchedBrowser:
@@ -482,6 +549,12 @@ class BrowserLauncher:
         ProfileIsolation.cleanup_lock_files(user_data_dir)
 
         config_path = self.write_core_config(config, user_data_dir)
+
+        # The JavaScript fallback layer is written next to the core
+        # config.  It is written *before* the command line is built,
+        # because the command line refers to it by path.
+        if self._js_runtime_enabled:
+            self._write_js_runtime(config, user_data_dir)
 
         args = self.build_args(config, user_data_dir)
         if extra_args:
@@ -564,6 +637,11 @@ class BrowserLauncher:
 
         with contextlib.suppress(Exception):
             ProfileIsolation.cleanup_lock_files(launched.user_data_dir)
+        # The JavaScript payload is removed with the browser.  It carries
+        # the fingerprint in the clear, and the next profile in the same
+        # directory must not be able to read it.
+        with contextlib.suppress(Exception):
+            remove_runtime(launched.user_data_dir)
         self._launched.pop(profile_id, None)
         return True
 
