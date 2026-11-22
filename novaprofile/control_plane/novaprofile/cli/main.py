@@ -206,6 +206,36 @@ def doctor() -> None:
     else:
         table.add_row("Native core", "[yellow]missing[/yellow]", core_detail)
 
+    # The device fleet.
+    #
+    # The size of the fleet is the single number an operator needs to
+    # judge whether the deployment is worth anything: a fleet of a few
+    # dozen devices is separable at a glance, and a fleet of thousands
+    # is not.  The count is reported together with the spread that
+    # makes the count meaningful, because a fleet of two thousand
+    # devices that share one GPU is not a fleet of two thousand.
+    try:
+        from novaprofile.core.devices import all_presets
+
+        fleet = all_presets()
+        models = {preset.model for preset in fleet}
+        gpus = {preset.gpu.unmasked_renderer for preset in fleet}
+        screens = {
+            (preset.screen.width, preset.screen.height, preset.screen.device_pixel_ratio)
+            for preset in fleet
+        }
+        table.add_row(
+            "Device fleet",
+            "[green]ok[/green]",
+            f"{len(fleet)} presets, {len(models)} models, {len(gpus)} GPUs, {len(screens)} screens",
+        )
+    except Exception as exc:  # pragma: no cover - the import is optional
+        table.add_row(
+            "Device fleet",
+            "[red]unavailable[/red]",
+            f"the catalogue cannot be read: {exc}",
+        )
+
     for label, directory in (
         ("Home dir", home),
         ("Profiles dir", home / "profiles"),

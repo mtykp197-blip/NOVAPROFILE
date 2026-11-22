@@ -69,6 +69,12 @@ from ..schema.hardware import (
     AndroidSdkInt,
     Screen,
 )
+from .device_catalog_market import (
+    DENSITY_RATIO,
+    market_gpu_profiles,
+    market_gpu_variants,
+    ratio_for_density,
+)
 from .devices import (
     ADRENO_619,
     ADRENO_642,
@@ -169,6 +175,41 @@ _DEFAULT_PANEL_VARIANTS: tuple[tuple[int, int], ...] = (
     (1440, 3120),
 )
 
+
+def _nearest_offered_ratio(options: tuple[float, ...], ratio: float) -> float:
+    """The ratio of ``options`` that is closest to ``ratio``.
+
+    A preset that names a ratio of its own may not name the ratio its
+    own density bucket reports -- the catalogue and the bucket have to
+    be brought into agreement rather than one of them being ignored.
+    The closest one is taken, and the tie goes to the smaller ratio so
+    that the choice is the same on every machine.
+    """
+
+    if not options:
+        return ratio
+
+    return min(options, key=lambda value: (abs(value - ratio), value))
+
+
+def _density_for_ratio(ratio: float, near: int) -> int:
+    """The density bucket whose ratio is ``ratio``.
+
+    Several buckets share a ratio -- the 120 and the 160 buckets both
+    report 1.0, the 411 and the 420 buckets both report 2.625 -- so the
+    bucket nearest to ``near`` is taken among the ones that report the
+    ratio.  That keeps the density the preset asked for whenever the
+    platform offers a bucket for it, and falls back to the first such
+    bucket when it does not.
+    """
+
+    candidates = [bucket for bucket, value in DENSITY_RATIO.items() if value == ratio]
+    if not candidates:
+        return near
+
+    return min(candidates, key=lambda bucket: (abs(bucket - near), bucket))
+
+
 #: GPU variants per device family.  A family is powered by one SoC, but the
 #: SoC ships in several SKUs (a different memory vendor, a cut-down core
 #: configuration), and the units that shipped with each SKU report slightly
@@ -250,6 +291,41 @@ _GPU_CATALOGUE: dict[str, GpuProfile] = {
     "Adreno (TM) 619": ADRENO_619,
     "Adreno (TM) 642L": GOOGLE_IMAGINATION,
 }
+
+#: The renderers the market catalogue brings, added to the table above.
+#:
+#: The hand-written tables name the renderers of the devices they were
+#: written for.  The market catalogue brings the renderers of every
+#: handset the Vietnamese market buys, and the engine has to know the
+#: limits of those parts too: a renderer that is missing from the table
+#: falls back to the GPU the preset carries, and the preset and the
+#: table then disagree about the same part.
+#:
+#: The entries are merged in rather than written out, because they are
+#: derived from the dataset and the dataset is the truth about them.
+#: The hand-written entries win a collision: they are the ones the
+#: engine was tested against.
+_GPU_CATALOGUE.update(
+    {
+        renderer: profile
+        for renderer, profile in market_gpu_profiles().items()
+        if renderer not in _GPU_CATALOGUE
+    }
+)
+
+#: The renderer variants of the market catalogue.
+#:
+#: A handset that shipped with more than one GPU is a family, and the
+#: engine needs the family to know which parts it can pick from.  The
+#: market handsets each shipped with a single part, so the table names
+#: that one part.
+_GPU_VARIANTS.update(
+    {
+        preset_id: variants
+        for preset_id, variants in market_gpu_variants().items()
+        if preset_id not in _GPU_VARIANTS
+    }
+)
 
 
 def _date_from_build_id(build_id: str) -> date | None:
@@ -446,9 +522,30 @@ class DeviceIdentityFactory:
         density = self._deriver.derive_choice(
             Axis.SCREEN_VIEWPORT, preset.density_options, context="panel_density"
         )
-        dpr = self._deriver.derive_choice(
-            Axis.SCREEN_VIEWPORT, preset.dpr_options, context="panel_dpr"
-        )
+
+        # The ratio follows the density bucket, it is not picked beside
+        # it.  The platform rounds the raw pixel density onto a bucket
+        # and the browser then reads the ratio of the *panel*, so the
+        # two are one number wearing two names: the 213 dpi bucket
+        # reports 1.5 and not the 1.333x of its arithmetic quotient,
+        # and the 411 and 420 buckets both report 2.625.  Choosing the
+        # ratio from a separate list is how a panel ends up carrying a
+        # density and a ratio that no device has ever had, and a site
+        # that cross-checks the two reads the disagreement as a fake.
+        dpr = ratio_for_density(density)
+
+        # A preset that offers a ratio of its own may not name the ratio
+        # its own density bucket reports.  The bucket and the offered
+        # ratio have to be brought into agreement, and the density is
+        # the one that moves: it is snapped onto the bucket whose ratio
+        # the preset does offer, so that the pair the profile reports is
+        # one a real device reports.  A preset that offers no ratio at
+        # all keeps the bucket it was given.
+        offered = tuple(preset.dpr_options or ())
+        if offered and dpr not in offered:
+            wanted = _nearest_offered_ratio(offered, dpr)
+            density = _density_for_ratio(wanted, density)
+            dpr = ratio_for_density(density)
 
         # The screen object reports *logical* pixels -- the same unit the
         # viewport reports in.  A real Android phone with a 1344x2992

@@ -460,7 +460,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         version_incremental="10750268",
         ram_options=(8, 12),
         cpu_options=(8, 12),
-        dpr_options=(2.625, 3.0),
+        dpr_options=(3.0, 2.625),
         density_options=(420, 480),
         year=2024,
     ),
@@ -485,7 +485,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         version_incremental="10199132",
         ram_options=(8,),
         cpu_options=(8,),
-        dpr_options=(2.625, 3.0),
+        dpr_options=(3, 2.75, 2.625),
         density_options=(420, 440),
         year=2023,
     ),
@@ -510,7 +510,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         version_incremental="10818074",
         ram_options=(8, 12),
         cpu_options=(8, 12),
-        dpr_options=(2.625, 3.0),
+        dpr_options=(3.0, 2.625),
         density_options=(480,),
         year=2024,
     ),
@@ -526,7 +526,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         bootloader="dm1q-1.0-230501",
         fingerprint_product="dm1q",
         gpu=ADRENO_740,
-        screen=_screen(1080, 2340, 3.0, 440),
+        screen=_screen(1080, 2340, 2.625, 420),
         abi=_abi("Qualcomm", "Snapdragon 8 Gen 2", "1x2x2 Cortex-X3/A710/A510", "Adreno 740"),
         release="14",
         sdk_int=34,
@@ -535,8 +535,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         version_incremental="10650147",
         ram_options=(8,),
         cpu_options=(8,),
-        dpr_options=(2.625, 3.0),
-        density_options=(440,),
+        dpr_options=(3, 2.75, 2.625),
+        density_options=(420, 440),
         year=2023,
     ),
     DevicePreset(
@@ -551,7 +551,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         bootloader="q2q-1.0-20230301",
         fingerprint_product="q2q",
         gpu=MALI_G68,
-        screen=_screen(1080, 2340, 2.625, 440),
+        screen=_screen(1080, 2340, 2.5, 400),
         abi=_abi(
             "Samsung",
             "Exynos 1380",
@@ -565,8 +565,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         version_incremental="9189376",
         ram_options=(4, 6, 8),
         cpu_options=(6, 8),
-        dpr_options=(2.625, 3.0),
-        density_options=(440, 480),
+        dpr_options=(3, 2.75, 2.625, 2.5),
+        density_options=(400, 440, 480),
         year=2023,
     ),
     DevicePreset(
@@ -595,7 +595,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         version_incremental="9051955",
         ram_options=(8, 12, 16),
         cpu_options=(8, 12),
-        dpr_options=(2.625, 3.0),
+        dpr_options=(3.0, 2.625),
         density_options=(480,),
         year=2023,
     ),
@@ -625,7 +625,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         version_incremental="10818074",
         ram_options=(8, 12),
         cpu_options=(8,),
-        dpr_options=(2.625, 3.0),
+        dpr_options=(3.0, 2.625),
         density_options=(480,),
         year=2023,
     ),
@@ -655,7 +655,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         version_incremental="9023803",
         ram_options=(4, 6, 8),
         cpu_options=(8,),
-        dpr_options=(2.75, 3.0),
+        dpr_options=(3.0, 2.75),
         density_options=(440, 480),
         year=2023,
     ),
@@ -685,7 +685,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         version_incremental="10818074",
         ram_options=(12, 16),
         cpu_options=(8, 12),
-        dpr_options=(2.625, 3.0),
+        dpr_options=(3.0, 2.625),
         density_options=(480,),
         year=2024,
     ),
@@ -715,7 +715,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         version_incremental="10314917",
         ram_options=(8, 12),
         cpu_options=(8, 12),
-        dpr_options=(2.625, 3.0),
+        dpr_options=(3.0, 2.625),
         density_options=(480,),
         year=2024,
     ),
@@ -731,7 +731,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         bootloader="a14-1.0-20230801",
         fingerprint_product="a14",
         gpu=MALI_G57,
-        screen=_screen(1080, 2400, 2.625, 400),
+        screen=_screen(1080, 2400, 2.5, 400),
         abi=_abi(
             "MediaTek",
             "Helio G99",
@@ -745,7 +745,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         version_incremental="8608992",
         ram_options=(4, 6),
         cpu_options=(8,),
-        dpr_options=(2.625, 3.0),
+        dpr_options=(3, 2.75, 2.625, 2.5),
         density_options=(400, 440),
         year=2023,
     ),
@@ -772,17 +772,38 @@ def _extended_presets() -> tuple[DevicePreset, ...]:
 _EXTENDED_CACHE: tuple[DevicePreset, ...] | None = None
 
 
+def _market_presets() -> tuple[DevicePreset, ...]:
+    """The devices the Vietnamese market actually sells, loaded on demand.
+
+    The market catalogue is built from the scraped handset dataset, so
+    it lives in its own module and is imported the first time the fleet
+    is asked for it.  A machine without the dataset still gets a fleet:
+    the loader returns an empty catalogue instead of raising.
+    """
+
+    global _MARKET_CACHE
+    if _MARKET_CACHE is None:
+        from .device_catalog_market import market_presets
+
+        _MARKET_CACHE = market_presets()
+    return _MARKET_CACHE
+
+
+_MARKET_CACHE: tuple[DevicePreset, ...] | None = None
+
+
 def all_presets() -> tuple[DevicePreset, ...]:
     """Every device the engine knows about.
 
-    This is the reference catalogue plus the extended one.  The
-    reference devices are the ones the test suite is written against;
-    the extended devices widen the fleet so that a vendor grouping on
-    the model, the board or the build identifier has far more than a
-    handful of buckets to separate.
+    This is the reference catalogue plus the extended one plus the
+    market one.  The reference devices are the ones the test suite is
+    written against; the extended devices widen the fleet so that a
+    vendor grouping on the model, the board or the build identifier has
+    far more than a handful of buckets to separate; the market devices
+    are the handsets the Vietnamese market actually buys.
     """
 
-    return DEVICE_PRESETS + _extended_presets()
+    return DEVICE_PRESETS + _extended_presets() + _market_presets()
 
 
 def get_preset(preset_id: str) -> DevicePreset | None:

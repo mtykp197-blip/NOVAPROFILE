@@ -22,6 +22,7 @@ from __future__ import annotations
 import pytest
 
 from novaprofile.core.consistency import ConsistencyResolver
+from novaprofile.core.device_catalog_market import ANDROID_DPR
 from novaprofile.core.devices import list_presets
 from novaprofile.core.generator import ProfileGenerator
 from novaprofile.schema.profile import ProfileConfig
@@ -65,16 +66,31 @@ def test_the_screen_reports_logical_pixels(gen: ProfileGenerator) -> None:
     tablets: a Pixel Fold opened is 841 logical pixels across, and a
     tablet is wider still.  What matters is that the width is nowhere
     near the physical width of the same panel.
+
+    The ratio is not bounded below by the ratio of a modern handset:
+    the fleet carries the low-density tablet panels, which report 1.0
+    and 1.5.  What has to hold is that the ratio is one the platform
+    quantises to, and that the screen is the logical one -- the panel
+    is the screen times the ratio.
     """
 
     for profile in _fleet(gen):
         ratio = profile.screen.device_pixel_ratio
-        assert ratio >= 1.75
-        # A logical width is a few hundred pixels -- a few hundred more
-        # on a foldable or a tablet.  A physical width would be above a
-        # thousand for every panel in the catalogue.
-        assert profile.screen.width <= 1200
-        assert profile.screen.height <= 1600
+        assert ratio in ANDROID_DPR
+
+        # The screen is the *logical* panel.  A logical width is a few
+        # hundred pixels -- a few hundred more on a foldable or a
+        # tablet, and a low-density tablet reports a width of more than
+        # a thousand logical pixels because its panel is wide and its
+        # ratio is low.  What has to hold is that the width is nowhere
+        # near the physical width of the same panel, so the bound
+        # scales with the ratio rather than being a constant: a screen
+        # that reported the physical width would blow past it at every
+        # ratio above one.  The bound is the largest panel the fleet
+        # carries -- a 3840 pixel wide 4K tablet -- with a little room
+        # on top of it.
+        assert profile.screen.width * ratio <= 3900
+        assert profile.screen.height * ratio <= 3900
 
 
 def test_the_viewport_may_not_exceed_the_available_area(

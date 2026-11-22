@@ -118,13 +118,43 @@ class Screen(BaseModel):
     avail_top: int = Field(ge=0)
     color_depth: Literal[24, 30]
     pixel_depth: Literal[24, 30, 48]
-    device_pixel_ratio: Literal[1.75, 2.0, 2.25, 2.5, 2.625, 2.75, 3.0, 3.5]
+    # The device pixel ratios Android quantises to.  The platform rounds
+    # the raw quotient of the pixel density by 160 to the nearest of
+    # these, so a site reads one of them and never the arithmetic
+    # result.  The list has to carry every bucket the fleet's real
+    # panels land on: a device that reports a ratio outside the list
+    # either cannot be modelled or has to be rounded to a wrong one.
+    #
+    # The 3.25 entry is the 520 dpi bucket.  It is the ratio of the
+    # high-density panels that ship in the current flagship generation,
+    # and the fleet carries devices with them.
+    device_pixel_ratio: Literal[
+        1.0,
+        1.5,
+        1.75,
+        2.0,
+        2.25,
+        2.5,
+        2.625,
+        2.75,
+        3.0,
+        3.25,
+        3.5,
+        4.0,
+    ]
     # The density buckets a panel reports.  Each entry is a real panel
     # density: the list has to cover the panels the fleet actually
     # ships, because a device whose density is not on the list either
     # cannot be modelled or has to be rounded to a wrong one.
+    #
+    # The buckets below the 160 line are the tablet densities.  A
+    # tablet reports the same bucket vocabulary as a phone -- the
+    # platform has one table, not two -- and the fleet carries tablets
+    # alongside the handsets.
     density_dpi: Literal[
+        120,
         160,
+        213,
         240,
         280,
         320,
@@ -134,9 +164,11 @@ class Screen(BaseModel):
         420,
         440,
         480,
+        520,
         525,
         545,
         560,
+        640,
     ]
 
     @field_validator("avail_width", "avail_height")

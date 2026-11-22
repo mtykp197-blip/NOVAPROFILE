@@ -17,6 +17,14 @@ ENV/
 coverage.xml
 htmlcov/
 
+# The dataset probe workspace.
+#
+# This holds the raw scraped datasets -- 33 MB of CSV -- and the scratch
+# scripts used to merge them.  The merged result is committed under
+# novaprofile/core_patch/data/; the raw dumps are not, because they are
+# reproducible from the public sources and they bloat the repository.
+.dataset_probe/
+
 # Nova runtime
 state.db
 state.db-wal

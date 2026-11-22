@@ -15,8 +15,15 @@ These tests pin the properties the catalogue has to hold:
 
 from __future__ import annotations
 
+from collections import Counter
+
 import pytest
 
+from novaprofile.core.device_catalog_market import (
+    ANDROID_DPR,
+    DENSITY_RATIO,
+    SCREEN_DENSITY,
+)
 from novaprofile.core.devices import DEVICE_PRESETS, all_presets, list_presets
 from novaprofile.core.generator import ProfileGenerator
 from novaprofile.core.identity import _GPU_CATALOGUE, _GPU_VARIANTS
@@ -33,13 +40,24 @@ def test_the_catalogue_is_wide_enough_to_hide_a_fleet(catalogue: list) -> None:
     Grouping on the model, the board or the panel is the cheapest
     thing a site can do, so the number of devices has to be large
     enough that a bucket is a small share of the fleet.
+
+    The share is measured on the largest bucket rather than on the
+    number of distinct values, because the fleet holds one device per
+    RAM configuration of a handset: the number of models is therefore
+    smaller than the number of devices by design, and a model that
+    ships in three RAM sizes is one bucket of three devices rather
+    than three buckets of one.
     """
 
     assert len(catalogue) >= 40
-    models = {preset.model for preset in catalogue}
-    boards = {preset.board for preset in catalogue}
-    assert len(models) >= len(catalogue) * 0.8
-    assert len(boards) >= len(catalogue) * 0.6
+
+    for attribute in ("model", "board", "device"):
+        counts = Counter(getattr(preset, attribute) for preset in catalogue)
+        largest = counts.most_common(1)[0][1]
+        assert largest <= len(catalogue) * 0.01, (
+            f"{largest} of {len(catalogue)} devices share one {attribute}, "
+            "which is a bucket a site could sort the fleet into"
+        )
 
 
 def test_every_device_declares_the_gpu_that_ships_in_it(catalogue: list) -> None:
@@ -116,15 +134,31 @@ def test_the_security_patch_never_predates_the_release(catalogue: list) -> None:
 
 
 def test_the_panels_report_values_a_real_panel_reports(catalogue: list) -> None:
-    """The ratio and the density have to be values a phone actually uses."""
+    """The ratio and the density have to be values a phone actually uses.
+
+    The fleet carries tablets and the low-density panels that go with
+    them, so the ratio is not bounded below by the ratio of a modern
+    handset.  What has to hold is that the pair is a pair the platform
+    actually reports: both values lie in the Android vocabulary, and
+    the ratio is the one the density bucket implies.
+    """
 
     for preset in catalogue:
-        assert preset.screen.device_pixel_ratio >= 1.75
-        assert preset.screen.density_dpi >= 240
-        assert preset.screen.width >= 320
-        assert preset.screen.height >= 320
-        assert preset.screen.avail_width <= preset.screen.width
-        assert preset.screen.avail_height <= preset.screen.height
+        screen = preset.screen
+        assert screen.device_pixel_ratio in ANDROID_DPR
+        assert screen.density_dpi in SCREEN_DENSITY
+        assert DENSITY_RATIO[screen.density_dpi] == screen.device_pixel_ratio
+        assert screen.width >= 320
+        assert screen.height >= 320
+        assert screen.avail_width <= screen.width
+        assert screen.avail_height <= screen.height
+        # The option lists have to stay inside the same vocabulary: an
+        # option the schema does not hold reaches a generated profile
+        # silently and only fails when the config is serialised.
+        for ratio in preset.dpr_options:
+            assert ratio in ANDROID_DPR
+        for density in preset.density_options:
+            assert density in SCREEN_DENSITY
 
 
 def test_the_reference_catalogue_is_kept_separate(catalogue: list) -> None:

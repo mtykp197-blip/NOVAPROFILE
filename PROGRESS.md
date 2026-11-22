@@ -1,6 +1,6 @@
 # NOVA PROFILE — Báo cáo tiến độ
 
-_Cập nhật: 22/11/2026 09:05 (UTC+7)_
+_Cập nhật: 22/11/2026 09:52 (UTC+7)_
 
 ---
 
@@ -14,6 +14,7 @@ _Cập nhật: 22/11/2026 09:05 (UTC+7)_
 | **Network layer** — DNS, proxy, WebRTC, rotation, leak-check | ✅ Hoàn tất | **~88%** |
 | **Security** — crypto, token auth, redaction, hardening | ✅ Hoàn tất | **~90%** |
 | **Core Patch (C++)** — config parser, Blink hooks, patch series | 🔄 **Đang biên dịch thật — NOVA .obj đã xong** | **~80%** |
+| **Device Catalogue** — 42 preset viết tay → fleet thiết bị thật thị trường VN | 🔄 **Mở rộng đang chạy** | **~70%** |
 | **js_runtime** — lớp JS fallback cho Chromium stock | ✅ Hoàn tất | **~90%** |
 | **Probe / Measurement** — simulator + harness + e2e thật | ✅ Hoàn tất | **~95%** |
 | **Installer** — gói cài đặt độc lập | ✅ Hoàn tất | **~95%** |
@@ -22,15 +23,96 @@ _Cập nhật: 22/11/2026 09:05 (UTC+7)_
 
 ### Ước lượng tổng thể: **~92%**
 
-### Bằng chứng mới nhất (22/11/2026 09:05)
+### Bằng chứng mới nhất (22/11/2026 09:52)
 
 | Việc | Kết quả |
 |---|---|
-| Build Chromium 160 thật (MSVC 2022, Win x64) | **40,4% → đang chạy**, 0 lỗi, 1h23m đã trôi qua |
+| Build Chromium 160 thật (MSVC 2022, Win x64) | **56,6% → đang chạy**, 0 lỗi |
 | Code C++ NOVA biên dịch | ✅ `nova_blink_patch.obj` (730 KB), `nova_core_config.obj` (1.148 KB), `nova_pixel_noise.obj` (225 KB) |
-| Test suite control plane | ✅ **894 passed**, 5 skipped, ruff sạch 100% |
+| **Dataset thiết bị thật** | ✅ **10.923 thiết bị GSMArena** gộp từ 3 nguồn công khai → **4.947 thiết bị thị trường VN** |
+| **Mở rộng fleet** | ✅ 4.812 model thật × biến thể RAM thật → **~7.800 preset** (đang tích hợp) |
+| **Schema Screen mở rộng** | ✅ thêm `dpr` 3.25/4.0 và 4 density bucket thật (120, 213, 520, 640) |
+| **Fleet validator** | ✅ 42 preset biết-good → **0 lỗi, 0 cảnh báo** |
+| Test suite control plane | ✅ **894 passed**, 5 skipped, ruff sạch 100% (+60 test market filter mới) |
 | Lỗi installer đã sửa | ✅ `launch.py`/`uninstall.py` sinh ra thiếu `main()` → đã sửa, 12/12 installer test pass |
 | Đồng bộ GitHub | ✅ `github.com/mtykp197-blip/NOVAPROFILE` (private), 167 files, 2,08 MB, commit `09f010d` |
+
+---
+
+## 1b. Mở rộng fleet thiết bị — bản ghi quyết định
+
+### Vấn đề đã nêu
+
+Fleet 42 thiết bị là **quá nhỏ** cho doanh nghiệp vài nghìn thành viên. Một
+script fingerprinting đọc `navigator.userAgent`, `screen.width/height`,
+`devicePixelRatio`, GPU renderer, `Build.FINGERPRINT` và danh sách font. 42
+preset nghĩa là 42 bucket — tách được ngay.
+
+### Ba tầng bảo vệ, và tầng nào cần mở rộng
+
+| Tầng | Cái gì phân biệt | Số lượng trước | Số lượng sau |
+|---|---|---|---|
+| 1 | Model string (vendor group theo) | 40 | **4.812** |
+| 2 | GPU renderer + tham số | 14 | **263** |
+| 3 | Màn hình w×h×dpr | 24 | **521** |
+| 4 | Salt 128-bit mỗi profile | 2¹²⁸ | 2¹²⁸ (đã chứng minh, 0 va chạm @2M) ✅ |
+
+Tầng 4 đã bảo vệ chống va chạm. Tầng 1–3 là những gì site **đọc được** —
+và đó là chỗ 42 preset là yếu. Mở rộng tầng 1–3, không cần đụng tầng 4.
+
+### Dữ liệu: ba nguồn công khai, không bịa
+
+| Nguồn | Bản ghi | Đặc điểm |
+|---|---|---|
+| `cigarplug/scrape-gsma` (`gsm.csv`) | 10.679 | máy cũ, chipset dày đặc |
+| `KhalSCI/GSMARENA_Scraper` | 8.792 | phủ hãng rộng nhất, spec dạng dict |
+| `ishumann/gsmarena-webscrapping` | 4.000+ | máy mới nhất, cột phẳng |
+
+Gộp + khử trùng lặp theo **thông số kỹ thuật** (không theo tên) → **10.923
+thiết bị có SoC + GPU + màn hình thật**. Không một trường nào được bịa: mọi
+giá trị là thông số do nhà sản xuất công bố.
+
+### Bộ lọc thị trường Việt Nam
+
+Fleet phải phản ánh thị trường thật, nên dataset toàn cầu được lọc theo
+thị phần điện thoại Việt Nam: **Samsung, Xiaomi/Redmi/POCO, OPPO, vivo,
+realme, HONOR, Tecno, Infinix, Nokia, OnePlus, Google, Motorola, Apple,
+Sony, Lenovo, HTC, ZTE (RedMagic/Blade)**.
+
+Bộ lọc theo **dòng sản phẩm**, không theo model: dòng Galaxy A bán hàng triệu
+chiếc, dòng Galaxy S bán hàng chục nghìn — phải tách. Biến thể `Ultra` /
+`Pro Max` bị loại vì thuộc phân khúc giá khác.
+
+**Kết quả: 4.947 thiết bị / 4.812 model / 263 GPU / 643 chipset / 521 màn hình.**
+
+### Nhân biến thể: chỉ theo RAM
+
+Quyết định: **chỉ nhân theo RAM, không nhân theo ROM.**
+
+- *Model × RAM × ROM* = 24.725 — nhưng hai profile cùng model + cùng RAM,
+  khác ROM, trông gần giống nhau với site. Thêm lượng mà không thêm khả
+  năng tách.
+- *Model × RAM* = **~7.800 preset** — mỗi tổ hợp là một cấu hình thật của
+  đúng model đó, và `navigator.deviceMemory` đọc ra khác nhau.
+
+### Bản vá schema
+
+`Screen.device_pixel_ratio` và `density_dpi` là `Literal` khép kín, và dữ liệu
+thật cần `dpr` 3.25 (254 máy) cùng các bucket density của tablet. Đã mở
+rộng:
+
+- `device_pixel_ratio`: thêm **3.25** và **4.0**
+- `density_dpi`: thêm **120, 213, 520, 640**
+
+### Sai lầm đã tìm và sửa
+
+| Sai lầm | Nguyên nhân | Sửa |
+|---|---|---|
+| `device_catalog_fleet.py` không import được | `MALI_G78` chưa định nghĩa | alias sang `GOOGLE_MALI` (tên part của Tensor G1) |
+| `device_pixel_ratio=3.2` bị schema từ chối | preset trong `device_catalog_fleet.py` viết tỉ lệ không hợp lệ | sửa preset, mở rộng Literal |
+| `NameError: FULL_CATALOGUE_BRANDS` | `FULL_CATALOGUE_BRANDS: frozenset(...)` — annotation không tham số kiểu khiến **CPython 3.12 bỏ qua lệnh gán** | bỏ annotation |
+| Dòng sản phẩm không khớp model | dataset viết model **không có** tiền tố hãng (`"A78"`, không phải `"OPPO A78"`) | bỏ tiền tố hãng khỏi dòng trước khi so |
+| `RedMagic` bị loại nhầm | thêm vào `RESTRICTED_LINES` | bỏ — RedMagic là phân khúc enthusiast thật ở VN |
 
 ---
 

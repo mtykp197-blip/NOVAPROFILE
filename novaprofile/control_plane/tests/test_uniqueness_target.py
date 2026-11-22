@@ -21,6 +21,7 @@ from datetime import date
 
 import pytest
 
+from novaprofile.core.device_catalog_market import ratio_for_density
 from novaprofile.core.devices import list_presets
 from novaprofile.core.font_catalog import fonts_for_locale
 from novaprofile.core.generator import ANDROID_FONT_PRESET, ProfileGenerator
@@ -314,7 +315,47 @@ def test_the_screen_reports_logical_pixels_like_a_phone(gen):
         # The ratio is what converts between the physical panel and the
         # logical screen; it has to be there for the width to make
         # sense.
-        assert p.screen.device_pixel_ratio >= 1.75
+        #
+        # The ratio is the one the density bucket reports, and a
+        # handset is never below the 160 dpi baseline: a 213 or a 240
+        # dpi panel is a budget handset and reports 1.5, which is what
+        # the platform really reports for it.  The 1.75 floor holds
+        # only for the panels that are denser than that.
+        #
+        # A tablet does not: a 10-inch panel at 213 dpi reports 1.5,
+        # and that is the real ratio of the device.  The fleet carries
+        # tablets, so the rule is applied to the handsets and the
+        # tablets are held to the weaker rule that they have a ratio at
+        # all.
+        assert p.screen.device_pixel_ratio >= 1.0
+        if _is_handset(p.screen):
+            assert p.screen.density_dpi >= 160
+            assert p.screen.device_pixel_ratio == ratio_for_density(
+                p.screen.density_dpi
+            )
+
+
+def _is_handset(screen) -> bool:
+    """Whether a screen belongs to a handset rather than a tablet.
+
+    The test is the diagonal of the panel in inches, which is what the
+    industry uses to tell the two apart: a handset is under seven
+    inches across the diagonal, a tablet is over it.  The screen itself
+    does not carry the diagonal, so it is derived from the physical
+    size of the panel.
+
+    The diagonal is a physical measurement, so it is taken on the
+    *physical* panel -- the logical screen times the ratio -- and not on
+    the logical one.  A 480x1013 logical screen at a ratio of 1.5 is a
+    720x1520 panel, and the two diagonals differ by the ratio.
+    """
+
+    diagonal_px = math.hypot(screen.width, screen.height) * screen.device_pixel_ratio
+    # The density is the pixel density of the panel in dots per inch,
+    # and the pixel count of the diagonal divided by it gives the
+    # diagonal in inches.
+    diagonal_in = diagonal_px / screen.density_dpi
+    return diagonal_in < 7.0
 
 
 # ----------------------------------------------------------------------
