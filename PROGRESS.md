@@ -1,38 +1,95 @@
 # NOVA PROFILE — Báo cáo tiến độ
 
-_Cập nhật: 22/11/2026 11:05 (UTC+7)_
+_Cập nhật: 22/11/2026 13:45 (UTC+7)_
 
 ---
 
 ## 1. Tổng quan
 
-| **Control Plane (Python)** — generator, schema, collision guard, consistency | ✅ Hoàn tất | **~97%** |
+| **Control Plane (Python)** — generator, schema, collision guard, consistency | ✅ Hoàn tất | **~98%** |
 | **API / CLI** — REST, auth, batch, probe | ✅ Hoàn tất | **~94%** |
 | **Registry / Store** — SQLite, seed store, persistence | ✅ Hoàn tất | **~90%** |
 | **Network layer** — DNS, proxy, WebRTC, rotation, leak-check | ✅ Hoàn tất | **~88%** |
 | **Security** — crypto, token auth, redaction, hardening | ✅ Hoàn tất | **~90%** |
-| **Core Patch (C++)** — config parser, Blink hooks, patch series | 🔄 **Đang biên dịch thật — build đã chạy được** | **~85%** |
-| **Device Catalogue** — 42 preset viết tay → **7.222 thiết bị thật thị trường VN** | ✅ **Xong, 0 lỗi** | **~95%** |
-| **js_runtime** — lớp JS fallback cho Chromium stock | ✅ Hoàn tất | **~90%** |
-| **Probe / Measurement** — simulator + harness + e2e thật | ✅ Hoàn tất | **~95%** |
+| **Core Patch (C++)** — config parser, Blink hooks, patch series | 🔄 **Đang biên dịch thật — V8 xong, đang vào Blink** | **~87%** |
+| **Device Catalogue** — 42 preset viết tay → **7.222 thiết bị thật thị trường VN** | ✅ **Xong, 0 lỗi** | **~96%** |
+| **js_runtime** — lớp JS fallback cho Chromium stock | ✅ Hoàn tất | **~92%** |
+| **Probe / Measurement** — simulator + harness + e2e thật | ✅ Hoàn tất | **~96%** |
 | **Installer** — gói cài đặt độc lập | ✅ Hoàn tất | **~95%** |
 | **Measurement Ledger** — sổ đo đạc + CLI | ✅ Hoàn tất | **~95%** |
-| **Docs** — ARCHITECTURE, AGENT_CONTRACT, RULES | ✅ Có | **~90%** |
+| **Docs** — ARCHITECTURE, AGENT_CONTRACT, RULES, SURVEY | ✅ Có | **~92%** |
 
-### Ước lượng tổng thể: **~93%**
+### Ước lượng tổng thể: **~94%**
 
 ### Bằng chứng mới nhất
 
 | Việc | Kết quả |
 |---|---|
-| Build Chromium 160 thật (MSVC 2022, Win x64) | 🔄 **đang chạy**, 0 lỗi — build dir `out/nova-win` |
-| Code C++ NOVA biên dịch | ✅ `nova_blink_patch.obj` (730 KB), `nova_core_config.obj` (1.148 KB), `nova_pixel_noise.obj` (225 KB) |
+| **Test suite control plane** | ✅ **1.341 passed**, 5 skipped, 0 failed — ruff sạch 100% |
+| **Build Chromium 160 thật** | 🔄 **195.457 target**, đang ở Blink bindings (V8 đã xong), 0 lỗi |
+| **3 bề mặt mới từ khảo sát** | ✅ `Math.acos(0.5)`, `jsHeapSizeLimit`, `MediaRecorder.isTypeSupported` — có schema, generator, lớp JS, và **là trục kiểm chứng trong bộ dò e2e** |
+| **Bảng phông theo hạng thiết bị** | ✅ Font set giờ theo **cả locale lẫn hạng máy** — budget 9 font, flagship 19 font |
+| **Quy tắc bộ nhớ** | ✅ Đọc từ `approximated_device_memory.cc` của Chromium 160 — làm tròn tới gần nhất, clamp `[1,8]` trên Android |
 | **Fleet thiết bị** | ✅ **7.222 preset, 7.222 id duy nhất** — 4.788 model, 230 GPU, 256 màn hình |
 | **Validator fleet** | ✅ **0 lỗi, 0 cảnh báo** trên toàn bộ fleet |
-| **Test suite control plane** | ✅ **1.168 passed**, 5 skipped, ruff sạch 100% |
-| **SDK shim** | ✅ SDK 10.0.26100 copy sang `C:/chromium/sdk-28000-shim`, đổi tên version 28000 — build chạy được |
-| Lỗi installer đã sửa | ✅ `launch.py`/`uninstall.py` sinh ra thiếu `main()` → đã sửa, 12/12 installer test pass |
-| Đồng bộ GitHub | ✅ `github.com/mtykp197-blip/NOVAPROFILE` (private), 182 files, commit `36a6d0a` |
+| **Đồng bộ GitHub** | ✅ commit `ef4e165`, đẩy lên `origin/main` xong |
+
+---
+
+## 1a. Lượt 13:00 — 13:45 — sửa ba lỗi "trông đúng nhưng sai thật"
+
+Cả ba lỗi này đều **không làm hỏng cái gì**, và cả ba đều làm profile
+*đáng ngờ hơn* mà không ai nhận ra.  Đây là loại lỗi nguy hiểm nhất.
+
+### (a) Bộ nhớ được bốc từ một tập phẳng
+
+`navigator.deviceMemory` trước đây được rút từ `(2, 4, 6, 8, 12, 16)` —
+một tập phẳng, không liên quan gì tới máy thật.  Nghĩa là một chiếc
+Redmi Note 12 (chỉ có 4/6/8 GB) có thể báo **16 GB**.
+
+Nay nó được rút từ `ram_options` của chính model đó, rồi đi qua đúng
+phép xấp xỉ của Chromium.
+
+### (b) Schema giữ một giả định đã lỗi thời
+
+Comment trong schema nói: *"Chromium clamps Android to [1, 8] GB"*.  Đọc
+source Chromium 160 thì **đúng** — nhưng lý do mà cả nhóm tôi đoán sai
+là **phần làm tròn**.  Source nói rõ:
+
+> the physical memory is rounded to the **nearest** power of two, a tie
+> goes to the lower bound
+
+Nên 6 GB → **4** (đúng giữa 4 và 8, hòa về dưới), không phải 8 như tôi
+đoán.  Và 3 GB → 2, không phải 4.
+
+**Cách đã kiểm chứng, không đoán:**
+
+| Cách | Kết quả |
+|---|---|
+| Đọc `approximated_device_memory.cc` của Chromium 160 | làm tròn *gần nhất*, tie về dưới, clamp Android `[1,8]` |
+| **Đo trên Chrome thật** (HTTP server local + CDP) | máy này 28 GB → Chrome báo **32**; 18 lõi logic → báo **18** |
+
+Cả hai khớp source **chính xác** — 28 GB gần 32 hơn 16, và 18 lõi không
+bị làm tròn lẫn không bị clamp.
+
+### (c) Bảy preset báo chín lõi
+
+Bảy preset có `cpu_options=(9,)`.  **Không một chiếc Android nào từng
+báo 9 lõi.**  Bằng chứng nội bộ cho ra manh mối: Pixel Fold (Tensor G2)
+báo 9 trong khi Pixel 7 (cùng Tensor G2) báo 8.  Cùng một chipset không
+thể có hai số lõi.
+
+Sau khi sửa, **0 SoC nào còn lệch**, và một test giữ điều đó.
+
+### Bài học về quy trình
+
+Khi đổi `Literal` trong schema, pytest fail **158 test** rồi tự pass ở
+lần chạy sau.  Nguyên nhân là bytecode cache cũ, không phải logic.  Đây
+là loại fail gây hoảng nhất: một lần fail hàng loạt trông như mình vừa
+phá hỏng nửa dự án, trong khi chạy lại là xong.
+
+**Luật mới:** đổi schema → xóa `__pycache__` trước khi tin kết quả
+pytest.
 
 ---
 
@@ -469,11 +526,40 @@ ATL thuộc component `Microsoft.VisualStudio.Component.VC.ATL`, không có tron
 
 ---
 
+## 6b. Việc còn lại — theo thứ tự nên làm
+
+Xếp theo **giá trị trên mỗi giờ công**, không theo thứ tự dễ.  Mỗi việc
+đều ghi rõ cách kiểm chứng, vì "viết xong" không phải "xong".
+
+| # | Việc | Tầng | Cách kiểm chứng | Ước lượng |
+|---|---|---|---|---|
+| 1 | **Chờ build Chromium xong**, rồi chạy bộ dò e2e trên `chrome.exe` thật | Core | 12 trục khớp profile, so với simulator | ~2 giờ (đang build, 195.457/220.000 target) |
+| 2 | **JA3/JA4** khớp hệ điều hành | Native/TLS | So `tls.extensions` với TLS ClientHello thật của Chromium mobile | ~4 giờ — **cần build xong**, không làm được bằng JS |
+| 3 | **Đo lại toàn bộ fleet** với quy tắc bộ nhớ mới | Core | `nova fleet-audit` → 0 lỗi, 0 cảnh báo | ~1 giờ |
+| 4 | **Rebuild installer** sau khi core xong (kèm `.ico`/`.icns` thật từ `asset/`) | Installer | Build thật, chạy entry point | ~30 phút |
+| 5 | **`mediaDevices`** chi tiết hơn (loại thiết bị, độ phân giải, facing mode) | JS | Đối chiếu với `enumerateDevices` của thiết bị thật | ~2 giờ |
+| 6 | **`permissions`** trạng thái đầy đủ (`query` trả `prompt`/`granted`/`denied` theo ngữ cảnh) | JS | So với hành vi của Chrome Android | ~1,5 giờ |
+| 7 | **Đo `measureText`** theo hạng thiết bị (dải rộng hơn `fonts.installed`) | JS | Đo trong iframe thật | ~2 giờ |
+| 8 | **Kiểm chứng lại `SURVEY.md`** với các site còn sống | Docs | Chụp lại, đối chiếu từng mục | ~1 giờ |
+
+### Việc đã xong trong lượt này
+
+| Việc | Kết quả |
+|---|---|
+| Bảng phông theo hạng thiết bị | ✅ `font_catalog.py` — tier budget/mid/flagship, 3 tầng drop list, script của locale luôn được giữ |
+| Bộ nhớ theo model + phép xấp xỉ Chromium | ✅ `hardware_approximation.py` — đọc từ source Chromium 160, đo lại trên Chrome thật |
+| Sửa 7 preset báo 9 lõi | ✅ → 8; 0 SoC lệch; có test giữ |
+| RAM của profile bám theo model | ✅ `navigator.deviceMemory` không còn có thể là 16 GB trên máy 4 GB |
+| 3 bề mặt từ khảo sát | ✅ math precision, heap limit, media decode — có trục e2e riêng |
+
+---
+
 ## 7. Lịch sử cập nhật
 
 | Thời điểm | Nội dung |
 |---|---|
-| 22/11 01:15 | Sửa bug launcher. Đóng gói git (commit `baebcc5`, 134 file). Viết `RULES.md` đầy đủ 11 mục. Thêm `tools/cursor_chat_transfer.py` + export chat 81,6 MB. |
+| **22/11 13:45** | **Lượt sửa ba lỗi "đúng nhưng sai":** bộ nhớ bốc từ tập phẳng, schema giữ giả định lỗi thời về phép làm tròn, 7 preset báo 9 lõi. Đọc source Chromium 160 + đo trên Chrome thật để kiểm chứng. Thêm bảng phông theo hạng thiết bị. **1.341 test pass**, ruff sạch. Đẩy `ef4e165` lên GitHub. |
 | 22/11 01:20 | **Bổ sung R8 (không dừng, không hỏi) + R9 (viết xong ≠ xong)** vào `RULES.md` và `AGENTS.md`. Bắt đầu 4 việc còn lại. |
+| 22/11 01:15 | Sửa bug launcher. Đóng gói git (commit `baebcc5`, 134 file). Viết `RULES.md` đầy đủ 11 mục. Thêm `tools/cursor_chat_transfer.py` + export chat 81,6 MB. |
 | 22/11 00:50 | Catalog 11→42 preset. Sửa đơn vị đo screen (logical pixel). Thêm `fleet-audit` vào ledger. 559 test pass. 2M profile 0 va chạm. |
 | 21/11 22:50 | Tạo báo cáo. 540 test pass. |
