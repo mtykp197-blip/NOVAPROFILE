@@ -45,9 +45,19 @@ def test_brands_and_full_list_consistent(gen, major):
     full = {b.brand: b.version for b in p.user_agent_data.full_version_list}
     assert brands["Chromium"] == str(major)
     assert brands["Google Chrome"] == str(major)
-    assert full["Chromium"] == p.browser_version.full_version
-    assert full["Chromium"].split(".")[0] == str(major)
-    assert set(brands) == set(full)
+
+    # The full version list is a high-entropy hint: Chromium only sends it
+    # from major 116 on.  A core that cannot produce it must not carry
+    # one, and the data has to be empty as well as the header -- the data
+    # is what the JS runtime hands to ``getHighEntropyValues`` and what
+    # the consistency resolver renders the header from.
+    caps = DEFAULT_REGISTRY.capabilities(major)
+    if caps.has_client_hint("Sec-CH-UA-Full-Version-List"):
+        assert full["Chromium"] == p.browser_version.full_version
+        assert full["Chromium"].split(".")[0] == str(major)
+        assert set(brands) == set(full)
+    else:
+        assert full == {}
 
 
 @pytest.mark.parametrize("major", MILESTONES + (LATEST,))

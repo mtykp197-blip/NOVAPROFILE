@@ -77,11 +77,34 @@ from .font_catalog import fonts_for_locale
 from .geo_catalog import GEO_CATALOGUE
 from .identity import DeviceIdentity, DeviceIdentityFactory
 from .seed import Axis, SeedDeriver, new_master_seed
-from .versions import DEFAULT_REGISTRY, VersionCapabilities
+from .versions import (
+    DEFAULT_REGISTRY,
+    MAX_SUPPORTED_MAJOR,
+    MIN_SUPPORTED_MAJOR,
+    VERSION_TABLE,
+    VersionCapabilities,
+    _android_for_major,
+)
 
-#: The browser major used when the caller does not pick one (keeps the
-#: pre-existing behaviour of the generator).
+#: The Chromium major this build falls back to when no version can be
+#: derived from the device's Android release.
+#:
+#: This is the "the version this build defaults to" meaning and it is
+#: deliberately *separate* from the version a freshly generated profile
+#: picks.  A profile that draws its browser version from the seed gets a
+#: different major on every seed (see :func:`_pick_chrome_major`), while
+#: this constant stays the single answer for a caller that asks for the
+#: build's default version.  Keeping the two apart means the fallback does
+#: not silently become "the version every profile gets".
 DEFAULT_BROWSER_MAJOR: int = 120
+
+#: The smallest Chromium band the random pick is allowed to fill edge to
+#: edge.
+#:
+#: A band of three or fewer majors has no interior to draw from, so it is
+#: used whole.  Anything larger is trimmed at both ends (see
+#: :func:`_pick_chrome_major`).
+_BAND_EDGE_TRIM_THRESHOLD: int = 3
 
 # --------------------------------------------------------------------------
 # Locale / timezone catalog
@@ -335,10 +358,17 @@ class ProfileGenerator:
         # contradiction: Chromium 120 shipped with Android 14, and an
         # anti-bot vendor that checks the pair would single the profile out
         # immediately.
+        #
+        # The major is *drawn* from that band rather than fixed, because a
+        # fleet where every profile of a given Android release reports the
+        # same browser version is a fleet a vendor groups on for free: the
+        # major is one of the few fields a device actually reveals about
+        # how old its browser is.  The draw is derived from the seed, so
+        # the profile stays reproducible.
         if browser_version is not None:
             major = browser_version.major
         else:
-            major = _major_for_android_release(build.version_release)
+            major = _pick_chrome_major(deriver, build.version_release)
 
         caps = DEFAULT_REGISTRY.capabilities(major)
 
@@ -497,7 +527,19 @@ class ProfileGenerator:
             "Google Chrome": (str(caps.major), browser_full),
         }
         brands = [BrandVersion(brand=b, version=greased[b][0]) for b in caps.brand_order]
-        full_version_list = [BrandVersion(brand=b, version=greased[b][1]) for b in caps.brand_order]
+
+        # The full version list is a high-entropy hint: Chromium only
+        # started sending it in major 116.  Before that the core reports
+        # no full version list at all, so the profile must not carry one
+        # either -- the value here is what the JS runtime hands to
+        # ``navigator.userAgentData.getHighEntropyValues(['fullVersionList'])``
+        # and what the ``Sec-CH-UA-Full-Version-List`` header is rendered
+        # from.
+        full_version_list: list[BrandVersion] = []
+        if caps.has_client_hint("Sec-CH-UA-Full-Version-List"):
+            full_version_list = [
+                BrandVersion(brand=b, version=greased[b][1]) for b in caps.brand_order
+            ]
 
         # The architecture and the bitness are part of the high-entropy
         # hints.  Chromium only started sending them in major 119; before
@@ -509,6 +551,16 @@ class ProfileGenerator:
             architecture = _architecture_for(abi)
             bitness = "64" if abi.is_64_bit else "32"
 
+        # The model is a high-entropy hint too, and it follows the same
+        # rule: ``navigator.userAgentData.model`` only exists from major
+        # 119 on.  Before that the core reports no model at all, so the
+        # profile must not carry one either -- the value here is what the
+        # JS runtime hands to ``navigator.userAgentData.model`` and what
+        # the ``Sec-CH-UA-Model`` header is rendered from, and a pre-119
+        # core that names a model is claiming a capability it does not
+        # have.
+        model = build.model if caps.has_client_hint("Sec-CH-UA-Model") else ""
+
         return UserAgentData(
             brands=brands,
             full_version_list=full_version_list,
@@ -517,7 +569,7 @@ class ProfileGenerator:
             platform_version=build.version_release,
             architecture=architecture,
             bitness=bitness,
-            model=build.model,
+            model=model,
             wow64=False,
         )
 
@@ -1384,19 +1436,121 @@ class ProfileGenerator:
 # --------------------------------------------------------------------------
 
 
-def _major_for_android_release(release: str) -> int:
-    """The Chromium major that shipped with an Android release.
+def _release_number(release: str) -> int:
+    """The integer Android release number of a release string.
+
+    ``"14"`` -> ``14``, ``"14.0.1"`` -> ``14``.  An unparsable release
+    falls back to Android 13, the oldest release the catalogue covers.
+    """
+
+    try:
+        return int(release.split(".")[0])
+    except (ValueError, AttributeError):
+        return 13
+
+
+@lru_cache(maxsize=64)
+def _chromium_band_for_android_release(release: str) -> tuple[int, int]:
+    """The Chromium majors that shipped with an Android release.
 
     A profile that claims a browser version the operating system never
     shipped is a contradiction a vendor can read straight off the
-    User-Agent.  The mapping is the one the version registry uses:
+    User-Agent.  The band is therefore not written down twice: it is
+    *derived* from the version registry, which is the single source of
+    truth for what each Chromium major looks like.
+
+    The derivation inverts :func:`novaprofile.core.versions._android_for_major`:
+    every supported major is asked which Android release it belongs to,
+    and the majors of the requested release are collected.  For the
+    shipped table that yields
 
     ==========  ===================
     Android      Chromium
     ==========  ===================
-    13           103 .. 113
+    13           100 .. 113
     14           114 .. 127
-    15           128 and later
+    15           128 .. 155
+    ==========  ===================
+
+    A release the registry does not know about inherits the band of the
+    newest release that shipped at or below it, which is what a device
+    running a newer Android would be carrying.
+    """
+
+    number = _release_number(release)
+
+    # The release the registry would attribute a Chromium major to.  The
+    # registry maps a major onto the *newest* Android release that shipped
+    # with it, so the release of a known major is a good anchor.
+    known = sorted(
+        {
+            _android_for_major(major)[0]
+            for major in sorted(VERSION_TABLE)
+        }
+    )
+
+    # The release this device claims: the newest known release that is not
+    # newer than the claimed one.
+    anchor = known[0]
+    for candidate in known:
+        if _release_number(candidate) <= number:
+            anchor = candidate
+
+    majors = [major for major in sorted(VERSION_TABLE) if _android_for_major(major)[0] == anchor]
+    if not majors:
+        # Defensive: the registry always attributes at least one major to
+        # some release, so this cannot happen unless the table is emptied.
+        return (MIN_SUPPORTED_MAJOR, MAX_SUPPORTED_MAJOR)
+
+    return (majors[0], majors[-1])
+
+
+def _pick_chrome_major(deriver: SeedDeriver, release: str) -> int:
+    """Draw the Chromium major a profile claims, from the seed.
+
+    The draw is a pure function of the profile's seed, so the same seed
+    always yields the same browser version and the profile survives a
+    restart with an identical fingerprint.
+
+    The edges of the band are trimmed off first.  A phone that shipped
+    with Android 14 is usually a few releases into its update cycle, not
+    on the very first build, so the very first and the very last major of
+    the band are the least plausible picks.  A band of three or fewer
+    majors has no interior to draw from and is used whole.
+    """
+
+    low, high = _chromium_band_for_android_release(release)
+    if high - low + 1 > _BAND_EDGE_TRIM_THRESHOLD:
+        low += 1
+        high -= 1
+
+    span = high - low + 1
+    if span <= 0:
+        # A two-entry band trimmed down to nothing: use the band whole.
+        low, high = _chromium_band_for_android_release(release)
+        span = high - low + 1
+    if span == 1:
+        return low
+
+    return low + deriver.derive_int(Axis.CLIENT_HINTS, 0, span - 1, context="chrome-major")
+
+
+def _major_for_android_release(release: str) -> int:
+    """The Chromium major that shipped with an Android release.
+
+    This is the *representative* major of the band -- the one a caller
+    that asks for "the version this build defaults to" gets.  It is not
+    the version a generated profile draws: that is
+    :func:`_pick_chrome_major`, which varies per profile.
+
+    The mapping is the one the version registry uses:
+
+    ==========  ===================
+    Android      Chromium
+    ==========  ===================
+    13           100 .. 113
+    14           114 .. 127
+    15           128 .. 155
     ==========  ===================
 
     The middle of the band is chosen rather than its edges, because the
@@ -1405,17 +1559,8 @@ def _major_for_android_release(release: str) -> int:
     on the very first build.
     """
 
-    try:
-        number = int(release.split(".")[0])
-    except (ValueError, AttributeError):
-        number = 13
-
-    if number >= 15:
-        return DEFAULT_BROWSER_MAJOR if DEFAULT_BROWSER_MAJOR >= 128 else 128
-    if number == 14:
-        return DEFAULT_BROWSER_MAJOR
-    # Android 13 shipped with Chromium 103 through 113.
-    return 113
+    low, high = _chromium_band_for_android_release(release)
+    return (low + high) // 2
 
 
 def _architecture_for(abi: AndroidAbiSoc) -> str:
@@ -1493,4 +1638,5 @@ __all__ = [
     "GeoTarget",
     "LOCALE_PRESETS",
     "ANDROID_FONT_PRESET",
+    "DEFAULT_BROWSER_MAJOR",
 ]

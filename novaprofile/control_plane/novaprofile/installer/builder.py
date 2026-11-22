@@ -281,6 +281,84 @@ class InstallerBuilder:
         count = _copy_tree(source, target, skip={"__pycache__", "build"})
         self._record(f"copying the native core sources ({count} files)")
 
+    def _install_brand(self, staging: Path) -> None:
+        """Install the brand assets and build the platform icons.
+
+        The artwork is optional.  A build from a checkout that carries
+        no images still produces a working installation; it simply has
+        no icon, and the record says so rather than pretending the
+        icon is there.
+        """
+
+        try:
+            from novaprofile.brand.icons import build_all, has_assets
+        except ImportError:  # pragma: no cover - the brand is optional
+            self._record("the brand kit is not available; the installation has no icon")
+            return
+
+        if not has_assets():
+            self._record("no brand artwork in the checkout; the installation has no icon")
+            return
+
+        produced = build_all(staging / "brand")
+        if not produced:
+            self._record("the brand artwork could not be converted; the installation has no icon")
+            return
+
+        # The icon sits at the root of the installation as well: that
+        # is where Explorer looks for the icon of the folder itself.
+        icon = staging / "brand" / "nova.ico"
+        if icon.exists():
+            (staging / "nova.ico").write_bytes(icon.read_bytes())
+
+        self._record(f"installing the brand assets ({len(produced)} files)")
+
+    def _write_shortcuts(self, target: Path) -> list[Path]:
+        """Create the Start Menu and Desktop shortcuts.
+
+        The shortcuts are created by the *installer* rather than by the
+        build, because a shortcut that points at a build directory
+        breaks the moment the directory moves.  This method is called
+        by the installation script, not by :meth:`build`.
+        """
+
+        if os.name != "nt":
+            return []
+
+        try:
+            import win32com.client  # type: ignore[import-not-found]
+        except ImportError:
+            self._record("the shortcuts need pywin32; they were not created")
+            return []
+
+        launcher = target / "launch.py"
+        icon = target / "nova.ico"
+        icon_location = str(icon) if icon.exists() else ""
+
+        shell = win32com.client.Dispatch("WScript.Shell")
+        created: list[Path] = []
+
+        program_files = os.environ.get("PROGRAMFILES", r"C:\Program Files")
+        start_menu = Path(program_files) / "Microsoft Windows" / "Start Menu" / "Programs"
+        desktop = Path(os.environ.get("USERPROFILE", "")) / "Desktop"
+
+        for folder in (start_menu, desktop):
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                continue
+            link = folder / f"{PRODUCT_NAME}.lnk"
+            shortcut = shell.CreateShortCut(str(link))
+            shortcut.Targetpath = str(launcher)
+            shortcut.WorkingDirectory = str(target)
+            shortcut.Description = "NOVA PROFILE -- browser profile engine"
+            if icon_location:
+                shortcut.IconLocation = icon_location
+            shortcut.save()
+            created.append(link)
+
+        return created
+
     def _write_readme(self, staging: Path) -> None:
         """Write the installation instructions."""
 
@@ -314,6 +392,7 @@ class InstallerBuilder:
         self._write_readme(staging)
         self._copy_licences(staging)
         self._copy_core_patch(staging)
+        self._install_brand(staging)
 
         for name in DATA_DIRECTORIES:
             (staging / name).mkdir(exist_ok=True)
