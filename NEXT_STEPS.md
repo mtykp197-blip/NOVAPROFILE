@@ -15,7 +15,8 @@ và mỗi việc cần bao lâu**.
 | Anti-collision (chống trùng) | ✅ Xong, 300/300 profile unique |
 | Device catalogue | ✅ 8.954 preset Android |
 | JS runtime (navigator/screen/canvas/webgl/audio) | ✅ Xong |
-| Chromium build trên Windows | 🔄 Đang build — 7.915/9.570 step (~82%) |
+| Chromium build trên Windows | 🔄 Đang build — ~8.600/9.570 step (~90%) |
+| Chromium patch anti-detect (tầng C++) | ✅ **Đã có** — 3.048 dòng, 24 file |
 | Chromium: `chrome.exe` hoàn chỉnh | ⏳ Chưa có |
 | Installer / gói cài đặt Windows | ⏳ Chưa đóng gói |
 | JA3/JA4 (TLS fingerprint) | ❌ Chưa — cần tầng mạng, không làm được bằng JS |
@@ -85,7 +86,11 @@ generator set đồng nhất cả 4 trường theo cùng một giá trị.
 ### Ưu tiên 1 — Dựng `chrome.exe` (chặn mọi thứ khác)
 
 **Trạng thái.** Build nền đang chạy tại `C:\chromium\src\out\nova-win`,
-7.915/9.570 step. Log: `C:\chromium\src\out\nova_link_chrome.log`.
+khoảng 8.600/9.570 step (~90%). Log: `C:\chromium\src\out\nova_link_chrome.log`.
+
+> **Quan trọng:** Chromium đã có patch anti-detect đầy đủ ở tầng C++ (xem
+> mục 3.2). Việc còn lại **không phải viết patch** — chỉ là build cho ra
+> `chrome.exe` rồi đóng gói.
 
 **Đã gỡ nút thắt ATL.** Link fail vì `atls.lib` không tồn tại trong bản build
 này (`LNK4099: Cannot use debug info for 'atls.lib(atlbase.obj)'`). Đã:
@@ -105,10 +110,21 @@ HRESULT hr = HRESULT_FROM_WIN32(
 
 **Việc còn lại:**
 1. Chờ build xong → xác nhận `out/nova-win/chrome.exe` tồn tại.
-2. Chạy probe 21 trục trên chính `chrome.exe` này (không phải Chrome hệ thống).
-3. Đóng gói `chrome.exe` + `resources.pak` + DLL vào installer.
-4. Commit `chrome.exe` lên GitHub — **dùng Git LFS** (file ~150 MB, vượt
-   giới hạn 100 MB của GitHub). Xem mục 4.
+2. Chạy probe 21 trục trên chính `chrome.exe` này (không phải Chrome hệ thống),
+   với `--nova-config` trỏ vào profile thật.
+3. Đóng gói bằng `novaprofile/installer/chromium_bundle.py` (đã viết xong):
+
+```bash
+python -m novaprofile.installer.chromium_bundle \
+    --chromium C:/chromium/src/out/nova-win \
+    --target dist/chromium-bundle \
+    --version 1.0.0
+python -m novaprofile.installer.chromium_bundle \
+    --target dist/chromium-bundle --verify
+```
+
+4. Commit bundle lên GitHub — **dùng Git LFS** (file ~150 MB, vượt giới hạn
+   100 MB của GitHub). Xem mục 4.
 
 ### Ưu tiên 2 — Đóng gói installer Windows
 
@@ -121,17 +137,26 @@ core xong.
 ### Ưu tiên 3 — JA3 / JA4 (tầng mạng, không làm được bằng JS)
 
 Đây là **giới hạn kiến trúc**, không phải việc chưa làm. JA3/JA4 là fingerprint
-của **TLS ClientHello** — nằm ở tầng network, trước cả khi JS chạy. Cả hai
-hướng:
+của **TLS ClientHello** — nằm ở tầng network, trước cả khi JS chạy. `navigator`
+không đụng tới TLS, nên không có cách nào làm bằng JS.
 
-- **Chromium patch**: sửa `net/ssl/ssl_client_socket_impl.cc` để ép
-  `ClientHello` ra đúng cipher suite / extension order / elliptic curve của
-  profile → build lại Chromium. Đây là hướng đúng, và cần làm **cùng lúc**
-  với Ưu tiên 1 vì cùng một lần build.
-- **Proxy MITM**: nếu đi qua proxy, TLS do proxy ký, JA3 của client vẫn do
-  Chromium tạo → phải patch client.
+Cách làm: sửa `net/ssl/ssl_client_socket_impl.cc` để ép `ClientHello` ra đúng
+cipher suite / extension order / elliptic curve của profile → build lại Chromium.
 
-Không có cách nào làm bằng JS. `navigator` không đụng tới TLS.
+**Thuận lợi:** `nova_core_config.h` đã có sẵn cấu trúc cấu hình, và
+`nova_core_config.cc` đã đọc JSON + suy luận HKDF. Việc cần làm là:
+
+1. Thêm struct `TlsConfig` (cipher suites, extensions, curves, ALPN,
+   signature algorithms) vào `nova_core_config.h`.
+2. Thêm nó vào `ProfileConfig`.
+3. Trong `ssl_client_socket_impl.cc`, đọc `nova::core_config()` và ép
+   ClientHello theo đó.
+4. Build lại — **cùng một lần build** với Ưu tiên 1 nếu làm song song.
+
+**Ước lượng:** 2–3 ngày, không tính thời gian build.
+
+**Ghi chú thêm:** nếu profile đi qua proxy, JA3 của client vẫn do Chromium tạo
+ra (proxy chỉ ký chứng thực sau TLS), nên **proxy không cứu được trục này**.
 
 ### Ưu tiên 4 — Bảng font theo hạng thiết bị
 
@@ -182,28 +207,106 @@ lại phần đổi.
 | `base/win/atl.h` | Gỡ umbrella header ATL | Gỡ `atls.lib` khỏi link |
 | `chrome/windows_services/service_program/service.cc` | `InitializeComSecurity()` dùng SDDL thuần | Không còn ATL |
 
-### 3.2 Bản vá Chromium *cần thêm* cho anti-detect
+### 3.2 Bản vá anti-detect đã có sẵn trong Chromium
 
-Chromium hiện **chưa** có patch fingerprint nào. Tất cả đang nằm ở tầng JS
-runtime của Python (`novaprofile/js_runtime/`). Để profile "chảy" được trên
-Chromium thật mà không cần inject JS từ bên ngoài, cần patch các điểm sau
-trong Chromium:
+**Chromium đã được patch anti-detect thật** — không phải bản desktop vanilla.
+Module fingerprint native nằm  ở `third_party/blink/renderer/core/nova/`:
 
-| Trục | File Chromium đích | Ghi chú |
+| File | Dòng | Vai trò |
 |---|---|---|
-| UA / Client Hints | `content/public/common/user_agent_utils.cc` | |
-| `navigator.hardwareConcurrency` | `third_party/blink/renderer/modules/webnavigator/` | |
-| `navigator.deviceMemory` | `third_party/blink/renderer/core/execution_context/navigator_base.cc` | |
-| `screen.*` | `third_party/blink/renderer/core/frame/...` | |
-| Canvas noise | `third_party/blink/renderer/modules/canvas2d/` | |
-| WebGL limits | `gpu/command_buffer/service/` | |
-| `maxTouchPoints` | `third_party/blink/renderer/core/frame/navigator.cc` | |
-| TLS (JA3/JA4) | `net/ssl/ssl_client_socket_impl.cc` | Ưu tiên 3 |
+| `nova_core_config.h` | 559 | 44 struct: cấu hình profile + API |
+| `nova_core_config.cc` | 1.079 | Đọc JSON config + suy luận HKDF |
+| `nova_blink_patch.cc` | 557 | Gắn giá trị vào accessor của Blink |
+| `nova_pixel_noise.{h,cc}` | 359 | Nhiễu canvas/WebGL ở tầng C++ |
+| `nova_chromium_hooks.h` | 141 | Hook dùng chung |
 
-**Khuyến nghị:** làm theo cơ chế *profile payload → Chromium* một lần, để
-Chromium đọc profile từ disk lúc khởi động, thay vì inject JS runtime từ
-Python. Cách này bền hơn nhiều về sau (không ai thấy JS injection), và
-đồng thời mở đường cho JA3/JA4 vốn bắt buộc phải nằm trong Chromium.
+Cơ chế: profile JSON truyền vào qua `--nova-config=/path/to/nova_core.json`,
+đọc bởi browser process **trước khi** fork renderer / GPU / network service.
+Không có JS hook nào — đúng như thiết kế, vì JS hook bị phát hiện dễ dàng qua
+`Function.prototype.toString`, `Object.getOwnPropertyDescriptor` và Proxy trap.
+
+**44 struct đã cover:** `SeedConfig`, `AndroidBuild`, `AndroidAbiSoc`, `Screen`,
+`Orientation`, `SafeAreaInsets`, `Viewport`, `MediaQueries`, `Canvas2DConfig`,
+`WebGLImageNoise`, `WebGLParameters`, `ShaderPrecisionRange`, `ShaderPrecision`,
+`WebGLConfig`, `WebGPUAdapter`, `WebGPUConfig`, `AudioConfig`, `RectsConfig`,
+`FontsConfig`, `MediaDeviceEntry`, `MediaDevicesConfig`, `StorageNetworkConfig`,
+`BatteryConfig`, `SpeechVoice`, `GamepadConfig`, `BatterySpeechGamepad`,
+`Vector3D`, `Orientation3D`, `SensorsConfig`, `BrandVersion`, `NavigatorConfig`,
+`UserAgentDataConfig`, `PermissionsConfig`, `TimezoneConfig`, `LocaleConfig`,
+`GeolocationConfig`, `ProxyConfig`, `WebRtcConfig`, `DnsConfig`,
+`HttpHeadersConfig`, `GeoIntelligenceConfig`, `GeoSyncConfig`, `ProfileConfig`.
+
+**Các file Blink đã sửa** (theo `.nova_applied.txt`, 24 file, 3.048 dòng):
+
+| File | Trục |
+|---|---|
+| `content/app/content_main_runner_impl.cc` | Đọc `--nova-config` |
+| `core/frame/navigator_ua.cc`, `navigator_ua_data.cc` | UA + Client Hints |
+| `core/frame/navigator_device_memory.cc` | `navigator.deviceMemory` |
+| `core/frame/navigator_concurrent_hardware.cc` | `navigator.hardwareConcurrency` |
+| `core/frame/navigator_id.cc` | `navigator.id` / seed |
+| `core/frame/navigator_language.cc` | `navigator.language` |
+| `core/execution_context/navigator_base.cc` | Điều phối |
+| `core/frame/navigator.cc`, `local_dom_window.cc` | `maxTouchPoints`, `window` |
+| `core/frame/screen.cc` | `screen.*` |
+| `core/events/navigator_events.cc` | Event |
+| `modules/canvas/canvas2d/base_rendering_context_2d.cc` | Canvas noise |
+| `modules/webgl/webgl_rendering_context_base.cc` | WebGL limits |
+
+**Còn thiếu trong Chromium:**
+
+| Trục | File đích | Ghi chú |
+|---|---|---|
+| **JA3 / JA4** | `net/ssl/ssl_client_socket_impl.cc` | TLS ClientHello — bắt buộc |
+| Proxy/DNS qua Chromium | `net/proxy_resolution/` | config đã có struct, cần nối |
+| `FontsConfig` → font list thật | `third_party/blink/renderer/core/css/` | cấu hình có, chưa áp |
+| `WebRtcConfig` | `third_party/blink/renderer/modules/webrtc/` | cấu hình có, chưa áp |
+| `DnsConfig` | `net/dns/` | cấu hình có, chưa áp |
+
+> **Lưu ý đã sửa:** bản `NEXT_STEPS.md` đầu tiên ghi "Chromium chưa có patch
+> fingerprint nào" — sai. Chromium **đã có** patch đầy đủ ở tầng C++. Việc
+> còn lại là **build nó ra `chrome.exe`**, không phải viết lại từ đầu.
+
+### 3.3 Script build
+
+Trong `C:\chromium\src`:
+
+| Script | Việc |
+|---|---|
+| `nova_gen.bat` | `gn gen out/nova` (win64/x64) |
+| `nova_build.bat` | `autoninja -C out/nova` |
+| `nova_link_chrome.bat` | `autoninja -C out/nova-win chrome` → log |
+| `nova_probe_sdk.bat` | Probe SDK |
+
+Cấu hình `gn` đang dùng:
+
+```
+target_os="win" target_cpu="x64" is_debug=false is_official_build=false
+treat_warnings_as_errors=false use_remoteexec=false blink_symbol_level=1
+dawn_enable_d3d12=false
+```
+
+**Vì sao `target_os="win"` chứ không phải `"android"`:** Chromium 159 có
+`assert(host_os == "linux", "Android builds are only supported on Linux.")`
+trong `build/config/BUILDCONFIG.gn`, nên target Android **không generate được**
+từ host Windows. Cấu hình win64 compile **đúng cùng** các translation unit
+của Blink — mã NOVA và các accessor đã sửa là C++ độc lập nền tảng.
+
+**`dawn_enable_d3d12=false`** bỏ backend D3D12 của Dawn (kèm DXC); nguồn DXC
+include `<atlbase.h>` mà máy không có ATL. WebGPU không phải thứ cần verify ở
+đây, và cấu hình win64 không D3D12 vẫn compile cùng các unit Blink.
+
+Hai biến môi trường bắt buộc:
+
+```
+DEPOT_TOOLS_WIN_TOOLCHAIN=0     # dùng VS Build Tools cục bộ, không tải toolchain Google
+vs2022_install=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools
+```
+
+> `vs2022_install` là override được hỗ trợ: `build/vs_toolchain.py` tìm VS 2022
+> dưới `%ProgramFiles%`, còn Build Tools nằm ở `%ProgramFiles(x86)%`.
+
+---
 
 ---
 

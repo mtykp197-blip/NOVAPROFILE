@@ -1177,6 +1177,72 @@ renderer, `_GPU_VARIANTS` 8.954 preset.
 `gpu.renderer` tập trung 11.47% ở `Mali-G57 MC2` — **giới hạn vật lý đúng**, không
 được phân bố giả (sẽ tạo fingerprint không tồn tại).
 
+### I. Phát hiện quan trọng: Chromium đã có patch anti-detect đầy đủ
+
+Trong lúc chờ build xong, đọc lại `C:\chromium\src` để viết tài liệu bàn giao — và
+phát hiện ra điều quan trọng: **Chromium đã được patch anti-detect thật**, không
+phải bản desktop vanilla.
+
+Module fingerprint native nằm ở
+`third_party/blink/renderer/core/nova/`:
+
+| File | Dòng | Vai trò |
+|---|---|---|
+| `nova_core_config.h` | 559 | 44 struct: cấu hình profile + API |
+| `nova_core_config.cc` | 1.079 | Đọc JSON config + suy luận HKDF |
+| `nova_blink_patch.cc` | 557 | Gắn giá trị vào accessor của Blink |
+| `nova_pixel_noise.{h,cc}` | 359 | Nhiễu canvas/WebGL ở tầng C++ |
+| `nova_chromium_hooks.h` | 141 | Hook dùng chung |
+
+Cơ chế: profile JSON đi qua `--nova-config=/path/to/nova_core.json`, đọc bởi
+browser process **trước khi** fork renderer / GPU / network service.
+
+**44 struct** đã cover: `SeedConfig`, `AndroidBuild`, `AndroidAbiSoc`, `Screen`,
+`Orientation`, `SafeAreaInsets`, `Viewport`, `MediaQueries`, `Canvas2DConfig`,
+`WebGLImageNoise`, `WebGLParameters`, `ShaderPrecisionRange`, `ShaderPrecision`,
+`WebGLConfig`, `WebGPUAdapter`, `WebGPUConfig`, `AudioConfig`, `RectsConfig`,
+`FontsConfig`, `MediaDeviceEntry`, `MediaDevicesConfig`, `StorageNetworkConfig`,
+`BatteryConfig`, `SpeechVoice`, `GamepadConfig`, `BatterySpeechGamepad`,
+`Vector3D`, `Orientation3D`, `SensorsConfig`, `BrandVersion`, `NavigatorConfig`,
+`UserAgentDataConfig`, `PermissionsConfig`, `TimezoneConfig`, `LocaleConfig`,
+`GeolocationConfig`, `ProxyConfig`, `WebRtcConfig`, `DnsConfig`,
+`HttpHeadersConfig`, `GeoIntelligenceConfig`, `GeoSyncConfig`, `ProfileConfig`.
+
+Theo `.nova_applied.txt`: **24 file, 3.048 dòng** sửa trong Blink + content.
+
+**Hệ quả cho kế hoạch:** việc còn lại **không phải viết patch fingerprint** —
+chỉ là build cho ra `chrome.exe` rồi đóng gói. Bản `NEXT_STEPS.md` đầu tiên
+ghi sai ("Chromium chưa có patch fingerprint nào") và đã được sửa.
+
+**Còn thiếu trong Chromium** (đã kiểm tra `nova_core_config.{h,cc}` — không có
+chữ nào liên quan TLS):
+
+| Trục | File đích |
+|---|---|
+| **JA3 / JA4** | `net/ssl/ssl_client_socket_impl.cc` |
+| Proxy/DNS qua Chromium | `net/proxy_resolution/`, `net/dns/` |
+| `FontsConfig` → font list thật | `third_party/blink/renderer/core/css/` |
+| `WebRtcConfig` | `third_party/blink/renderer/modules/webrtc/` |
+
+### J. Bộ đóng gói Chromium
+
+Viết `novaprofile/installer/chromium_bundle.py`:
+
+- `collect_files()` — lấy `chrome.exe`, `*.pak`, `*.dat`, `*_snapshot.bin`,
+  `locales/`, `swiftshader/`; **bỏ** `.obj`, `.pdb`, `.ilk`, `.lib`, `.exp`,
+  `.manifest`, `obj/`, `gen/`
+- `build_bundle()` — copy + ghi `chromium_bundle.json` (version, từng file,
+  SHA-256 của từng file)
+- `verify_bundle()` — so **digest**, không so size (file đổi mà giữ nguyên
+  độ dài chính là case mà check size bỏ sót)
+
+Danh sách file theo **pattern** chứ không theo tên: Chromium đổi tên resource
+giữa các milestone (`resources.pak` → `chrome_100_percent.pak`), bundle liệt
+kê từng tên sẽ hỏng ở release sau.
+
+13 test mới, tất cả xanh.
+
+
 ### H. Bàn giao
 
 Viết `NEXT_STEPS.md` — roadmap đầy đủ: ưu tiên, ước lượng thời gian, bảng file
