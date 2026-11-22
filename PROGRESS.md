@@ -1,41 +1,38 @@
 # NOVA PROFILE — Báo cáo tiến độ
 
-_Cập nhật: 22/11/2026 09:52 (UTC+7)_
+_Cập nhật: 22/11/2026 11:05 (UTC+7)_
 
 ---
 
 ## 1. Tổng quan
 
-| Hạng mục | Trạng thái | % hoàn thiện |
-|---|---|---|
-| **Control Plane (Python)** — generator, schema, collision guard, consistency | ✅ Hoàn tất | **~96%** |
+| **Control Plane (Python)** — generator, schema, collision guard, consistency | ✅ Hoàn tất | **~97%** |
 | **API / CLI** — REST, auth, batch, probe | ✅ Hoàn tất | **~94%** |
 | **Registry / Store** — SQLite, seed store, persistence | ✅ Hoàn tất | **~90%** |
 | **Network layer** — DNS, proxy, WebRTC, rotation, leak-check | ✅ Hoàn tất | **~88%** |
 | **Security** — crypto, token auth, redaction, hardening | ✅ Hoàn tất | **~90%** |
-| **Core Patch (C++)** — config parser, Blink hooks, patch series | 🔄 **Đang biên dịch thật — NOVA .obj đã xong** | **~80%** |
-| **Device Catalogue** — 42 preset viết tay → fleet thiết bị thật thị trường VN | 🔄 **Mở rộng đang chạy** | **~70%** |
+| **Core Patch (C++)** — config parser, Blink hooks, patch series | 🔄 **Đang biên dịch thật — build đã chạy được** | **~85%** |
+| **Device Catalogue** — 42 preset viết tay → **7.222 thiết bị thật thị trường VN** | ✅ **Xong, 0 lỗi** | **~95%** |
 | **js_runtime** — lớp JS fallback cho Chromium stock | ✅ Hoàn tất | **~90%** |
 | **Probe / Measurement** — simulator + harness + e2e thật | ✅ Hoàn tất | **~95%** |
 | **Installer** — gói cài đặt độc lập | ✅ Hoàn tất | **~95%** |
 | **Measurement Ledger** — sổ đo đạc + CLI | ✅ Hoàn tất | **~95%** |
 | **Docs** — ARCHITECTURE, AGENT_CONTRACT, RULES | ✅ Có | **~90%** |
 
-### Ước lượng tổng thể: **~92%**
+### Ước lượng tổng thể: **~93%**
 
-### Bằng chứng mới nhất (22/11/2026 09:52)
+### Bằng chứng mới nhất
 
 | Việc | Kết quả |
 |---|---|
-| Build Chromium 160 thật (MSVC 2022, Win x64) | **56,6% → đang chạy**, 0 lỗi |
+| Build Chromium 160 thật (MSVC 2022, Win x64) | 🔄 **đang chạy**, 0 lỗi — build dir `out/nova-win` |
 | Code C++ NOVA biên dịch | ✅ `nova_blink_patch.obj` (730 KB), `nova_core_config.obj` (1.148 KB), `nova_pixel_noise.obj` (225 KB) |
-| **Dataset thiết bị thật** | ✅ **10.923 thiết bị GSMArena** gộp từ 3 nguồn công khai → **4.947 thiết bị thị trường VN** |
-| **Mở rộng fleet** | ✅ 4.812 model thật × biến thể RAM thật → **~7.800 preset** (đang tích hợp) |
-| **Schema Screen mở rộng** | ✅ thêm `dpr` 3.25/4.0 và 4 density bucket thật (120, 213, 520, 640) |
-| **Fleet validator** | ✅ 42 preset biết-good → **0 lỗi, 0 cảnh báo** |
-| Test suite control plane | ✅ **894 passed**, 5 skipped, ruff sạch 100% (+60 test market filter mới) |
+| **Fleet thiết bị** | ✅ **7.222 preset, 7.222 id duy nhất** — 4.788 model, 230 GPU, 256 màn hình |
+| **Validator fleet** | ✅ **0 lỗi, 0 cảnh báo** trên toàn bộ fleet |
+| **Test suite control plane** | ✅ **1.168 passed**, 5 skipped, ruff sạch 100% |
+| **SDK shim** | ✅ SDK 10.0.26100 copy sang `C:/chromium/sdk-28000-shim`, đổi tên version 28000 — build chạy được |
 | Lỗi installer đã sửa | ✅ `launch.py`/`uninstall.py` sinh ra thiếu `main()` → đã sửa, 12/12 installer test pass |
-| Đồng bộ GitHub | ✅ `github.com/mtykp197-blip/NOVAPROFILE` (private), 167 files, 2,08 MB, commit `09f010d` |
+| Đồng bộ GitHub | ✅ `github.com/mtykp197-blip/NOVAPROFILE` (private), 182 files, commit `36a6d0a` |
 
 ---
 
@@ -113,6 +110,84 @@ rộng:
 | `NameError: FULL_CATALOGUE_BRANDS` | `FULL_CATALOGUE_BRANDS: frozenset(...)` — annotation không tham số kiểu khiến **CPython 3.12 bỏ qua lệnh gán** | bỏ annotation |
 | Dòng sản phẩm không khớp model | dataset viết model **không có** tiền tố hãng (`"A78"`, không phải `"OPPO A78"`) | bỏ tiền tố hãng khỏi dòng trước khi so |
 | `RedMagic` bị loại nhầm | thêm vào `RESTRICTED_LINES` | bỏ — RedMagic là phân khúc enthusiast thật ở VN |
+
+
+### Bảng lớp GPU — bản ghi thứ hai
+
+Bảng lớp GPU trong validator được viết khi fleet có 14 renderer và
+biết 14.  Khi fleet lên 7.222 preset với 230 renderer, **120 renderer
+không thuộc lớp nào** và 2.590 preset báo cảnh báo — cảnh báo nói
+*bảng thiếu*, không phải *preset sai*.
+
+Sửa đúng lành bảng theo thông số thật của từng part, không phải
+nới lỏng quy tắc:
+
+| Lớp | Texture limit | Ví dụ |
+|---|---|---|
+| budget | 4096 / 8192 | Adreno 200/220/308/330, Mali-400, Mali-T720, PowerVR SGX5xx, IMG8322 |
+| mid | 8192 / 16384 | Adreno 508/530/618, Adreno 612/613, Mali-G52 MC4, Mali-G57/G68, Mali-G71 MP3, Mali-G76 MC4 |
+| flagship | 16384 / 32768 | Adreno 620/640/730/750/840, Mali-G71 MP2, Mali-G72 MP12, Mali-G76 MC16, Mali-G77 MC9, Immortalis-G720, Xclipse 940 |
+
+Bảng giờ có **225 renderer**.  Mỗi revision đổi lớp có pattern riêng
+(`Mali-G52 MC2` budget, `Mali-G52 MC4` mid), và quy tắc "pattern dài
+nhất thắng" sẵn có loại điểm đó.
+
+### Sai lầm GPU cuối cùng — Mali-G615
+
+`Mali-G615` nằm trong lớp budget dưới dạng tên gia đình trần, nên
+pattern đó bắt cả hai revision:
+
+- `Mali-G615 MC2` (RMX5108) thật là **16384**
+- `Mali G615-MC6` (POCO X6 Pro) thật là **32768**
+
+Không có giá trị texture nào thỏa cả hai, vì lớp budget chỉ cho phép
+4096 và 8192.  Đã tách revision: MC2 sang lớp mid, MC6 sang flagship,
+và mở rộng band flagship lên 32768.  Band là một dải, không phải một
+điểm — part ở trên dải vẫn thuộc lớp.
+
+---
+
+## 1c. Build Chromium — chuỗi lỗi SDK
+
+### Nguyên nhân build dừng ở 76,6%
+
+Build Chromium dừng giữa chừng, không phải vì lỗi compile.  Nguyên
+nhân là chuỗi thiếu file của Windows SDK:
+
+| Lỗi | File thiếu |
+|---|---|
+| `ninja: fatal: ... missing and no known rule to make it` | `dxcompiler.dll` |
+| `Exception: dbghelp.dll not found` | `Debuggers/x64/dbghelp.dll` |
+| `ninja: error: ... d3dcompiler_47.dll, missing` | `Redist/D3D/x64/d3dcompiler_47.dll` |
+
+Cả ba đều do một nguyên nhân: **build tools ghim SDK `10.0.28000.0`**
+(`build/vs_toolchain.py:63`), còn máy chỉ có `10.0.26100.0`.
+
+Chromium 160 chấp nhận SDK 26100 — nó dùng `NTDDI_WIN11_GE`, đúng bằng
+định nghĩa trong `build/config/win/BUILD.gn`.  Nên chỉ cần làm cho
+version 28000 **tồn tại**.
+
+### Cách sửa: SDK shim
+
+SDK 26100 được copy sang `C:/chromium/sdk-28000-shim` (1,73 GB) và thư
+mục version bên trong được đặt tên `10.0.28000.0`.  `WINDOWSSDKDIR`
+trỏ vào đó khi chạy `gn gen` — đó là biến mà toolchain đọc để trả
+`windows_sdk_path`.
+
+Hai điều phải biết khi làm việc này:
+
+1. **`windows_sdk_path` trong `args.gn` bị toolchain ghi đè.**  Khi
+   `visual_studio_path` rỗng, `visual_studio_version.gni` gọi
+   `vs_toolchain.py` và lấy câu trả lời của nó, bất kể `args.gn` ghi
+   gì.  Vậy nên đường dẫn phải đến từ `WINDOWSSDKDIR`, không phải từ
+   `args.gn`.
+2. **SDK không sửa được** (`Access to the path '10.0.28000.0' is
+   denied` — cần admin), nên shim phải ở nơi tài khoản ghi được.
+
+Sau khi copy, thiếu cả `Debuggers/` và `Redist/` — chúng nằm ngoài
+thư mục version, nên phải copy riêng.
+
+**Build sau khi sửa: chạy thật, 0 lỗi.**
 
 ---
 

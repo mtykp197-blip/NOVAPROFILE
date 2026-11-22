@@ -210,9 +210,23 @@ _MALI_FLAGSHIP = re.compile(
     re.IGNORECASE,
 )
 
+#: The Mali-G615 revisions, each with the limit the part really reports.
+#:
+#: The MC2 of the RMX5108 reports 16384 and the MC6 of the POCO X6 Pro
+#: reports 32768.  The bare family name is the 8192 part of the
+#: Dimensity 7000 series, and it is the most common of the three in
+#: the fleet, so it is the one the bare name resolves to.
+_MALI_G615_MC2 = re.compile(r"mali[- ]?g615[- ]?mc2", re.IGNORECASE)
+_MALI_G615_MC6 = re.compile(r"mali[- ]?g615[- ]?mc6", re.IGNORECASE)
+
 _TEXTURE_BUDGET = 8192
 _TEXTURE_MID = 8192
 _TEXTURE_FLAGSHIP = 16384
+#: The Mali-G615 MC2 is a 16384 part.
+_TEXTURE_G615_MC2 = 16384
+#: The Mali-G615 MC6 is a 32768 part -- the only one in the fleet that
+#: reports a limit above 16384.
+_TEXTURE_G615_MC6 = 32768
 _TEXTURE_POWERVR_GE8300 = 4096
 _TEXTURE_POWERVR_OTHER = 4096
 
@@ -402,6 +416,10 @@ def _texture_size_for(renderer: str) -> int:
             return _TEXTURE_POWERVR_GE8300
         return _TEXTURE_POWERVR_OTHER
 
+    if _MALI_G615_MC6.search(lowered):
+        return _TEXTURE_G615_MC6
+    if _MALI_G615_MC2.search(lowered):
+        return _TEXTURE_G615_MC2
     if _MALI_FLAGSHIP.search(lowered) or "immortalis" in lowered:
         return _TEXTURE_FLAGSHIP
     if _MALI_MID.search(lowered):

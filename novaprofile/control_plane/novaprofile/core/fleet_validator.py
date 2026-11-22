@@ -259,6 +259,10 @@ _GPU_CLASSES: dict[str, tuple[str, ...]] = {
         "Mali-G52 MP2",
         "Mali-G52",
         "Mali G52",
+        # The bare Mali-G615 is the 8192 core of the Dimensity 7000
+        # series.  Its later revisions are not: the MC2 of the RMX5108
+        # reports 16384 and the MC6 of the POCO X6 Pro reports 32768,
+        # so both are listed in the mid class below by their own names.
         "Mali-G615",
         "Mali G615",
         # The bare family name, when a record carries no model at all.
@@ -326,6 +330,11 @@ _GPU_CLASSES: dict[str, tuple[str, ...]] = {
         "Mali-T760",
         "Mali-T860",
         "Mali-G76 MC4",
+        # The Mali-G615 MC2 of the RMX5108 reports 16384, so it is a
+        # mid part rather than the budget one the bare family name
+        # would make it.
+        "Mali-G615 MC2",
+        "Mali-G615 MC2",
     ),
     # --- flagship: the 16384 parts ------------------------------------
     "flagship": (
@@ -356,6 +365,11 @@ _GPU_CLASSES: dict[str, tuple[str, ...]] = {
         "Mali-G76",
         "Mali-G77",
         "Mali-G78",
+        # The Mali-G615 MC6 of the POCO X6 Pro reports 32768: it is the
+        # only part in the fleet with a limit above 16384, and it is a
+        # flagship part by every measure but its price.
+        "Mali G615-MC6",
+        "Mali-G615 MC6",
         "Immortalis-G715",
         "Immortalis-G720",
         "Xclipse 920",
@@ -397,10 +411,14 @@ _GPU_CLASSES: dict[str, tuple[str, ...]] = {
 
 #: The texture limits each GPU class may report.  A class is a band, not
 #: a point: the exact number is less important than the class agreement.
+#:
+#: The 32768 is the limit of the Mali-G615 MC6, the only part in the
+#: fleet that reports one.  It sits in the flagship band because the
+#: band is a range and the part is at the top of it.
 _CLASS_TEXTURES: dict[str, tuple[int, ...]] = {
     "budget": (4096, 8192),
     "mid": (8192, 16384),
-    "flagship": (16384,),
+    "flagship": (16384, 32768),
 }
 
 #: The renderer families and the vendors that ship them.  A renderer that
