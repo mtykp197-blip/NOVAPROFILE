@@ -582,10 +582,10 @@ index 0000000000..1de72d1 100644
 +}
 diff --git a/third_party/blink/renderer/core/nova/nova_blink_patch.cc b/third_party/blink/renderer/core/nova/nova_blink_patch.cc
 new file mode 100644
-index 0000000000..38b00eb 100644
+index 0000000000..7c12de7 100644
 --- /dev/null
 +++ b/third_party/blink/renderer/core/nova/nova_blink_patch.cc
-@@ -0,0 +1,797 @@
+@@ -0,0 +1,843 @@
 +// NOVA Profile Core -- Blink integration.
 +//
 +// This file is the *hook layer* of the NOVA profile engine.  It is
@@ -657,6 +657,7 @@ index 0000000000..38b00eb 100644
 +
 +#include "base/command_line.h"
 +#include "base/files/file_path.h"
++#include "base/files/file_util.h"
 +#include "base/location.h"
 +#include "base/logging.h"
 +#include "base/strings/string_util.h"
@@ -1382,13 +1383,58 @@ index 0000000000..38b00eb 100644
 +  return GetNovaConfig().tls.grease_enabled;
 +}
 +
++// ---------------------------------------------------------------------------
++// The JavaScript fallback layer.
++// ---------------------------------------------------------------------------
++
++namespace {
++
++// The script, read once per renderer process.
++//
++// The read happens lazily, on the first document that asks for it, rather
++// than at renderer start: the renderer is started before the file has
++// necessarily been written, and a document that arrives first is better
++// served by the native core alone than by nothing.
++const std::string& JsRuntimeSource() {
++  static const std::string* source = new std::string([] {
++    const base::CommandLine* command_line =
++        base::CommandLine::ForCurrentProcess();
++    if (!command_line) {
++      return std::string();
++    }
++    const std::string path =
++        command_line->GetSwitchValueASCII("nova-js-runtime");
++    if (path.empty()) {
++      return std::string();
++    }
++    base::FilePath file_path(base::FilePath::FromUTF8Unsafe(path));
++    std::string contents;
++    if (!base::ReadFileToString(file_path, &contents)) {
++      LOG(ERROR) << "NOVA: the JavaScript runtime could not be read: " << path;
++      return std::string();
++    }
++    return contents;
++  }());
++  return *source;
++}
++
++}  // namespace
++
++const std::string& GetJsRuntimeSource() {
++  return JsRuntimeSource();
++}
++
++bool HasJsRuntime() {
++  return !JsRuntimeSource().empty();
++}
++
 +}  // namespace nova
 diff --git a/third_party/blink/renderer/core/nova/nova_chromium_hooks.h b/third_party/blink/renderer/core/nova/nova_chromium_hooks.h
 new file mode 100644
-index 0000000000..4616dfc 100644
+index 0000000000..4c9f358 100644
 --- /dev/null
 +++ b/third_party/blink/renderer/core/nova/nova_chromium_hooks.h
-@@ -0,0 +1,216 @@
+@@ -0,0 +1,246 @@
 +// NOVA Profile Core -- the Chromium integration patches.
 +//
 +// This header is included by the Chromium source files that need to serve
@@ -1601,6 +1647,36 @@ index 0000000000..4616dfc 100644
 +
 +// Whether the handshake carries the GREASE extension.
 +bool GetTlsGreaseEnabled();
++
++// ---------------------------------------------------------------------------
++// The JavaScript fallback layer.
++//
++// The native core covers the values that Blink reads.  The values that
++// only JavaScript can see -- the heap limit, the maths, the codec list,
++// the canvas hash -- are carried by a script that the renderer injects
++// at document start.
++//
++// The script is handed to the browser through the --nova-js-runtime
++// switch, which carries the path of the file in the user data
++// directory rather than the script itself: the command line of a process
++// is readable by every process on the machine, the user data directory
++// is not.
++//
++// The file is read once, in the renderer, the first time a document asks
++// for it.  A page that arrives before the file has been read gets the
++// values from the native core alone, which is why the injection is
++// driven from the document rather than from the browser process.
++// ---------------------------------------------------------------------------
++
++// Reads the runtime script named on the command line, if there is one.
++// The result is cached, so the file is read once per renderer process.
++//
++// The caller must not free the result; it lives as long as the process.
++const std::string& GetJsRuntimeSource();
++
++// Whether the runtime script was found and read.  When it was not, the
++// native core is the only layer, and the probe will say so.
++bool HasJsRuntime();
 +
 +}  // namespace nova
 +

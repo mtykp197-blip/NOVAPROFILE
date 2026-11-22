@@ -178,7 +178,7 @@ index b1d418e..11ea643 100644
    ]
  
 diff --git a/content/utility/services.cc b/content/utility/services.cc
-index 399e119..d6ef80f 100644
+index 399e119..55ee46f 100644
 --- a/content/utility/services.cc
 +++ b/content/utility/services.cc
 @@ -42,6 +42,11 @@
@@ -202,7 +202,7 @@ index 399e119..d6ef80f 100644
 +  // algorithms to produce a JA3/JA4 that belongs to the profile rather
 +  // than to the stock build.  The configuration travels down from the
 +  // browser process on the --nova-config switch.
-+  nova::InitializeNetworkProcess(base::CommandLine::ForCurrentProcess());
++  nova::InitializeNetworkProcess(*base::CommandLine::ForCurrentProcess());
    mojo::InterfaceEndpointClient::SetThreadNameSuffixForMetrics(
        "NetworkServiceOutOfProcess");
    return std::make_unique<network::NetworkService>(
