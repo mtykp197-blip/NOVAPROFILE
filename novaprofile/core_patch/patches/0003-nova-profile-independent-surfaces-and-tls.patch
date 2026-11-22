@@ -436,7 +436,7 @@ index 6d4b388..0c8d2c8 100644
        ssl_.get(),
        base::FeatureList::IsEnabled(features::kUseNewAlpsCodepointHttp2));
 diff --git a/third_party/blink/renderer/core/css/font_face_set.cc b/third_party/blink/renderer/core/css/font_face_set.cc
-index 783e00a..a8504d7 100644
+index 783e00a..f2eff84 100644
 --- a/third_party/blink/renderer/core/css/font_face_set.cc
 +++ b/third_party/blink/renderer/core/css/font_face_set.cc
 @@ -7,6 +7,7 @@
@@ -447,7 +447,7 @@ index 783e00a..a8504d7 100644
  #include "third_party/blink/renderer/core/css/font_face_cache.h"
  #include "third_party/blink/renderer/core/css/font_face_set_load_event.h"
  #include "third_party/blink/renderer/platform/font_family_names.h"
-@@ -236,6 +237,32 @@ bool FontFaceSet::check(const String& font_string,
+@@ -236,6 +237,33 @@ bool FontFaceSet::check(const String& font_string,
      return false;
    }
  
@@ -468,7 +468,8 @@ index 783e00a..a8504d7 100644
 +          if (f->FamilyIsGeneric()) {
 +            continue;
 +          }
-+          if (!nova::IsFontInProfile(f->FamilyName(), config.fonts.installed)) {
++          if (!nova::IsFontInProfile(f->FamilyName().Latin1(),
++                                    config.fonts.installed)) {
 +            return false;
 +          }
 +        }

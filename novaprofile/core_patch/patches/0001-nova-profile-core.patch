@@ -582,10 +582,10 @@ index 0000000000..1de72d1 100644
 +}
 diff --git a/third_party/blink/renderer/core/nova/nova_blink_patch.cc b/third_party/blink/renderer/core/nova/nova_blink_patch.cc
 new file mode 100644
-index 0000000000..ec532e5 100644
+index 0000000000..38b00eb 100644
 --- /dev/null
 +++ b/third_party/blink/renderer/core/nova/nova_blink_patch.cc
-@@ -0,0 +1,800 @@
+@@ -0,0 +1,797 @@
 +// NOVA Profile Core -- Blink integration.
 +//
 +// This file is the *hook layer* of the NOVA profile engine.  It is
@@ -659,6 +659,7 @@ index 0000000000..ec532e5 100644
 +#include "base/files/file_path.h"
 +#include "base/location.h"
 +#include "base/logging.h"
++#include "base/strings/string_util.h"
 +#include "base/synchronization/lock.h"
 +#include "ui/gfx/geometry/rect_f.h"
 +
@@ -1259,8 +1260,7 @@ index 0000000000..ec532e5 100644
 +      "fangsong",
 +  };
 +  for (const char* generic : kGenericFamilies) {
-+    if (family_name.size() == strlen(generic) &&
-+        strncasecmp(family_name.c_str(), generic, strlen(generic)) == 0) {
++    if (base::EqualsCaseInsensitiveASCII(family_name, generic)) {
 +      return true;
 +    }
 +  }
@@ -1268,10 +1268,7 @@ index 0000000000..ec532e5 100644
 +  // The comparison is case insensitive, because the CSS font matching is
 +  // case insensitive for the family names.
 +  for (const std::string& candidate : installed) {
-+    if (candidate.size() != family_name.size()) {
-+      continue;
-+    }
-+    if (strcasecmp(candidate.c_str(), family_name.c_str()) == 0) {
++    if (base::EqualsCaseInsensitiveASCII(candidate, family_name)) {
 +      return true;
 +    }
 +  }
