@@ -99,8 +99,17 @@ class SeedConfig(BaseModel):
         return v.lower()
 
     def deriver(self) -> SeedDeriver:
-        """A :class:`SeedDeriver` bound to this configuration."""
-        return SeedDeriver(self.master_seed, self.seed_epoch, self.nudge_step)
+        """A :class:`SeedDeriver` bound to this configuration.
+
+        The stratum travels with the deriver, so every draw that consults
+        the deriver -- the stratified ones and the plain ones alike -- is
+        keyed to the unit this configuration describes.  A fleet that
+        shares one master seed therefore still produces one serial, one
+        incremental build number and one canvas salt *per unit*.
+        """
+        return SeedDeriver(
+            self.master_seed, self.seed_epoch, self.nudge_step, stratum=self.stratum
+        )
 
     def with_nudge(self, nudge_step: int) -> SeedConfig:
         """Copy with a different nudge step."""

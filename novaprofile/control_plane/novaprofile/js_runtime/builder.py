@@ -1103,6 +1103,72 @@ RUNTIME_JS = r"""
     } catch (e) { /* stays stock */ }
   }
 
+  // -- the offline audio context -------------------------------------------------
+  // The live context is not the only way to read the audio stack.  A site
+  // can open an ``OfflineAudioContext`` and read ``sampleRate`` off it,
+  // and -- this is the part that matters -- the rendered buffer carries
+  // the same number, so overriding the property on the context is not
+  // enough: the *rendered* buffer has to carry it too.
+  //
+  // ``OfflineAudioContext`` takes its sample rate as the third argument,
+  // so the value is forced at construction.  A context created with the
+  // rate the profile declares renders at that rate, and both
+  // ``context.sampleRate`` and ``buffer.sampleRate`` then agree with the
+  // profile, which is what a handset's own audio stack would report.
+  //
+  // The channel count is forced the same way, for the same reason: the
+  // rendered buffer's channel count is the one a site reads.
+  if (typeof OfflineAudioContext !== 'undefined' && P.audio) {
+    try {
+      var NativeOffline = window.OfflineAudioContext;
+      var OfflineProxy = function (numberOfChannels, length, sampleRate) {
+        // The constructor has two shapes: the positional one and the
+        // dictionary one.  The positional one is the one that carries
+        // the rate, so only that one is rewritten.
+        //
+        // The rate is forced, not merely defaulted.  A site that opens
+        // an offline context at 44100 on a device whose audio stack
+        // runs at 48000 would render a buffer at 44100, and the buffer
+        // is what the site reads: ``buffer.sampleRate`` is the number
+        // that ends up in the fingerprint.  Forcing the rate at
+        // construction makes the rendered buffer carry the profile's
+        // number, which is what the real handset would have produced.
+        var ctx;
+        if (typeof numberOfChannels === 'object' && numberOfChannels !== null) {
+          var options = {};
+          for (var key in numberOfChannels) {
+            if (Object.prototype.hasOwnProperty.call(numberOfChannels, key)) {
+              options[key] = numberOfChannels[key];
+            }
+          }
+          options.sampleRate = au.sample_rate;
+          if (options.numberOfChannels === undefined) {
+            options.numberOfChannels = au.channel_count;
+          }
+          ctx = new NativeOffline(options);
+        } else {
+          var channels = numberOfChannels;
+          if (channels === undefined || channels === null) {
+            channels = au.channel_count;
+          }
+          ctx = new NativeOffline(channels, length, au.sample_rate);
+        }
+        try {
+          Object.defineProperty(ctx, 'sampleRate', {
+            get: hide(function () { return au.sample_rate; }, 'get sampleRate'),
+            configurable: true, enumerable: true
+          });
+        } catch (e) { /* a locked-down context stays stock */ }
+        return ctx;
+      };
+      OfflineProxy.prototype = NativeOffline.prototype;
+      window.OfflineAudioContext = OfflineProxy;
+      if (window.webkitOfflineAudioContext) {
+        window.webkitOfflineAudioContext = OfflineProxy;
+      }
+    } catch (e) { /* stays stock */ }
+  }
+
   // -- the WebGL --------------------------------------------------------------------
   if (typeof WebGLRenderingContext !== 'undefined' && P.webgl) {
     var gl = P.webgl;

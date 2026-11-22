@@ -314,6 +314,26 @@ class DevicePreset:
     density_options: tuple[int, ...] = (420, 440, 480)
     year: int = 2024
 
+    #: The touch-point counts this handset is able to report.
+    #:
+    #: Chromium does not invent a number for Android: it asks the
+    #: platform through JNI, and the platform answers with the
+    #: highest capability flag the device advertises --
+    #: ``FEATURE_TOUCHSCREEN`` (1), ``FEATURE_TOUCHSCREEN_MULTITOUCH``
+    #: (2), ``FEATURE_TOUCHSCREEN_MULTITOUCH_DISTINCT`` (2+) or
+    #: ``FEATURE_TOUCHSCREEN_MULTITOUCH_JAZZHANDS`` (5+).  The value
+    #: is therefore a property of the *hardware*, not a coin flip.
+    #:
+    #: Getting this wrong is worse than the obvious mistake of
+    #: reporting a desktop value: a fleet that mixes ``5`` and ``10``
+    #: across otherwise identical handsets hands the site a free
+    #: grouping key, and a site that compares the number against the
+    #: model in the user agent can tell the whole fleet is synthetic.
+    #: The counts below follow the hardware of each handset class --
+    #: a 2018 budget phone cannot do five simultaneous touches, and a
+    #: 2023 flagship cannot do fewer than five.
+    touch_points_options: tuple[int, ...] = (5,)
+
     #: The Android releases this handset can be found running.
     #:
     #: A phone is not pinned to the release it shipped with.  Android
@@ -446,6 +466,56 @@ def _screen(
     )
 
 
+def inferred_touch_points(preset: "DevicePreset | None") -> tuple[int, ...]:
+    """The touch-point counts a handset of this class is able to report.
+
+    Chromium does not invent a number for Android; it asks the platform
+    through JNI and the platform answers with the highest capability flag
+    the device advertises::
+
+        FEATURE_TOUCHSCREEN                        -> 1
+        FEATURE_TOUCHSCREEN_MULTITOUCH             -> 2
+        FEATURE_TOUCHSCREEN_MULTITOUCH_DISTINCT     -> 2+
+        FEATURE_TOUCHSCREEN_MULTITOUCH_JAZZHANDS    -> 5+
+
+    The value is therefore a property of the *digitiser*, and it is one
+    of the quietest yet most reliable tells: a handset that reports ten
+    and a handset of the same model that reports five are not two
+    samples of the same population, they are two different panels, and
+    a fleet that mixes the two hands the site a grouping key for free.
+
+    Because it follows the hardware, it also cannot be a free axis: a
+    preset that has not declared its own value gets the one its class
+    of handset would really ship with, so every profile of one model
+    agrees on the number the way real units of that model do.
+
+    The rule follows the digitiser generation, which tracks the launch
+    year:
+
+    * before 2018 -- five-point multitouch, the panel standard since
+      2012, and the answer Android gives is five;
+    * 2018 onward -- the entry tier still ships five-point panels, and
+      the mid and upper tiers moved to ten-point ("jazz hands")
+      digitisers in the same generation.
+
+    A preset may override this with its own ``touch_points_options``,
+    which is what the reference catalogue does.  A model that is not in
+    the catalogue at all falls back to the modern five-point answer,
+    which is what the overwhelming majority of handsets in the field
+    report.
+    """
+
+    if preset is None:
+        return (5,)
+
+    if preset.touch_points_options:
+        return preset.touch_points_options
+
+    if preset.year <= 2018:
+        return (5,)
+    return (10,)
+
+
 def _abi(
     vendor: str,
     model: str,
@@ -498,6 +568,9 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         # one, the American one, the Japanese one and the one the
         # Australian market carries.
         model_variants=("GC3VE", "G1MN", "GE9DP", "G1FQ"),
+        # The Tensor G3 board reports the "jazz hands" multitouch
+        # capability, so the platform answers ten simultaneous points.
+        touch_points_options=(10,),
     ),
     DevicePreset(
         preset_id="pixel-7-android14",
@@ -528,6 +601,9 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         # American one, the Japanese one and the one the
         # Australian market carries.
         model_variants=("G046D", "G0BGW", "GFE4J", "G9BQD"),
+        # The Pixel 7 predates the ten-point panel generation, so the
+        # platform answers five.
+        touch_points_options=(5,),
     ),
     DevicePreset(
         preset_id="galaxy-s24-ultra-android14",
@@ -557,6 +633,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         # The S24 Ultra is sold under four codes: the global one, the
         # American one, the Korean one and the South-East Asian one.
         model_variants=("SM-S928B", "SM-S928U", "SM-S928N", "SM-S9280"),
+        # The S24 Ultra's S Pen panel is a ten-point digitiser.
+        touch_points_options=(10,),
     ),
     DevicePreset(
         preset_id="galaxy-s23-android14",
@@ -584,6 +662,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         year=2023,
         release_variants=(("15", 35), ("14", 34)),
         model_variants=("SM-S911B", "SM-S911U", "SM-S911N", "SM-S9110"),
+        # The S23's digitiser is a five-point panel.
+        touch_points_options=(5,),
     ),
     DevicePreset(
         preset_id="galaxy-a54-android13",
@@ -616,6 +696,9 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         year=2023,
         release_variants=(("15", 35), ("14", 34), ("13", 33)),
         model_variants=("SM-A546B", "SM-A546N", "SM-A5460"),
+        # The A54 is a five-point panel; the budget tier never reached
+        # the ten-point digitiser generation.
+        touch_points_options=(5,),
     ),
     DevicePreset(
         preset_id="oneplus-11-android13",
@@ -650,6 +733,9 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         # The OnePlus 11 is sold under four codes: the global one,
         # the Indian one and the two the Chinese market carries.
         model_variants=("CPH2449", "CPH2447", "PGZ110", "PHB110"),
+        # The 6.7-inch 120 Hz LTPO panel of the OnePlus 11 is a
+        # ten-point digitiser.
+        touch_points_options=(10,),
     ),
     DevicePreset(
         preset_id="xiaomi-13-android14",
@@ -684,6 +770,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         # The Xiaomi 13 is sold under four codes: the global one and
         # the Indian one, each in its two radio variants.
         model_variants=("2211133C", "2211133G", "2210132C", "2210132G"),
+        # The Xiaomi 13's 6.36-inch AMOLED is a ten-point digitiser.
+        touch_points_options=(10,),
     ),
     DevicePreset(
         preset_id="redmi-note-12-android13",
@@ -718,6 +806,11 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         # The Redmi Note 12 is sold under four codes: the global one,
         # the Indian one and the two the Chinese market carries.
         model_variants=("23021RAAEG", "23021RAAEGY", "22111317I", "23028RA60L"),
+        # The Redmi Note 12 is a five-point panel; the entry tier
+        # shipped with a six-point digitiser, which the platform
+        # rounds up to the "distinct multitouch" threshold of two
+        # plus, and modern Android reports five for the class.
+        touch_points_options=(5,),
     ),
     DevicePreset(
         preset_id="oppo-find-x6-android14",
@@ -755,6 +848,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         # to the A3 Pro, and a profile that claims it is a profile
         # the vendor's own device list can contradict.
         model_variants=("CPH2573", "CPH2487", "PGZ110"),
+        # The Find X6's 6.74-inch LTPO panel is a ten-point digitiser.
+        touch_points_options=(10,),
     ),
     DevicePreset(
         preset_id="vivo-x90-android14",
@@ -789,6 +884,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         # The vivo X90 is sold under four codes: the global one, the
         # Indian one and the two the Chinese market carries.
         model_variants=("V2247A", "V2246A", "V2266A", "V2229A"),
+        # The vivo X90's 6.78-inch AMOLED is a ten-point digitiser.
+        touch_points_options=(10,),
     ),
     DevicePreset(
         preset_id="samsung-galaxy-a14-android13",
@@ -824,6 +921,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         # the Malaysian one, the Korean one and the one the Asian
         # market carries.
         model_variants=("SM-A145F", "SM-A145M", "SM-A145N", "SM-A1450"),
+        # The Galaxy A14 is a five-point panel.
+        touch_points_options=(5,),
     ),
 )
 
@@ -890,6 +989,20 @@ def get_preset(preset_id: str) -> DevicePreset | None:
     return None
 
 
+def get_preset_by_model(model: str) -> DevicePreset | None:
+    """Look up a preset by the model code carried in the user agent.
+
+    A handset reaches the profile as one of its regional model codes,
+    so this is the lookup the consistency resolver needs: it turns the
+    model code in the user agent back into the catalogue entry, and
+    with it the hardware facts the entry declares.
+    """
+    for preset in all_presets():
+        if preset.model == model or model in preset.model_variants:
+            return preset
+    return None
+
+
 def list_presets() -> list[DevicePreset]:
     """All known device presets."""
     return list(all_presets())
@@ -901,6 +1014,8 @@ __all__ = [
     "DEVICE_PRESETS",
     "all_presets",
     "get_preset",
+    "get_preset_by_model",
+    "inferred_touch_points",
     "list_presets",
     "MALI_G715",
     "MALI_G710",

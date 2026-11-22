@@ -23,7 +23,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from ..schema.profile import ProfileConfig
-from .devices import DEVICE_PRESETS
+from .devices import DEVICE_PRESETS, get_preset_by_model, inferred_touch_points
 from .gpu_params import build_tier_table, tier_for
 from .seed import SeedDeriver
 
@@ -179,9 +179,12 @@ def _chrome_major_window(version_release: str, sdk_int: int) -> tuple[int, int]:
     """The range of Chromium majors that shipped with an Android release.
 
     Android 13 shipped Chromium 103 through 116, Android 14 shipped 114
-    through 127, and Android 15 shipped 128 and later.  Anti-bot vendors
-    check that the UA's Chrome major is inside the plausible window for
-    the claimed OS release.
+    through 127, Android 15 shipped 128 and later, and Android 16 shipped
+    Chromium 137 and later -- Chrome 137 was the first milestone to
+    support API level 36, and it reached the stable channel before
+    Android 16 itself shipped.  Anti-bot vendors check that the UA's
+    Chrome major is inside the plausible window for the claimed OS
+    release.
 
     The window is a *band*, not a single value: a Chromium major can ship
     with several Android releases over its lifetime, so any major inside
@@ -193,7 +196,9 @@ def _chrome_major_window(version_release: str, sdk_int: int) -> tuple[int, int]:
     except (ValueError, AttributeError):
         number = 13
 
-    if number >= 15:
+    if number >= 16:
+        return (137, 199)
+    if number == 15:
         return (128, 199)
     if number == 14:
         return (114, 127)
@@ -852,6 +857,28 @@ class ConsistencyResolver:
                     fields=["navigator.max_touch_points"],
                 )
             )
+
+        # The count is a property of the digitiser, so two profiles of
+        # the same handset model have to agree on it.  A fleet that
+        # mixes five and ten across one model is not one population
+        # of devices, it is two, and the site can group on the split
+        # without reading anything else.
+        preset = get_preset_by_model(build.model)
+        if preset is not None:
+            expected = inferred_touch_points(preset)
+            if nav.max_touch_points not in expected:
+                warnings.append(
+                    ConsistencyIssue(
+                        severity="warning",
+                        axis="navigator",
+                        message=(
+                            f"maxTouchPoints {nav.max_touch_points} does not match the "
+                            f"digitiser of {build.model} "
+                            f"(expected {', '.join(str(v) for v in expected)})"
+                        ),
+                        fields=["navigator.max_touch_points"],
+                    )
+                )
 
     def _check_client_hints(
         self,

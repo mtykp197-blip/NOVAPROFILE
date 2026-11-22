@@ -356,12 +356,28 @@ _COMMON_BASE: frozenset[str] = frozenset(
 #: :func:`_android_for_major` and be attributed to Android 13, which
 #: would put a Chromium major in the profile that never shipped with the
 #: Android release the profile claims.
+#:
+#: Android 16 is the one entry that is decided by a *capability* rather
+#: than by a launch date.  Chrome 137 was the first milestone to support
+#: Android 16 (API level 36); it reached the stable channel in May 2025,
+#: a fortnight before Android 16 itself was released.  A handset on
+#: Android 16 is therefore running Chrome 137 or newer, and the major
+#: has to say so.
+#:
+#: The entry matters for more than the truth of one field.  Chromium
+#: 156 and later used to be attributed to Android 16 here, which left
+#: that release with five plausible majors and starved the user agent
+#: of combinations: a fleet of one handset model ran out of distinct
+#: user agents after a couple of hundred profiles and started to repeat
+#: them, which is the one thing a fleet must never do.  Attributing
+#: Chromium 137 onwards to Android 16 gives the release twenty-four
+#: plausible majors, and the user agent the room it needs.
 _ANDROID_SHIPPED: tuple[tuple[str, int, int], ...] = (
     ("12", 31, 100),
     ("13", 33, 103),
     ("14", 34, 114),
     ("15", 35, 128),
-    ("16", 36, 156),
+    ("16", 36, 137),
 )
 
 

@@ -79,7 +79,7 @@ from ..schema.signals import (
     VideoInputDevice,
 )
 from ..schema.version import BrowserVersion
-from .devices import get_preset
+from .devices import get_preset, get_preset_by_model, inferred_touch_points
 from .font_catalog import (
     MANDATORY_FONTS,
     SCRIPT_FONTS,
@@ -1329,7 +1329,20 @@ class ProfileGenerator:
             # hardware, and the native core hands it to the page
             # unchanged.
             device_memory=device_memory_gb,  # type: ignore[arg-type]
-            max_touch_points=deriver.derive_choice(Axis.NAVIGATOR, (5, 10), context="touch"),  # type: ignore[arg-type]
+            # The touch-point count follows the digitiser of the
+            # handset, not a coin flip: it is the number the platform
+            # would answer through JNI on that physical unit.  A fleet
+            # that mixed five and ten across otherwise identical
+            # handsets would hand the site a free grouping key.
+            max_touch_points=int(
+                deriver.derive_choice(
+                    Axis.NAVIGATOR,
+                    inferred_touch_points(
+                        get_preset_by_model(build.model) or _TOUCH_FALLBACK
+                    ),
+                    context="touch",
+                )
+            ),  # type: ignore[arg-type]
             language=geo.locale,
             languages=list(geo.languages),
             cookie_enabled=True,

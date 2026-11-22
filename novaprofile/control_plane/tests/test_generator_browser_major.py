@@ -106,13 +106,17 @@ def test_the_band_matches_the_shipped_table() -> None:
     running the Chrome of this month.  The newest major of the band is
     therefore the newest major that exists, not the one that shipped
     alongside the release.
+
+    The oldest end of the Android 16 band is 137 rather than 156,
+    because Chrome 137 was the first milestone to support API level 36
+    and reached the stable channel before Android 16 itself shipped.
     """
 
     assert _chromium_band_for_android_release("12") == (100, MAX_SUPPORTED_MAJOR)
     assert _chromium_band_for_android_release("13") == (103, MAX_SUPPORTED_MAJOR)
     assert _chromium_band_for_android_release("14") == (114, MAX_SUPPORTED_MAJOR)
     assert _chromium_band_for_android_release("15") == (128, MAX_SUPPORTED_MAJOR)
-    assert _chromium_band_for_android_release("16") == (156, MAX_SUPPORTED_MAJOR)
+    assert _chromium_band_for_android_release("16") == (137, MAX_SUPPORTED_MAJOR)
 
 
 def test_the_band_reaches_the_newest_major() -> None:
@@ -140,7 +144,7 @@ def test_the_band_starts_where_the_release_shipped() -> None:
     assert _chromium_band_for_android_release("13")[0] == 103
     assert _chromium_band_for_android_release("14")[0] == 114
     assert _chromium_band_for_android_release("15")[0] == 128
-    assert _chromium_band_for_android_release("16")[0] == 156
+    assert _chromium_band_for_android_release("16")[0] == 137
 
 
 def test_every_major_of_the_band_is_in_the_registry() -> None:

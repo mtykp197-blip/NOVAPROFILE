@@ -37,6 +37,7 @@ tests lock that in.
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 
 import pytest
@@ -48,6 +49,7 @@ from novaprofile.core.hardware_approximation import (
     approximate_hardware_concurrency,
 )
 from novaprofile.js_runtime.builder import JSRuntimeBuilder
+from novaprofile.schema.version import BrowserVersion
 
 #: The readings a page takes in its first pass, in the order it takes
 #: them.  The order matters: a site that stops after the first few
@@ -171,24 +173,72 @@ class TestFirstPassNeverGroups:
         )
 
     def test_the_agent_alone_is_free_to_repeat(self, fleet) -> None:
-        """The agent alone may repeat, and that is what the real fleet does.
+        """The agent must not carry the build: Chromium froze it.
 
-        Chromium froze the agent, so two handsets on the same release
-        and the same browser major report the same string.  The test
-        exists to pin the reason down: if the agent ever *did* start
-        carrying the build, the fleet would be safer, and the second
-        reading would no longer be needed.
+        Chromium froze the user agent to ``Chrome/<major>.0.0.0`` in
+        major 110, so two handsets on the same release and the same
+        browser major report the same string, and a second reading is
+        needed to tell them apart.  If the agent ever *did* start
+        carrying the build, the fleet would be safer -- and the second
+        reading would no longer be needed, which would make the engine
+        wrong in the other direction: a real Chrome never puts the build
+        in the agent, and a site that knows that can tell the profile
+        apart from a real device.
+
+        The property is therefore checked *directly* rather than through
+        the accident of whether a particular fleet happens to contain
+        two handsets on the same release and major.  A fleet built from
+        a wide browser band can legitimately contain no such pair, and
+        then the old formulation would fail on a fleet that is behaving
+        exactly as it should.
         """
 
-        buckets: dict[tuple[str, ...], list[str]] = defaultdict(list)
-        for name, payload in fleet:
-            buckets[_key(_at(payload, ("navigator", "userAgent")))].append(name)
+        generator = ProfileGenerator()
+        preset = DEVICE_PRESETS[0]
+        by_release_and_major: dict[tuple[str, int, str], list[str]] = defaultdict(list)
 
-        repeated = {key: names for key, names in buckets.items() if len(names) > 1}
-        assert repeated, (
-            "the agent never repeats: the fleet is relying on a reading "
-            "Chromium does not actually provide"
+        # The test pins down the *mechanism*, so the two readings are
+        # made to collide on purpose: the browser major is handed in, so
+        # two units of the family land on the same major by construction
+        # rather than by luck.  A fleet wide enough to make the
+        # collision happen on its own would be a slow, flaky way of
+        # saying the same thing.
+        fixed = BrowserVersion(major=131, full_version="")
+        for stratum in range(24):
+            config = generator.generate(
+                preset.preset_id,
+                master_seed="a" * 64,
+                stratum=stratum,
+                browser_version=fixed,
+            )
+            key = (
+                config.android_build.version_release,
+                config.browser_version.major,
+                config.android_build.model,
+            )
+            by_release_and_major[key].append(config.navigator.user_agent)
+
+        pairs = [agents for agents in by_release_and_major.values() if len(agents) > 1]
+        assert pairs, (
+            "no two units of the family share a release, a browser major and a "
+            "model: the fleet is too small to exercise the frozen agent"
         )
+
+        for agents in pairs:
+            assert len(set(agents)) == 1, (
+                "two handsets on the same release, major and model report "
+                f"different agents: {sorted(set(agents))}"
+            )
+
+        # And the frozen agent really is the frozen shape: it names the
+        # major and nothing after it.  The model code is part of the
+        # agent on a real handset -- Android puts it there -- so it is
+        # the version that has to stay frozen.
+        for agents in by_release_and_major.values():
+            for agent in agents:
+                assert re.search(r"Chrome/\d+\.0\.0\.0 ", agent), (
+                    f"the agent is not frozen to the major: {agent}"
+                )
 
     @pytest.mark.parametrize(
         "path",

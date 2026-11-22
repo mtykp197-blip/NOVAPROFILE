@@ -184,20 +184,30 @@ class SeedDeriver:
         "_master_seed",
         "_seed_epoch",
         "_nudge_step",
+        "_stratum",
         "_axis_cache",
         "_info_cache",
         "_draw_counters",
         "_retry",
     )
 
-    def __init__(self, master_seed: str, seed_epoch: int = 0, nudge_step: int = 0) -> None:
+    def __init__(
+        self,
+        master_seed: str,
+        seed_epoch: int = 0,
+        nudge_step: int = 0,
+        stratum: int | None = None,
+    ) -> None:
         self._master_seed = self._validate_seed(master_seed)
         self._seed_epoch = int(seed_epoch)
         self._nudge_step = int(nudge_step)
+        self._stratum = None if stratum is None else int(stratum)
         if self._seed_epoch < 0:
             raise SeedError("seed_epoch must be non-negative")
         if self._nudge_step < 0:
             raise SeedError("nudge_step must be non-negative")
+        if self._stratum is not None and self._stratum < 0:
+            raise SeedError("stratum must be non-negative")
         self._axis_cache: dict[Axis, bytes] = {}
         self._info_cache: dict[tuple[Axis, str], bytes] = {}
         self._draw_counters: dict[tuple[Axis, str], int] = {}
@@ -262,23 +272,40 @@ class SeedDeriver:
         either one re-keys *every* axis consistently, while the axis salt keeps
         the axes mutually independent.
 
+        The stratum is folded in as well, and that fold is what makes the
+        identity of a single unit unique.  A fleet is generated from one
+        master seed, and the stratum is the only thing that tells the units
+        apart.  Without it, the draws that do not consult the stratum --
+        ``derive_bytes`` and the plain ``derive_int`` -- produce the *same*
+        number for every unit of the fleet: the same serial, the same
+        incremental build number, the same canvas salt.  A site that reads
+        the serial alone would then see the entire fleet as one device,
+        which is the exact failure the whole design exists to prevent.
+
+        Folding the stratum in does not weaken the determinism: the stratum
+        is a fixed integer for a given profile, so the same unit keeps the
+        same serial across restarts, and the draw stays a pure function of
+        ``(master_seed, stratum)``.
+
         The result is cached per ``(axis, context)``: the prefix depends only
-        on the epoch and the nudge step, which are fixed for the lifetime of
-        the deriver, and the field is built once per axis and context.
+        on the epoch, the nudge step and the stratum, which are fixed for
+        the lifetime of the deriver, and the field is built once per axis
+        and context.
         """
         key = (axis, context)
         cached = self._info_cache.get(key)
         if cached is not None:
             return cached
         ctx = context.encode("utf-8") if context else b""
-        info = b"|".join(
-            [
-                axis.value.encode("ascii"),
-                f"epoch={self._seed_epoch}".encode("ascii"),
-                f"nudge={self._nudge_step}".encode("ascii"),
-                ctx,
-            ]
-        )
+        parts = [
+            axis.value.encode("ascii"),
+            f"epoch={self._seed_epoch}".encode("ascii"),
+            f"nudge={self._nudge_step}".encode("ascii"),
+        ]
+        if self._stratum is not None:
+            parts.append(f"stratum={self._stratum}".encode("ascii"))
+        parts.append(ctx)
+        info = b"|".join(parts)
         self._info_cache[key] = info
         return info
 

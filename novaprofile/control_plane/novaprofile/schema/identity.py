@@ -53,7 +53,14 @@ class Navigator(BaseModel):
     # Chrome reports, and the product of this project is an Android
     # browser.  A handset with twelve gigabytes therefore reports eight.
     device_memory: Literal[1, 2, 4, 8]
-    max_touch_points: Literal[5, 10]
+    # ``maxTouchPoints`` on Android is not a free choice: Chromium asks
+    # the platform through JNI and the platform answers with the
+    # highest touch capability the device advertises -- one (single
+    # touch), two (plain multitouch), or five and above for the
+    # ten-point "jazz hands" digitisers.  The count follows the
+    # hardware of the handset, so every profile of one model reports
+    # the same number, the way real units of that model do.
+    max_touch_points: Literal[1, 2, 5, 10]
     language: str
     languages: list[str] = Field(min_length=1)
     cookie_enabled: bool = True
