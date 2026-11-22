@@ -488,17 +488,17 @@ class BrowserLauncher:
 
     @staticmethod
     def _config_payload(config: Any) -> dict[str, Any]:
-        """Serialise the profile config into a JSON-compatible dictionary."""
+        """Serialise the profile config into a JSON-compatible dictionary.
 
-        dump = getattr(config, "model_dump", None)
-        if callable(dump):
-            try:
-                return dict(dump(mode="json"))
-            except TypeError:  # pragma: no cover - non-pydantic stand-ins
-                return dict(dump())
-        if isinstance(config, dict):
-            return dict(config)
-        return {"repr": repr(config)}
+        The document is the one the browser core reads, so it is put
+        through the boundary: a number that does not fit in 32 bits and
+        a null where a string is expected would otherwise make the
+        core refuse the whole profile.
+        """
+
+        from .core_document import build_core_document
+
+        return build_core_document(config)
 
     # -- the JavaScript fallback layer ---------------------------------------
 

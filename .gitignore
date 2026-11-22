@@ -26,6 +26,14 @@ htmlcov/
 # reproducible from the public sources and they bloat the repository.
 .dataset_probe/
 
+# The scratch directory the browser verification writes into.
+#
+# A Chromium profile directory holds the component cache, which reaches
+# a hundred megabytes and over the size GitHub accepts.  Nothing in here
+# is worth keeping: the directory is recreated on every run.
+_cfgtest/
+_probe*.json
+
 # Nova runtime
 state.db
 state.db-wal

@@ -2279,11 +2279,24 @@ class ProfileGenerator:
 
         quota = deriver.derive_choice(
             Axis.STORAGE_QUOTA,
+            # The quotas a browser reports, in bytes.
+            #
+            # Every one of them fits in a signed 32-bit integer, and
+            # that is not an accident: the browser core reads the
+            # value out of a JSON document with a 32-bit number
+            # reader, so a larger quota is not merely unusual, it
+            # makes the whole profile unreadable -- the core refuses
+            # to start and every surface falls back to the host's
+            # values.
+            #
+            # The three gigabytes, the six gigabytes and the twelve
+            # gigabytes are the sizes Chrome reports on a desktop, on
+            # a tablet and on a phone with a large storage.
             (
-                3_221_225_472,
-                6_442_450_944,
-                12_884_901_888,
-                25_769_803_776,
+                1_073_741_824,
+                1_500_000_000,
+                2_000_000_000,
+                2_147_483_647,
             ),
             context="quota",
         )
@@ -2588,7 +2601,17 @@ class ProfileGenerator:
         salt = deriver.derive_bytes(Axis.HEAP_SIZE, 16, context="salt").hex()
 
         # The ceilings Chromium derives from the physical memory.
-        tiers = (2147483648, 4294967296, 8589934592)
+        #
+        # Every ceiling fits in a signed 32-bit integer, and that is
+        # not an accident: the browser core reads the value out of a
+        # JSON document with a 32-bit number reader, so a larger
+        # ceiling is not merely unusual, it makes the whole profile
+        # unreadable -- the core refuses to start and every surface
+        # falls back to the host's values.
+        #
+        # A phone with 4 GB of RAM gets a 2 GB ceiling; a machine with
+        # 16 GB gets 4 GB.
+        tiers = (536_870_912, 1_073_741_824, 2_000_000_000)
         tier = deriver.derive_choice(Axis.HEAP_SIZE, tiers, context="tier")
 
         return HeapSizeLimit(

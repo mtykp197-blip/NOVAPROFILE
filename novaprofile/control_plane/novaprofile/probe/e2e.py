@@ -373,27 +373,55 @@ SURFACE_SCRIPT: Final[str] = r"""
   }
 
   // -- client hints ------------------------------------------------------
+  //
+  // The high-entropy hints are not properties of the object: the
+  // platform version, the architecture, the bitness, the model and the
+  // full version list only come out of
+  // ``getHighEntropyValues()``, and only when the document is allowed
+  // to ask for them.  Reading them as properties yields ``undefined``
+  // on every browser, patched or not, so the reader asks for them the
+  // way a fingerprinting script does.
   function readClientHints() {
     var uad = navigator.userAgentData;
     if (!uad) {
-      return { available: false, brands: [], fullVersionList: [] };
+      return Promise.resolve({ available: false, brands: [], fullVersionList: [] });
     }
-    return {
-      available: true,
-      brands: (uad.brands || []).map(function (b) {
-        return { brand: b.brand, version: b.version };
-      }),
-      fullVersionList: (uad.fullVersionList || []).map(function (b) {
-        return { brand: b.brand, version: b.version };
-      }),
-      mobile: uad.mobile === true,
-      platform: uad.platform,
-      platformVersion: uad.platformVersion,
-      architecture: uad.architecture,
-      bitness: uad.bitness,
-      model: uad.model,
-      wow64: uad.wow64 === true
-    };
+    var hints = [
+      "platformVersion", "architecture", "bitness", "model",
+      "uaFullVersion", "fullVersionList", "wow64", "formFactors"
+    ];
+    var high = null;
+    try {
+      var pending = uad.getHighEntropyValues ? uad.getHighEntropyValues(hints) : null;
+      if (pending && typeof pending.then === "function") {
+        high = pending.then(function (values) { return values || {}; });
+      }
+    } catch (e) {
+      high = null;
+    }
+    if (!high) {
+      high = Promise.resolve({});
+    }
+    return high.then(function (values) {
+      return {
+        available: true,
+        brands: (uad.brands || []).map(function (b) {
+          return { brand: b.brand, version: b.version };
+        }),
+        fullVersionList: (values.fullVersionList || uad.fullVersionList || []).map(function (b) {
+          return { brand: b.brand, version: b.version };
+        }),
+        mobile: uad.mobile === true,
+        platform: uad.platform,
+        platformVersion: values.platformVersion,
+        architecture: values.architecture,
+        bitness: values.bitness,
+        model: values.model,
+        uaFullVersion: values.uaFullVersion,
+        wow64: values.wow64 === true,
+        formFactors: values.formFactors || []
+      };
+    });
   }
 
   // -- screen ------------------------------------------------------------
@@ -2566,6 +2594,43 @@ class E2ERunner:
             error=message,
         )
 
+    def _write_core_config(self, user_data_dir: Path) -> Path | None:
+        """Write the profile config the native core reads.
+
+        The payload is the plain profile JSON.  The browser core parses
+        the document as it stands -- there is no envelope around it --
+        so a file wrapped in ``{"schema", "encrypted", "payload"}`` would
+        be read as a profile with no fields and every accessor would
+        fall back to the host's values.
+
+        The control plane encrypts the file it writes for a *running*
+        profile, because that file sits in a directory the profile owns
+        for its whole life; the verification writes a throwaway
+        directory that is deleted when the run ends, and the core reads
+        plain JSON.
+
+        Returns ``None`` when the file could not be written, so that the
+        run can go on and report the mismatch honestly.
+        """
+
+        document = self._config_payload()
+        target = user_data_dir / "nova_core.json"
+        try:
+            target.write_text(
+                json.dumps(document, indent=2, sort_keys=True, default=str),
+                encoding="utf-8",
+            )
+        except (OSError, TypeError, ValueError):
+            return None
+        return target
+
+    def _config_payload(self) -> dict[str, Any]:
+        """The profile as the browser core wants it."""
+
+        from ..launcher.core_document import build_core_document
+
+        return build_core_document(self._config)
+
     def _launch(self, browser_path: str) -> _BrowserProcess:
         """Launch the browser and return the process and its DevTools port."""
 
@@ -2575,6 +2640,13 @@ class E2ERunner:
             command.append("--headless=new")
         command.append("--remote-debugging-port=0")
         command.append(f"--user-data-dir={user_data_dir}")
+        # The native core reads the profile from this file before the
+        # renderer is forked.  Without it the browser runs with its own
+        # values and every axis mismatches, which says nothing about the
+        # core -- only that the hand-over did not happen.
+        config_path = self._write_core_config(user_data_dir)
+        if config_path is not None:
+            command.append(f"--nova-config={config_path}")
         command.append("--no-first-run")
         command.append("--no-default-browser-check")
         command.append("--disable-background-networking")
