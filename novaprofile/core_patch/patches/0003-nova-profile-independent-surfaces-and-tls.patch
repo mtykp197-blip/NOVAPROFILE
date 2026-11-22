@@ -72,7 +72,7 @@
 # reports the same profile.
 #
 diff --git a/content/browser/network_service_instance_impl.cc b/content/browser/network_service_instance_impl.cc
-index 20870c2..b4af379 100644
+index 20870c2..36df110 100644
 --- a/content/browser/network_service_instance_impl.cc
 +++ b/content/browser/network_service_instance_impl.cc
 @@ -657,6 +657,19 @@ network::mojom::NetworkService* GetNetworkService() {
@@ -89,7 +89,7 @@ index 20870c2..b4af379 100644
 +            if (browser_command_line->HasSwitch("nova-config")) {
 +              options.WithExtraCommandLineSwitchKeyValues(
 +                  {{"nova-config",
-+                    browser_command_line->GetSwitchValue("nova-config")}});
++                    browser_command_line->GetSwitchValueASCII("nova-config")}});
 +            }
 +          }
            if (g_network_service_crashes_on_next_startup) {
