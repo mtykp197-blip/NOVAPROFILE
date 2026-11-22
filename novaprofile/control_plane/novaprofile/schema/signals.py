@@ -130,6 +130,7 @@ class AudioInputDevice(BaseModel):
     device_id: str
     group_id: str
     label: str
+    kind: Literal["audioinput"] = "audioinput"
 
 
 class AudioOutputDevice(BaseModel):
@@ -138,6 +139,7 @@ class AudioOutputDevice(BaseModel):
     device_id: str
     group_id: str
     label: str
+    kind: Literal["audiooutput"] = "audiooutput"
 
 
 class VideoInputDevice(BaseModel):
@@ -146,7 +148,15 @@ class VideoInputDevice(BaseModel):
     device_id: str
     group_id: str
     label: str
+    kind: Literal["videoinput"] = "videoinput"
     facing_mode: Literal["environment", "user", "left", "right"] | None = None
+    #: The resolution the camera reports through ``getCapabilities``.  A
+    #: real camera does not advertise one size; it advertises a set of
+    #: widths and heights it can be driven at, and the largest of them
+    #: is what a script reads first.
+    width: int = 1920
+    height: int = 1080
+    frame_rate: float = 30.0
 
 
 class MediaDevices(BaseModel):

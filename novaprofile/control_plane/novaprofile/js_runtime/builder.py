@@ -348,11 +348,39 @@ RUNTIME_JS = r"""
   if (typeof navigator !== 'undefined' && navigator.mediaDevices && P.media_devices) {
     var md = P.media_devices;
     try {
-      if (md.audio_inputs && md.audio_inputs.length) {
+      var mdList = []
+        .concat(md.audio_inputs || [])
+        .concat(md.audio_outputs || [])
+        .concat(md.video_inputs || []);
+      if (mdList.length) {
+        // A real browser hands back MediaDeviceInfo objects, and the
+        // shape of one is checked by scripts: the kind, the identifier,
+        // the group and the label are own properties, the identifier is
+        // an opaque string and the label is empty until the permission
+        // is granted.
+        var toInfo = function (d) {
+          var info = {
+            deviceId: d.device_id,
+            kind: d.kind,
+            label: d.label,
+            groupId: d.group_id
+          };
+          try {
+            // The prototype methods of MediaDeviceInfo.
+            info.toJSON = function () {
+              return {
+                deviceId: this.deviceId,
+                kind: this.kind,
+                label: this.label,
+                groupId: this.groupId
+              };
+            };
+          } catch (e) { /* a frozen object keeps stock */ }
+          return info;
+        };
+
         navigator.mediaDevices.enumerateDevices = function () {
-          return Promise.resolve(
-            md.audio_inputs.concat(md.audio_outputs || [], md.video_inputs || [])
-          );
+          return Promise.resolve(mdList.map(toInfo));
         };
       }
     } catch (e) { /* a sealed object stays stock */ }

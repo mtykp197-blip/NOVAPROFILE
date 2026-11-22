@@ -1179,7 +1179,6 @@ class ProfileGenerator:
 
     def _build_media_devices(self, deriver: SeedDeriver) -> MediaDevices:
         salt = deriver.derive_bytes(Axis.MEDIA_DEVICES, 16, context="salt").hex()
-        origin = deriver.derive_bytes(Axis.MEDIA_DEVICES, 8, context="origin").hex()
 
         # A handset that reports no microphone and no camera at all is
         # not a device anybody sells: the overwhelming majority of the
@@ -1191,12 +1190,46 @@ class ProfileGenerator:
         has_audio_out = deriver.derive_bool(Axis.MEDIA_DEVICES, 0.98, "audio-out")
         has_video = deriver.derive_bool(Axis.MEDIA_DEVICES, 0.92, "video-in")
 
+        # The device identifier is not a readable name.  Chromium salts
+        # the origin and the device's own information and hashes the
+        # result into thirty-two bytes, which reach the page as
+        # sixty-four hex characters.  The rule is in
+        # ``third_party/blink/common/mediastream/media_device_id.cc``:
+        #
+        #   constexpr size_t hash_size = 64;  // 32 bytes * 2 char/byte
+        #   return std::ranges::all_of(device_id, [](const char& c) {
+        #     return base::IsAsciiLower(c) || base::IsAsciiDigit(c);
+        #   });
+        #
+        # So the identifier is exactly sixty-four characters of lower
+        # case hex.  A profile that reports "video_input_abc_1" is not
+        # a camera, it is a script that read the wrong thing.
+        def make_device_id(kind: str, index: int) -> str:
+            digest = deriver.derive_bytes(
+                Axis.MEDIA_DEVICES, 32, context=f"device-id:{kind}:{index}"
+            )
+            return digest.hex()
+
+        def make_group_id(kind: str) -> str:
+            """The group of a device.
+
+            A group is the physical unit: the front camera and the back
+            camera of one handset are two devices in two *different*
+            groups, because they are two separate sensors.  The
+            microphone and the speaker of one handset share a group,
+            because they are one unit.
+            """
+            digest = deriver.derive_bytes(
+                Axis.MEDIA_DEVICES, 32, context=f"group-id:{kind}"
+            )
+            return digest.hex()
+
         audio_inputs: list[AudioInputDevice] = []
         if has_audio_in:
             audio_inputs.append(
                 AudioInputDevice(
-                    device_id=f"audio_input_{origin}_1",
-                    group_id=f"group_{origin}_1",
+                    device_id=make_device_id("audio-input", 0),
+                    group_id=make_group_id("audio"),
                     label="Default",
                 )
             )
@@ -1204,24 +1237,69 @@ class ProfileGenerator:
         if has_audio_out:
             audio_outputs.append(
                 AudioOutputDevice(
-                    device_id=f"audio_output_{origin}_1",
-                    group_id=f"group_{origin}_1",
+                    device_id=make_device_id("audio-output", 0),
+                    group_id=make_group_id("audio"),
                     label="Default",
                 )
             )
+
         video_inputs: list[VideoInputDevice] = []
         if has_video:
-            facing = deriver.derive_choice(
-                Axis.MEDIA_DEVICES, ("environment", "user"), context="facing"
-            )
-            video_inputs.append(
-                VideoInputDevice(
-                    device_id=f"video_input_{origin}_1",
-                    group_id=f"group_{origin}_1",
-                    label="Camera",
-                    facing_mode=facing,  # type: ignore[arg-type]
+            # The overwhelming majority of the handsets carry a rear
+            # camera; most of them also carry a front one.  A handset
+            # with a single camera is the cheap one, and it is the
+            # exception rather than the rule.
+            has_front_camera = deriver.derive_bool(Axis.MEDIA_DEVICES, 0.88, "front-camera")
+            has_rear_camera = deriver.derive_bool(Axis.MEDIA_DEVICES, 0.97, "rear-camera")
+
+            index = 0
+            if has_rear_camera:
+                # The rear camera of a handset is the one with the
+                # higher resolution, and the label Android gives it
+                # names the facing direction.
+                rear_width, rear_height = deriver.derive_choice(
+                    Axis.MEDIA_DEVICES,
+                    ((1920, 1080), (3840, 2160), (4000, 3000), (1920, 1440)),
+                    context="rear-resolution",
                 )
-            )
+                video_inputs.append(
+                    VideoInputDevice(
+                        device_id=make_device_id("video-input", index),
+                        group_id=make_group_id("rear-camera"),
+                        label="camera2 0, facing back",
+                        facing_mode="environment",
+                        width=rear_width,
+                        height=rear_height,
+                        frame_rate=30.0,
+                    )
+                )
+                index += 1
+
+            if has_front_camera:
+                # The front camera is always the lower resolution of the
+                # two, and it is the one a video call uses.
+                front_width, front_height = deriver.derive_choice(
+                    Axis.MEDIA_DEVICES,
+                    ((640, 480), (1280, 720), (1920, 1080)),
+                    context="front-resolution",
+                )
+                facing = deriver.derive_choice(
+                    Axis.MEDIA_DEVICES,
+                    ("user", "left", "right"),
+                    context="front-facing",
+                )
+                video_inputs.append(
+                    VideoInputDevice(
+                        device_id=make_device_id("video-input", index),
+                        group_id=make_group_id("front-camera"),
+                        label=f"camera2 {index}, facing {facing}",
+                        facing_mode=facing,  # type: ignore[arg-type]
+                        width=front_width,
+                        height=front_height,
+                        frame_rate=30.0,
+                    )
+                )
+
         return MediaDevices(
             mode="deterministic_mock",
             id_scope="per_profile_and_origin",
