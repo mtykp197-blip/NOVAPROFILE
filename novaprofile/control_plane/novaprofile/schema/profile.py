@@ -77,6 +77,20 @@ class SeedConfig(BaseModel):
     preset_id: str = ""
     core_version: str = "1.0.0"
 
+    #: Which unit of the device family this profile is.
+    #:
+    #: The narrow readings -- the browser major, the core count, the
+    #: memory -- are drawn *stratified*, so that two handsets of one
+    #: model do not report the same ones.  The stratum is the unit's
+    #: place in the family, and it has to travel with the seed: a
+    #: profile that is regenerated from its seed must come back as the
+    #: same handset, or its fingerprint changes every time the
+    #: operator opens it.
+    #:
+    #: ``None`` means the profile stands alone and every choice is
+    #: drawn independently.
+    stratum: int | None = Field(default=None, ge=0)
+
     @field_validator("master_seed")
     @classmethod
     def _valid_seed(cls, v: str) -> str:

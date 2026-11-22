@@ -199,12 +199,21 @@ def _build_config(
     generator = deps.get_generator()
 
     seed = master_seed
+    stratum: int | None = None
     if seed is None:
-        seed = _seed_for_strategy(preset_id, seed_strategy, store)
+        seed, stratum = _seed_for_strategy(preset_id, seed_strategy, store)
+    elif seed_strategy == "increment":
+        # Even with a caller-supplied seed, the profile is still a unit
+        # of its device family, and the family has to spread over the
+        # narrow readings.  The counter that goes with the strategy is
+        # what tells the generator which slice to use.
+        stratum = _family_counter(preset_id, store)
 
     kwargs: dict[str, Any] = {"preset_id": preset_id, "master_seed": seed}
     if name:
         kwargs["name"] = name
+    if stratum is not None:
+        kwargs["stratum"] = stratum
 
     try:
         config = generator(**kwargs)
@@ -241,18 +250,54 @@ def _sync_network_policy(config: Any) -> Any:
         return config
 
 
-def _seed_for_strategy(preset_id: str, seed_strategy: str, store: Any | None = None) -> str:
-    """Return the master seed implied by *seed_strategy*.
+def _family_counter(preset_id: str, store: Any | None = None) -> int | None:
+    """Return the next unit number of a device family.
+
+    The narrow readings -- the browser major, the core count, the
+    memory -- are drawn *stratified*: each unit of a family is dealt
+    its own slice of the choice space, so two handsets of one model
+    do not report the same ones.  A site that reads three properties
+    would otherwise group the family on them.
+
+    The counter comes from the store when there is one, so several
+    processes sharing a database never hand out the same slice.  It
+    returns ``None`` when no counter is available, and the profile is
+    then drawn independently.
+    """
+
+    if store is None:
+        return None
+    next_counter = getattr(store, "next_counter", None)
+    if not callable(next_counter):
+        return None
+    try:
+        counter = next_counter(f"family:{preset_id}")
+    except Exception:  # noqa: BLE001 - the counter is an optimisation
+        return None
+    try:
+        return int(counter)
+    except (TypeError, ValueError):
+        return None
+
+
+def _seed_for_strategy(
+    preset_id: str, seed_strategy: str, store: Any | None = None
+) -> tuple[str, int | None]:
+    """Return the master seed implied by *seed_strategy*, and the unit number.
 
     The ``increment`` strategy draws its counter from the store when there
     is one, so that several processes sharing a database never hand out the
     same seed.  A process-local counter would restart at zero in every
     worker, and two workers would then produce the *same* profile -- the
     duplicate the collision guard is there to prevent.
+
+    The counter is also the profile's place in its device family, and it
+    is returned alongside the seed so that the generator can spread the
+    family over the narrow readings.
     """
 
     if seed_strategy == "fixed":
-        return _deterministic_seed(f"{preset_id}|0")
+        return _deterministic_seed(f"{preset_id}|0"), 0
     if seed_strategy == "increment":
         counter = None
         if store is not None:
@@ -264,8 +309,8 @@ def _seed_for_strategy(preset_id: str, seed_strategy: str, store: Any | None = N
                     counter = None
         if counter is None:
             counter = _SEED_COUNTER[0] = _SEED_COUNTER[0] + 1
-        return _deterministic_seed(f"{preset_id}|{counter}")
-    return deps.new_master_seed()
+        return _deterministic_seed(f"{preset_id}|{counter}"), int(counter)
+    return deps.new_master_seed(), _family_counter(preset_id, store)
 
 
 def _deterministic_seed(material: str) -> str:

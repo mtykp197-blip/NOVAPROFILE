@@ -55,6 +55,7 @@ SCHEMA: tuple[str, ...] = (
         master_seed       TEXT NOT NULL,
         seed_epoch        INTEGER NOT NULL DEFAULT 0,
         nudge_step        INTEGER NOT NULL DEFAULT 0,
+        stratum           INTEGER,
         hkdf_version      TEXT NOT NULL DEFAULT '',
         preset_id         TEXT NOT NULL,
         core_version      TEXT NOT NULL DEFAULT '',
@@ -97,6 +98,15 @@ SCHEMA: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_signatures_kind ON signatures(kind, state)",
 )
 
+#: The columns added to the ``profiles`` table after the table was
+#: first written.  They are added to an existing store on open.
+_ADDED_COLUMNS: dict[str, str] = {
+    # The unit's place in its device family.  A profile that is
+    # regenerated from its seed has to come back as the same handset,
+    # so the stratum travels with the seed tuple.
+    "stratum": "INTEGER",
+}
+
 
 @dataclass(frozen=True)
 class SeedRow:
@@ -109,6 +119,7 @@ class SeedRow:
     seed_epoch: int
     nudge_step: int
     created_at: str
+    stratum: int | None = None
     updated_at: str = ""
     status: str = "created"
     group_id: str | None = None
@@ -176,7 +187,28 @@ class SeedStore:
         conn.execute("PRAGMA cache_size=-65536")
         for statement in SCHEMA:
             conn.execute(statement)
+        self._migrate(conn)
         return conn
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Bring an older store up to the current schema.
+
+        ``CREATE TABLE IF NOT EXISTS`` leaves an existing table alone,
+        so a store written by an earlier version keeps the columns it
+        was created with.  The columns added since then are added
+        here, one at a time, and only when they are missing.
+        """
+
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(profiles)")
+        }
+        if not columns:
+            return
+        for name, declaration in _ADDED_COLUMNS.items():
+            if name in columns:
+                continue
+            conn.execute(f"ALTER TABLE profiles ADD COLUMN {name} {declaration}")
 
     def close(self) -> None:
         """Close the connection."""
@@ -226,10 +258,10 @@ class SeedStore:
                 INSERT INTO profiles (
                     profile_id, name, group_id, folder_id, tags, notes, status,
                     created_at, updated_at, master_seed, seed_epoch, nudge_step,
-                    hkdf_version, preset_id, core_version, browser_major,
+                    stratum, hkdf_version, preset_id, core_version, browser_major,
                     geo_country, geo_timezone, locale_primary,
                     device_serial, device_fingerprint, config_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(profile_id) DO UPDATE SET
                     name=excluded.name,
                     group_id=excluded.group_id,
@@ -241,6 +273,7 @@ class SeedStore:
                     master_seed=excluded.master_seed,
                     seed_epoch=excluded.seed_epoch,
                     nudge_step=excluded.nudge_step,
+                    stratum=excluded.stratum,
                     hkdf_version=excluded.hkdf_version,
                     preset_id=excluded.preset_id,
                     core_version=excluded.core_version,
@@ -265,6 +298,7 @@ class SeedStore:
                     seed.master_seed,
                     seed.seed_epoch,
                     seed.nudge_step,
+                    seed.stratum,
                     seed.hkdf_version,
                     seed.preset_id,
                     seed.core_version,
@@ -334,6 +368,7 @@ class SeedStore:
             seed_epoch=row.seed_epoch,
             nudge_step=row.nudge_step,
             profile_id=row.profile_id,
+            stratum=row.stratum,
         )
         return config.model_copy(
             update={
@@ -448,13 +483,24 @@ class SeedStore:
             try:
                 cursor = self.conn.execute("ATTACH DATABASE ? AS shard", (str(source),))
                 cursor.fetchall()
+                # The shard may be a store written before the stratum
+                # existed, so the column is read defensively: a shard
+                # without the column contributes no stratum, and the
+                # profiles in it are drawn independently.
+                shard_columns = {
+                    row["name"]
+                    for row in self.conn.execute("PRAGMA shard.table_info(profiles)")
+                }
+                stratum_select = (
+                    "stratum" if "stratum" in shard_columns else "NULL"
+                )
                 self.conn.execute(
-                    """
+                    f"""
                     INSERT OR IGNORE INTO profiles (
                         profile_id, name, group_id, folder_id, tags, notes, status,
                         created_at, updated_at, last_started_at, last_closed_at,
                         total_runtime_ms, launch_count, master_seed, seed_epoch,
-                        nudge_step, hkdf_version, preset_id, core_version,
+                        nudge_step, stratum, hkdf_version, preset_id, core_version,
                         browser_major, geo_country, geo_timezone, locale_primary,
                         device_serial, device_fingerprint, config_json
                     )
@@ -462,7 +508,7 @@ class SeedStore:
                         profile_id, name, group_id, folder_id, tags, notes, status,
                         created_at, updated_at, last_started_at, last_closed_at,
                         total_runtime_ms, launch_count, master_seed, seed_epoch,
-                        nudge_step, hkdf_version, preset_id, core_version,
+                        nudge_step, {stratum_select}, hkdf_version, preset_id, core_version,
                         browser_major, geo_country, geo_timezone, locale_primary,
                         device_serial, device_fingerprint, config_json
                     FROM shard.profiles

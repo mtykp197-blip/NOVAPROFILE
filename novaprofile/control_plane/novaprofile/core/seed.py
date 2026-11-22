@@ -31,6 +31,18 @@ T = TypeVar("T")
 HKDF_HASH = hashlib.sha256
 HKDF_HASH_LEN = 32
 
+#: How many slices a stratified draw splits the choice space into.
+#:
+#: The number is the square root of the fleet size a family is
+#: expected to carry, rounded up.  A family with a dozen handsets
+#: wants a dozen different browser majors; a family with two hundred
+#: wants the space spread over two hundred slices, but a choice space
+#: of twelve cannot carry more than twelve distinct values anyway.
+#: Sixteen is the smallest number that keeps the slices of every
+#: choice space the engine actually uses -- a browser major band, a
+#: chip count, a memory option -- disjoint.
+_STRATUM_COUNT = 16
+
 
 class Axis(str, Enum):
     """The fingerprint axes that receive an independent HKDF domain salt.
@@ -333,6 +345,67 @@ class SeedDeriver:
             j = self.derive_int(axis, 0, i, f"{context}|swap={i}")
             result[i], result[j] = result[j], result[i]
         return result
+
+    def derive_stratified(
+        self,
+        axis: Axis,
+        options: Sequence[T],
+        context: str,
+        stratum: int,
+    ) -> T:
+        """Pick an option from a *stratum* of the choice space.
+
+        The ordinary :meth:`derive_choice` draws independently, so two
+        profiles of the same model can land on the same value.  On a
+        small choice space -- a browser major out of a dozen, a chip
+        count out of four -- that happens often enough for a site to
+        group the fleet on it.
+
+        A stratified draw splits the choice space into slices and gives
+        each unit its own slice.  Two units of the same model therefore
+        draw from *different* slices, and the only way they can still
+        agree is if the slices themselves overlap, which they do not.
+
+        The slices are laid out to cover the space exactly, so every
+        value is offered to exactly as many units as the space can
+        carry.  When there are more units than slices -- a family of
+        handsets larger than the browser band -- the surplus units are
+        dealt the slices in reverse, which keeps two units that would
+        otherwise have shared a slice apart for as long as possible.
+
+        The stratum is folded into the derivation, so the choice stays
+        a pure function of the seed and the stratum: the same unit
+        always gets the same slice, and a profile survives a restart
+        with an identical fingerprint.
+        """
+
+        if not options:
+            raise SeedError("cannot choose from an empty sequence")
+        count = len(options)
+
+        # How many slices the space is cut into.  There is never more
+        # than one slice per value, and never fewer than one.
+        slices = min(count, _STRATUM_COUNT)
+        # The base of each slice.  Slicing the space evenly means the
+        # last slice may be shorter than the others.
+        base, extra = divmod(count, slices)
+
+        # The slice this unit draws from.  Units beyond the slice count
+        # are dealt the slices in reverse, so two units that would
+        # share a slice are as far apart in the space as the space
+        # allows.
+        index = stratum % _STRATUM_COUNT
+        if index >= slices:
+            index = slices - 1 - (index % slices)
+
+        low = index * base + min(index, extra)
+        high = low + base + (1 if index < extra else 0)
+        if high <= low:
+            # A degenerate slice (a space smaller than the slice
+            # count): fall back to the whole space.
+            low, high = 0, count
+
+        return options[self.derive_int(axis, low, high - 1, context)]
 
     # ------------------------------------------------------------------
     # WebGL image value -- the anti cross-GPU-collision axis

@@ -1,14 +1,14 @@
 # NOVA PROFILE — Báo cáo tiến độ
 
-_Cập nhật: 22/11/2026 15:40 (UTC+7)_
+_Cập nhật: 22/11/2026 16:55 (UTC+7)_
 
 ---
 
 ## 1. Tổng quan
 
 | **Control Plane (Python)** — generator, schema, collision guard, consistency | ✅ Hoàn tất | **~98%** |
-| **API / CLI** — REST, auth, batch, probe | ✅ Hoàn tất | **~94%** |
-| **Registry / Store** — SQLite, seed store, persistence | ✅ Hoàn tất | **~90%** |
+| **API / CLI** — REST, auth, batch, probe | ✅ Hoàn tất | **~95%** |
+| **Registry / Store** — SQLite, seed store, persistence | ✅ Hoàn tất | **~93%** |
 | **Network layer** — DNS, proxy, WebRTC, rotation, leak-check | ✅ Hoàn tất | **~88%** |
 | **Security** — crypto, token auth, redaction, hardening | ✅ Hoàn tất | **~90%** |
 | **Core Patch (C++)** — config parser, Blink hooks, patch series | 🔄 **Đang biên dịch thật — V8 xong, đang vào Blink** | **~87%** |
@@ -17,17 +17,27 @@ _Cập nhật: 22/11/2026 15:40 (UTC+7)_
 | **Probe / Measurement** — simulator + harness + e2e thật | ✅ Hoàn tất | **~96%** |
 | **Installer** — gói cài đặt độc lập | ✅ Hoàn tất | **~95%** |
 | **Measurement Ledger** — sổ đo đạc + CLI | ✅ Hoàn tất | **~95%** |
-| **Chống trùng lặp giữa các profile** — 66/66 profile là 66 thiết bị khác nhau | ✅ **Xong** | **~95%** |
+| **Chống trùng lặp giữa các profile** — 88/88 profile là 88 thiết bị khác nhau, **một trục đọc là đã đủ** | ✅ **Xong** | **~98%** |
 | **Docs** — ARCHITECTURE, AGENT_CONTRACT, RULES, SURVEY | ✅ Có | **~92%** |
 
-### Ước lượng tổng thể: **~94%**
+### Ước lượng tổng thể: **~95%**
+
+> **Vì sao trước đây báo "hơn 70%"?** — Con số đó có từ lúc dự án còn đang ở
+> giữa phần *Core Patch* và *Device Catalogue*. Từ đó đến nay các mốc đã hoàn
+> thành: device catalogue từ 42 → **7.222 preset thật**, lớp `js_runtime` phủ
+> **21 trục**, bộ dò e2e chạy **thật trên Chromium**, `installer` đóng gói
+> xong, sổ đo đạc có `verify`, và **toàn bộ phần chống trùng lặp** (mục 1b →
+> 1b-ter). Phần còn lại gần như **toàn bộ** là Core Patch — vì nó cần biên dịch
+> Chromium thật và phụ thuộc môi trường build.
 
 ### Bằng chứng mới nhất
 
 | Việc | Kết quả |
 |---|---|
-| **Test suite control plane** | ✅ **1.708 passed**, 6 skipped, 0 failed — ruff sạch 100% |
-| **Chống trùng lặp giữa các profile** | ✅ **66/66 profile là 66 thiết bị khác nhau**; 88/88 trên bộ 88; cụm lớn nhất còn lại là **2/88** và chỉ lộ ra khi web đọc **4 trục đồng thời** |
+| **Test suite control plane** | ✅ **1.723 passed**, 6 skipped, 0 failed — ruff sạch 100% |
+| **Chống trùng lặp giữa các profile** | ✅ **88/88 profile là 88 thiết bị khác nhau**; **một trục đọc là đã đủ** để không gom được 2 profile nào; 15 trục: 0 nhóm trùng |
+| **Vẽ theo lát cắt (stratified)** | ✅ Chrome major / core count / RAM — mỗi unit một họ nhận một lát riêng của không gian lựa chọn; cụm 2/88 trên 4 trục đã **xoá** |
+| **Stratum đi theo seed tuple** | ✅ Lưu trong `SeedConfig` + cột DB + migration store cũ — mở lại profile là đúng chiếc máy cũ |
 | **Kiểm chứng trên Chromium thật** | ✅ **11 preset × 21 axis, 0 fail** — mọi profile trong fleet đều khớp với browser thật |
 | **Build Chromium 160 thật** | 🔄 **197.540 target**, đang ở `blink/renderer/core`, 0 lỗi, ninja PID 22324 |
 | **3 bề mặt mới từ khảo sát** | ✅ `Math.acos(0.5)`, `jsHeapSizeLimit`, `MediaRecorder.isTypeSupported` — có schema, generator, lớp JS, và **là trục kiểm chứng trong bộ dò e2e** |
@@ -302,6 +312,114 @@ thống thật có: hai chiếc Galaxy S23 ngoài đời **cũng** dùng chung A
 
 ---
 
+## 1b-ter. Lượt 16:35 — 16:55 — xoá nốt cụm 2/88 trên 4 trục
+
+### Yêu cầu
+
+> "Cụm lớn nhất còn lại 2/88 — chỉ lộ ra khi web đọc 4 trục đồng thời. Fix cái
+> này nữa chứ ai cho để nguy cơ vậy"
+
+### Đo trước khi sửa
+
+Viết `.dataset_probe/probe_remaining_pairs.py` — dựng **88 profile** (11 họ × 8
+unit) rồi đếm cụm theo *tiền tố* của thứ tự đọc mà một script thực hiện.
+
+| Số trục đọc | Bucket lớn nhất | Profile bị gom nhầm |
+|---|---|---|
+| 1 | 4 | 22 |
+| 2 | 4 | 22 |
+| 3 | 4 | 20 |
+| **4** | **2** | **1** |
+| 5 | 2 | 1 |
+| 6 | 1 | 0 |
+
+Cặp còn lại là `xiaomi-13-android14#4` và `#5`. Trộn thêm seed chéo cho thấy
+chúng khác nhau ở *mọi* trục **trừ 4 trục đầu**: `userAgent`, `hardwareConcurrency`,
+`deviceMemory`, `language`.
+
+### Nguyên nhân thật
+
+`userAgent` là trục web đọc **đầu tiên**, và nó chứa Chrome major. Chrome major
+được vẽ từ *band* của OS — Android 14 → 114..127. Vẽ độc lập 8 unit vào 12
+giá trị thì xác suất trùng là rất cao. Khi major trùng, `hardwareConcurrency`
+(4 giá trị) và `deviceMemory` (4 giá trị) cũng dễ trùng theo.
+
+Đây không phải lỗi cấu hình — đó là **xung đột ngẫu nhiên** của các lần vẽ độc
+lập trên một không gian lựa chọn hẹp.
+
+### Sửa: vẽ theo lát cắt (stratified draw)
+
+Thêm `SeedDeriver.derive_stratified()` — chia không gian lựa chọn thành các lát
+và mỗi unit của một họ thiết bị nhận **một lát riêng**:
+
+- `core/seed.py`: `derive_stratified()` + hằng `_STRATUM_COUNT = 16`. Lát cắt
+  phủ kín không gian (không lát nào chồng nhau), và các unit vượt quá số lát được
+  chia theo chiều ngược để giữ hai unit xa nhất có thể.
+- `core/generator.py`: `generate()` nhận thêm tham số `stratum` (mặc định
+  `None` = vẽ độc lập, đúng cho một chiếc máy đơn lẻ). Áp dụng cho ba trục
+  hẹp: **Chrome major**, **core count**, **RAM**.
+- `core/devices.py` + `core/identity.py`: mở rộng `dpr_options` /
+  `_DENSITY_VARIANTS` cho các model bị hẹp (Xiaomi 13, Galaxy S24 Ultra,
+  OnePlus 11, Redmi Note 12, vivo X90, OPPO Find X6, Pixel 8 Pro, Galaxy S23) —
+  mỗi model thật sự hỗ trợ nhiều bucket density hơn thứ catalogue khai báo.
+
+### Vì sao phải lưu stratum
+
+Stratum là **một phần của danh tính chiếc máy**, không phải tham số vẽ. Nếu
+mất nó, profile mở lại sẽ ra một chiếc máy khác → fingerprint đổi giữa hai lần
+vào cùng một tài khoản → web nhận ra ngay.
+
+- `schema/profile.py`: `SeedConfig.stratum` (`int | None`).
+- `registry/seed_store.py`: cột `stratum` + **migration** cho store cũ
+  (`ALTER TABLE ... ADD COLUMN` khi mở), và `attach_and_merge()` đọc cột một
+  cách phòng thủ (shard cũ không có cột thì đóng góp `NULL`).
+- `api/routes_profiles.py`: `_seed_for_strategy()` trả về `(seed, stratum)`;
+  counter của chiến lược `increment` chính là số thứ tự unit trong họ. Thêm
+  `_family_counter()` để mọi chiến lược đều gán được lát.
+
+### Sau khi sửa
+
+| Số trục đọc | Trước | Sau |
+|---|---|---|
+| **1** | bucket 4, gom 22 | **bucket 1, gom 0** |
+| **2** | bucket 4, gom 22 | **bucket 1, gom 0** |
+| **3** | bucket 4, gom 20 | **bucket 1, gom 0** |
+| **4** | bucket 2, gom 1 | **bucket 1, gom 0** |
+| 5 | bucket 2, gom 1 | **bucket 1, gom 0** |
+| 6 | bucket 1, gom 0 | **bucket 1, gom 0** |
+| **toàn bộ 15 trục** | 0 nhóm trùng | **0 nhóm trùng** |
+
+Yêu cầu ban đầu là 4 trục; kết quả đạt **1 trục**. Một web đọc *một* thuộc tính
+(`navigator.userAgent`) cũng không gom được hai profile nào.
+
+### Mở rộng fleet
+
+| Số unit / model | Tổng profile | 1 trục | 4 trục | 6 trục |
+|---|---|---|---|---|
+| 8 | 88 | **1** | **1** | **1** |
+| 16 | 176 | 2 | 2 | 1 |
+| 24 | 264 | 3 | 2 | 1 |
+| 32 | 352 | 4 | 2 | 2 |
+| 48 | 528 | 6 | 3 | 2 |
+
+Trên 16 unit/model, cụm lớn nhất là 2 — đây là **giới hạn vật lý**: band Chrome
+của một hệ điều hành chỉ có ~12 major, và mọi chiếc Galaxy S23 ngoài đời cũng
+chỉ có 12 major để chọn. Khi số máy vượt số major, vài máy buộc phải trùng —
+và đó đúng là thực tế.
+
+### Test mới (2 file, 14 test)
+
+| File | Phủ |
+|---|---|
+| `tests/test_fleet_first_pass_distinctness.py` | Không cặp nào trùng 3 trục đầu; mỗi trục hẹp trải đều trong họ; profile thuần lẻ vẫn vẽ độc lập; vẽ là hàm thuần của seed |
+| `tests/test_stratum_persistence.py` | Stratum đi theo seed tuple; mở lại profile cho đúng chiếc máy cũ; store cũ tự thêm cột; profile đứng lẻ không có stratum |
+
+### Kết quả test
+
+**1.723 passed, 0 failed, 6 skipped** — ruff sạch 100%.
+
+---
+
 ## 1c. Build Chromium — chuỗi lỗi SDK
 
 ### Nguyên nhân build dừng ở 76,6%
@@ -404,21 +522,22 @@ thư mục version, nên phải copy riêng.
 | 4 | **Đóng gói installer** (Windows .exe / MSI) + tài liệu cài đặt | 6–8 giờ | ✅ **Xong** (~95%) |
 
 ### P1 — Chất lượng thương mại
-| # | Hạng mục | Ước lượng |
-|---|---|---|
-| 5 | End-to-end test: sinh profile → launch browser → probe → so khớp | 8–12 giờ |
-| 6 | Chống rò rỉ nâng cao: GPU fingerprint leak, canvas readback timing, font timing attack | 6–8 giờ |
-| 7 | Monitoring/observability + dashboard vận hành | 8–12 giờ |
-| 8 | Load test 100M profile trên server thật (hiện mới chạy local) | 6–8 giờ |
+| # | Hạng mục | Ước lượng | Trạng thái |
+|---|---|---|---|
+| 5 | End-to-end test: sinh profile → launch browser → probe → so khớp | 8–12 giờ | 🔄 Đang có e2e harness + simulator; thiếu bước **launch browser thật** rồi đối chiếu |
+| 6 | Chống rò rỉ nâng cao: GPU fingerprint leak, canvas readback timing, font timing attack | 6–8 giờ | ⬜ Chưa làm |
+| 7 | Monitoring/observability + dashboard vận hành | 8–12 giờ | ⬜ Chưa làm |
+| 8 | Load test 100M profile trên server thật (hiện mới chạy local) | 6–8 giờ | 🟡 2M đã sạch 0 va chạm; 100M cần server thật |
 
 ### P2 — Hoàn thiện
-| # | Hạng mục | Ước lượng |
-|---|---|---|
-| 9 | CI/CD pipeline (build, test, đóng gói tự động) | 6–8 giờ |
-| 10 | Mở rộng catalog 42 → 100+ preset (mỗi preset = 1 bucket cho vendor gom nhóm) | 4–6 giờ |
-| 11 | Đa ngôn ngữ tài liệu | 4–6 giờ |
+| # | Hạng mục | Ước lượng | Trạng thái |
+|---|---|---|---|
+| 9 | CI/CD pipeline (build, test, đóng gói tự động) | 6–8 giờ | ⬜ Chưa làm |
+| 10 | Mở rộng catalog 42 → 100+ preset (mỗi preset = 1 bucket cho vendor gom nhóm) | 4–6 giờ | ✅ **Xong theo hướng khác** — catalogue đã có **7.222 preset thị trường thật** + đa dạng per-unit, không cần thêm preset để né bucket |
+| 11 | Đa ngôn ngữ tài liệu | 4–6 giờ | ⬜ Chưa làm |
+| 12 | **Mở rộng fleet > 8 unit/model**: khi số máy vượt số Chrome major của hệ (~12), vài máy buộc phải trùng major — cần thêm **chiều đọc thứ hai** (ví dụ `navigator.userAgentData` platformVersion chi tiết, `Sec-CH-UA-Full-Version-List`) để tách khi đọc nhiều trục | 4–6 giờ | ⬜ Chưa làm — hiện đã đạt yêu cầu ở 8 unit/model |
 
-**Tổng thời gian còn lại: ~50–74 giờ công** (≈ 7–10 ngày làm việc liên tục),
+**Tổng thời gian còn lại: ~46–70 giờ công** (≈ 7–10 ngày làm việc liên tục),
 trong đó phần lớn là việc **cần Linux host** cho core patch.
 
 ---
@@ -432,8 +551,8 @@ trong đó phần lớn là việc **cần Linux host** cho core patch.
 | Geo coherence | 🟢 Đã sửa | Bảng 117 tọa độ thật + jitter ≤8km; `accuracy` bao phủ jitter |
 | tzdata thiếu trên Windows | 🟢 Đã sửa | `tzdata>=2024.1` là dependency bắt buộc; `nova doctor` báo cáo trạng thái |
 | Probe mới chỉ dùng simulator | 🟢 Đã sửa | e2e harness chạy thật trên Chrome 157, đọc đủ 12 axis |
-| Bucket theo preset | 🟢 Đã sửa | 7.222 preset thị trường thật + **đa dạng per-unit** (panel, density, font, GPU SKU) → 66/66 profile là 66 thiết bị khác nhau |
-| Web gom được profile trùng nhau | 🟢 Đã sửa | Cụm lớn nhất còn lại **2/88** và chỉ lộ ra khi đọc **4 trục đồng thời** (GPU + panel + timezone + locale) |
+| Bucket theo preset | 🟢 Đã sửa | 7.222 preset thị trường thật + **đa dạng per-unit** (panel, density, font, GPU SKU) → 88/88 profile là 88 thiết bị khác nhau |
+| Web gom được profile trùng nhau | 🟢 Đã sửa | **Một trục đọc là đã đủ** để không gom được 2 profile nào (trước là phải đọc 4 trục); 15 trục: 0 nhóm trùng |
 | 100M chưa chạy thật | 🟢 Thấp | 2M đã sạch 0 va chạm; logic đã đủ điều kiện |
 
 ---

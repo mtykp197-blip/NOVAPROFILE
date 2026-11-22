@@ -51,11 +51,30 @@ def test_the_increment_strategy_uses_the_store_counter(tmp_path):
     store = ProfileStore(tmp_path / "state.db")
     store.init_db()
 
-    first = _seed_for_strategy("pixel", "increment", store)
-    second = _seed_for_strategy("pixel", "increment", store)
+    first, _ = _seed_for_strategy("pixel", "increment", store)
+    second, _ = _seed_for_strategy("pixel", "increment", store)
 
     assert first != second
     assert store.next_counter("seed:pixel") == 3
+
+
+def test_the_increment_strategy_returns_the_unit_number(tmp_path):
+    """The counter is also the profile's place in its device family.
+
+    The narrow readings are drawn stratified, so the profile has to
+    know which slice of the choice space it owns.  Without the unit
+    number, two handsets of one model would report the same browser
+    major and the same core count.
+    """
+
+    store = ProfileStore(tmp_path / "state.db")
+    store.init_db()
+
+    _, first_unit = _seed_for_strategy("pixel", "increment", store)
+    _, second_unit = _seed_for_strategy("pixel", "increment", store)
+
+    assert first_unit == 1
+    assert second_unit == 2
 
 
 def test_the_fixed_strategy_is_stable(tmp_path):
@@ -64,8 +83,8 @@ def test_the_fixed_strategy_is_stable(tmp_path):
     store = ProfileStore(tmp_path / "state.db")
     store.init_db()
 
-    first = _seed_for_strategy("pixel", "fixed", store)
-    second = _seed_for_strategy("pixel", "fixed", store)
+    first, _ = _seed_for_strategy("pixel", "fixed", store)
+    second, _ = _seed_for_strategy("pixel", "fixed", store)
 
     assert first == second
 

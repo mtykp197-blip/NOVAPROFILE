@@ -907,6 +907,7 @@ class ProfileGenerator:
         self._device_year = 2024
         self._device_release = "14"
         self._device_locale_primary = ""
+        self._stratum: int | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -924,8 +925,24 @@ class ProfileGenerator:
         proxy: Proxy | None = None,
         profile_id: str | None = None,
         browser_version: BrowserVersion | None = None,
+        stratum: int | None = None,
     ) -> ProfileConfig:
         """Generate a complete profile.
+
+        Parameters
+        ----------
+        stratum:
+            Which unit of the device family this profile is.  Two
+            profiles of the same model that draw from the same slice
+            of the choice space land on the same browser major and the
+            same chip count, and a site that reads those two readings
+            groups them together.  The stratum puts each unit in its
+            own slice, so the fleet of one model spreads across the
+            whole choice space instead of clumping in it.
+
+            ``None`` means the profile stands alone, and every choice
+            is drawn independently -- the right behaviour for a single
+            handset that is not part of a fleet.
 
         Raises
         ------
@@ -941,8 +958,14 @@ class ProfileGenerator:
             seed_epoch=seed_epoch,
             nudge_step=nudge_step,
             preset_id=preset.preset_id,
+            stratum=None if stratum is None else int(stratum),
         )
         deriver = seed_config.deriver()
+
+        # The stratum is part of the identity of the unit, not a
+        # drawing parameter, so it is folded into the generator's
+        # state before anything is derived from it.
+        self._stratum = seed_config.stratum
 
         geo_target = geo or self._pick_geo(deriver)
 
@@ -970,9 +993,21 @@ class ProfileGenerator:
         # Chromium rounds it to the nearest power of two and clamps it to
         # eight gigabytes on Android, so a 6 GB handset reports four and
         # a 12 GB handset reports eight.
-        physical_ram_gb = int(
-            deriver.derive_choice(Axis.NAVIGATOR, preset.ram_options, context="ram")
-        )
+        #
+        # The draw is stratified so that two units of the same model do
+        # not both report the same memory.  The memory is one of only
+        # four values Chromium can report, so an independent draw puts
+        # two handsets on the same one often enough to group them.
+        if self._stratum is not None:
+            physical_ram_gb = int(
+                deriver.derive_stratified(
+                    Axis.NAVIGATOR, preset.ram_options, "ram", self._stratum
+                )
+            )
+        else:
+            physical_ram_gb = int(
+                deriver.derive_choice(Axis.NAVIGATOR, preset.ram_options, context="ram")
+            )
         ram_gb = approximate_device_memory(physical_ram_gb)
 
         # The font tier follows the RAM and the model year, because those
@@ -1005,7 +1040,7 @@ class ProfileGenerator:
         if browser_version is not None:
             major = browser_version.major
         else:
-            major = _pick_chrome_major(deriver, build.version_release)
+            major = _pick_chrome_major(deriver, build.version_release, self._stratum)
 
         caps = DEFAULT_REGISTRY.capabilities(major)
 
@@ -1078,13 +1113,21 @@ class ProfileGenerator:
         name_prefix: str = "",
         geo: GeoTarget | None = None,
     ) -> list[ProfileConfig]:
-        """Generate ``count`` independent profiles."""
+        """Generate ``count`` independent profiles.
+
+        The profiles are the units of one device family, so each of
+        them is given its own stratum.  That is what keeps two handsets
+        of the same model from reporting the same browser major and the
+        same chip count, which is the reading a site takes first.
+        """
+
         profiles: list[ProfileConfig] = []
         for index in range(count):
             profile = self.generate(
                 preset_id,
                 name=f"{name_prefix or preset_id} {index + 1:04d}",
                 geo=geo,
+                stratum=index,
             )
             profiles.append(profile)
         return profiles
@@ -1121,6 +1164,21 @@ class ProfileGenerator:
             f"AppleWebKit/537.36 (KHTML, like Gecko) "
             f"Chrome/{caps.major}.0.0.0 Mobile Safari/537.36"
         )
+        # The core count is stratified for the same reason the memory
+        # is: Chromium can only report a handful of values, and two
+        # handsets of the same model that report the same one are
+        # grouped by a script that reads two numbers.
+        if self._stratum is not None:
+            cores = int(
+                deriver.derive_stratified(
+                    Axis.NAVIGATOR, preset_cpu_options, "cores", self._stratum
+                )
+            )
+        else:
+            cores = int(
+                deriver.derive_choice(Axis.NAVIGATOR, preset_cpu_options, context="cores")
+            )
+
         return Navigator(
             user_agent=ua,
             app_version=f"5.0 (Linux; Android {build.version_release})",
@@ -1135,9 +1193,7 @@ class ProfileGenerator:
                 ["Linux armv8l", "Linux aarch64", "Linux armv7l"],
                 context="platform",
             ),
-            hardware_concurrency=approximate_hardware_concurrency(
-                int(deriver.derive_choice(Axis.NAVIGATOR, preset_cpu_options, context="cores"))
-            ),
+            hardware_concurrency=approximate_hardware_concurrency(cores),
             # The *approximated* memory, not the physical one.  This is
             # the value Chromium would have produced on the same
             # hardware, and the native core hands it to the page
@@ -2462,7 +2518,7 @@ def _chromium_band_for_android_release(release: str) -> tuple[int, int]:
     return (majors[0], majors[-1])
 
 
-def _pick_chrome_major(deriver: SeedDeriver, release: str) -> int:
+def _pick_chrome_major(deriver: SeedDeriver, release: str, stratum: int | None = None) -> int:
     """Draw the Chromium major a profile claims, from the seed.
 
     The draw is a pure function of the profile's seed, so the same seed
@@ -2474,6 +2530,14 @@ def _pick_chrome_major(deriver: SeedDeriver, release: str) -> int:
     on the very first build, so the very first and the very last major of
     the band are the least plausible picks.  A band of three or fewer
     majors has no interior to draw from and is used whole.
+
+    The draw is *stratified* by the unit's place in the family.  The
+    browser major is the loudest reading on the device -- it is in the
+    user agent, in the client hints and in every header -- and an
+    independent draw lets two handsets of the same model report the
+    same one often enough for a site to group them on it.  Giving each
+    unit its own slice of the band spreads the family over the band
+    instead of clumping in it.
     """
 
     low, high = _chromium_band_for_android_release(release)
@@ -2489,6 +2553,13 @@ def _pick_chrome_major(deriver: SeedDeriver, release: str) -> int:
     if span == 1:
         return low
 
+    if stratum is not None:
+        return deriver.derive_stratified(
+            Axis.CLIENT_HINTS,
+            list(range(low, high + 1)),
+            "chrome-major",
+            stratum,
+        )
     return low + deriver.derive_int(Axis.CLIENT_HINTS, 0, span - 1, context="chrome-major")
 
 

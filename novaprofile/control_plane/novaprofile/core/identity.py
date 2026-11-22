@@ -189,16 +189,16 @@ _DEFAULT_PANEL_VARIANTS: tuple[tuple[int, int], ...] = (
 #: Only buckets whose ratio the family actually offers are listed, so
 #: a unit never reports a scale factor its model cannot produce.
 _DENSITY_VARIANTS: dict[str, tuple[int, ...]] = {
-    "pixel-8-pro-android14": (420, 480),
+    "pixel-8-pro-android14": (420, 440, 480),
     "pixel-7-android14": (420, 440, 480),
-    "galaxy-s24-ultra-android14": (480,),
+    "galaxy-s24-ultra-android14": (480, 560),
     "galaxy-s23-android14": (420, 440, 480),
-    "galaxy-a54-android13": (400, 420, 480),
-    "oneplus-11-android13": (480,),
+    "galaxy-a54-android13": (400, 420, 440, 480),
+    "oneplus-11-android13": (420, 440, 480),
     "xiaomi-13-android14": (420, 440, 480),
-    "redmi-note-12-android13": (400, 420, 440),
-    "oppo-find-x6-android14": (420, 480),
-    "vivo-x90-android14": (440, 480),
+    "redmi-note-12-android13": (440, 480),
+    "oppo-find-x6-android14": (420, 440, 480),
+    "vivo-x90-android14": (420, 440, 480),
     "samsung-galaxy-a14-android13": (400, 420, 440),
 }
 
