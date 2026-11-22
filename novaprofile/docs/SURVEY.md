@@ -446,31 +446,81 @@ lộ ra ngay ở tầng này.
 ### 6.1 Những gì NOVA đã có
 
 * 7.222 thiết bị thật, 4.788 mẫu, 230 GPU, 643 chipset, từ dữ liệu
-  GSMArena lọc theo thị trường Việt Nam.
+  GSMArena lọc theo thị trường Việt Nam. Kiểm tra tính nhất quán đã
+  chạy trên toàn bộ 7.222 thiết bị: **0 lỗi, 0 cảnh báo**.
 * 19 trục kiểm tra tính nhất quán, kiểm tra cả giới hạn texture so
   với hạng GPU, họ nhà renderer so với nhà GPU, ABI so với renderer.
-* Kiểm tra tính nhất quán đã chạy trên toàn bộ 7.222 thiết bị: 0 lỗi,
-  0 cảnh báo.
+* **Chromium 100 → 155**: 56 phiên bản trong sổ đăng ký, chia theo
+  băng của từng bản Android (13 → 100–113, 14 → 114–127,
+  15 → 128–155). Mỗi profile bốc một phiên bản từ seed, nên một
+  preset sinh ra nhiều phiên bản khác nhau thay vì một.
+* **48 bề mặt** trong danh mục `novaprofile.core.surfaces`, và 28
+  bề mặt đã có tầng phục vụ: 14 ở tầng bản vá Blink, 4 ở tầng hook
+  native, 10 ở tầng runtime JavaScript.
+* Bản vá Chromium gồm 24 tệp, 3.048 dòng thêm, hai tệp patch trong
+  `novaprofile/core_patch/patches/`.
+* Bộ kiểm tra: **1.212 test đạt, 5 bỏ qua, 0 lỗi**, ruff sạch.
 
 ### 6.2 Chỗ còn thiếu, theo mức độ ưu tiên
 
-| Ưu tiên | Thiếu gì | Bằng chứng |
-|---|---|---|
-| 1 | Canvas ổn định **và** khác nhau giữa các thiết bị | `canvas.commonPixelsHash`, `toDataURL` |
-| 2 | `canvasReadbackDiffBytes` bằng 0 | ThumbmarkJS đọc cùng canvas hai lần |
-| 3 | WebGL renderer khớp với GPU thật của thiết bị | `gpu.renderer`, `mapVersion 1.0.3` |
-| 4 | Audio `sampleHash` | `audio.sampleHash` |
-| 5 | Danh sách phông chữ theo hệ điều hành | `fonts` đo trong iframe |
-| 6 | `deviceMemory` và `hardwareConcurrency` khớp hạng thiết bị | Trọng số `memory` 0.5, `cpu` 0.2 |
-| 7 | `Math.acos(0.5)` và độ chính xác số thực | `math` |
-| 8 | `jsHeapSizeLimit` | `hardware.jsHeapSizeLimit` |
-| 9 | Danh sách quyền và trạng thái | `permissions` |
-| 10 | Mã giải mã được | `mediaDecode` |
-| 11 | JA3/JA4 khớp với hệ điều hành | `ja4`, `tls.extensions` |
-| 12 | `navigator.webdriver` phải là `false` | Mọi trang đều kiểm tra |
-| 13 | Hàm gốc không bị đổi | `function_source` 76 lần, `error_stack` 21 lần |
+Bảng này đã đối chiếu với code đang có. Cột "Trạng thái" nói rõ
+surface đó đã được phục vụ chưa, và bởi tầng nào:
 
-### 6.3 Điểm cần nói rõ
+* **Blink** — accessor trong Blink được thay bằng bản đọc cấu hình
+  của profile. Đây là tầng mạnh nhất, vì giá trị nằm ngay trong
+  tiến trình render, không phải trong `window`.
+* **Native** — hook riêng trong `nova_chromium_hooks.h`, dành cho
+  surface mà một script đọc độc lập được.
+* **JS** — lớp JavaScript trong ngữ cảnh trang.
+* **Chưa có** — chưa được phục vụ.
+
+| Ưu tiên | Thiếu gì | Bằng chứng | Trạng thái |
+|---|---|---|---|
+| 1 | Canvas ổn định **và** khác nhau giữa các thiết bị | `canvas.commonPixelsHash`, `toDataURL` | Blink (nhiễu pixel) + JS |
+| 2 | `canvasReadbackDiffBytes` bằng 0 | ThumbmarkJS đọc cùng canvas hai lần | Blink |
+| 3 | WebGL renderer khớp với GPU thật của thiết bị | `gpu.renderer`, `mapVersion 1.0.3` | Blink + Native |
+| 4 | Audio `sampleHash` | `audio.sampleHash` | Native + JS |
+| 5 | Danh sách phông chữ theo hệ điều hành | `fonts` đo trong iframe | JS (`measureText`) |
+| 6 | `deviceMemory` và `hardwareConcurrency` khớp hạng thiết bị | Trọng số `memory` 0.5, `cpu` 0.2 | Blink |
+| 7 | `Math.acos(0.5)` và độ chính xác số thực | `math` | **Chưa có** |
+| 8 | `jsHeapSizeLimit` | `hardware.jsHeapSizeLimit` | **Chưa có** |
+| 9 | Danh sách quyền và trạng thái | `permissions` | JS |
+| 10 | Mã giải mã được | `mediaDecode` | **Chưa có** |
+| 11 | JA3/JA4 khớp với hệ điều hành | `ja4`, `tls.extensions` | **Chưa có** |
+| 12 | `navigator.webdriver` phải là `false` | Mọi trang đều kiểm tra | Blink |
+| 13 | Hàm gốc không bị đổi | `function_source` 86 lần, `error_stack` 24 lần | JS (`toString` trả mã native) |
+
+### 6.3 Bề mặt trong danh mục mà chưa tầng nào phục vụ
+
+Danh mục `novaprofile.core.surfaces` liệt kê 48 bề mặt. Đối chiếu
+với ba tầng phục vụ (bản vá Blink, hook native, runtime JavaScript)
+thì 28 bề mặt đã có. Trong 20 bề mặt còn lại:
+
+* 5 bề mặt là **dữ liệu người dùng gõ** (`email`, `password`,
+  `phone`, `invite_code`, `full_name`). Đây không phải bề mặt trình
+  duyệt, và việc điều khiển chúng không thuộc tầng fingerprint.
+* 3 bề mặt là **quyết định phía máy chủ** (`public_ip`,
+  `address_history`, `timing`, `behaviour`). Trình duyệt không có
+  quyền với chúng; việc xử lý là của tầng mạng.
+* 1 bề mặt là **danh sách phông chữ** (`font_list`): runtime đã bọc
+  `measureText`, nhưng chưa có bảng phông theo hệ điều hành để bọc
+  theo.
+* 1 bề mặt là **danh sách quyền chi tiết**: runtime đã bọc
+  `permissions.query`, nhưng chưa có trạng thái riêng cho
+  `mediaDevices`.
+* 4 bề mặt là **chi tiết phụ**: `do_not_track`, `performance.memory`,
+  `MediaRecorder.isTypeSupported`, `indexedDB.databases()`.
+* 2 bề mặt là **chi tiết phụ về đồ họa**: `screen.availWidth` /
+  `availHeight` (đã có ở tầng Blink, nhưng danh mục gộp chung với
+  `screen.width`/`height` nên bộ đếm không khớp), và
+  `WebGL.getSupportedExtensions`.
+
+Tóm lại, **bảy bề mặt thực sự còn thiếu** theo thứ tự ưu tiên mà
+bảng 6.2 nêu: độ chính xác số thực, `jsHeapSizeLimit`, mã giải mã
+được, JA3/JA4, bảng phông theo hệ điều hành, trạng thái
+`mediaDevices`, và danh sách phông.
+
+### 6.4 Điểm cần nói rõ
 
 * FingerprintJS và ThumbmarkJS **băm giá trị rồi gửi**. Điều này có
   nghĩa là giá trị thô không quan trọng bằng giá trị băm, nhưng băm
