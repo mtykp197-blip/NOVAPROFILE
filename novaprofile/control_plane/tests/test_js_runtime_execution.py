@@ -74,9 +74,17 @@ HARNESS = textwrap.dedent(
     const runtime = fs.readFileSync(process.argv[2], 'utf8');
     const profile = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
 
+    // The accessor is named the way Blink names its accessors --
+    // "get userAgent" -- because the replacement has to report the
+    // same name as the accessor it took the place of, and the only
+    // name worth copying is the one a real browser uses.
     function defineGetter(obj, name, value) {
+      var accessor = function () { return value; };
+      Object.defineProperty(accessor, 'name', {
+        value: 'get ' + name, writable: false, enumerable: false, configurable: true
+      });
       Object.defineProperty(obj, name, {
-        get: function () { return value; },
+        get: accessor,
         set: undefined,
         enumerable: true,
         configurable: true
@@ -170,6 +178,11 @@ HARNESS = textwrap.dedent(
     const context = vm.createContext(sandbox);
     const thrown = [];
 
+    // The stock accessor is captured before the runtime runs, so that
+    // the report can compare the replacement against the original.
+    const stockUaDescriptor = Object.getOwnPropertyDescriptor(
+      Navigator.prototype, 'userAgent');
+
     try {
       new vm.Script(runtime, { filename: 'runtime.js' }).runInContext(context);
     } catch (e) {
@@ -211,7 +224,10 @@ HARNESS = textwrap.dedent(
       }),
       uaGetterName: read(function () { return uaDescriptor.get.name; }),
       uaGetterLength: read(function () { return uaDescriptor.get.length; }),
-      stockGetterName: 'get'
+      stockGetterName: read(function () { return stockUaDescriptor.get.name; }),
+      stockGetterSource: read(function () {
+        return Function.prototype.toString.call(stockUaDescriptor.get);
+      })
     }));
     """
 ).strip()
@@ -382,15 +398,22 @@ def test_the_overridden_getter_looks_native(profile, tmp_path) -> None:
     """
 
     report = _run(profile, tmp_path)
-    assert report["uaGetterSource"] == "function () { [native code] }"
-    assert report["screenGetterSource"] == "function () { [native code] }"
+    # A stock Blink accessor reports its own name in the source text:
+    #   Function.prototype.toString.call(
+    #       Object.getOwnPropertyDescriptor(Navigator.prototype, 'userAgent').get)
+    #     -> "function get userAgent() { [native code] }"
+    # A replacement that reported the bare "function () { [native code] }"
+    # would not match, and the difference is visible without any source
+    # check at all.
+    assert report["uaGetterSource"] == "function get userAgent() { [native code] }"
+    assert report["screenGetterSource"] == "function get width() { [native code] }"
 
 
 def test_the_overridden_getter_looks_native_to_a_direct_call(profile, tmp_path) -> None:
     """The direct ``fn.toString()`` must report the same text."""
 
     report = _run(profile, tmp_path)
-    assert report["uaGetterOwnToString"] == "function () { [native code] }"
+    assert report["uaGetterOwnToString"] == "function get userAgent() { [native code] }"
 
 
 def test_the_override_still_behaves_like_a_function(profile, tmp_path) -> None:
@@ -477,6 +500,11 @@ BARE_HARNESS = textwrap.dedent(
 
     const context = vm.createContext(sandbox);
     const thrown = [];
+
+    // The stock accessor is captured before the runtime runs, so that
+    // the report can compare the replacement against the original.
+    const stockUaDescriptor = Object.getOwnPropertyDescriptor(
+      Navigator.prototype, 'userAgent');
 
     try {
       new vm.Script(runtime, { filename: 'runtime.js' }).runInContext(context);

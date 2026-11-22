@@ -281,19 +281,29 @@ def test_panel_stays_inside_its_family_class(gen):
     reported the physical numbers instead would have a screen four
     times the width of its own viewport, which is a shape no mobile
     browser has.
+
+    The expectation is computed from the family's own panel table
+    rather than written out, so that a panel added to the catalogue
+    does not have to be added here as well -- and so that a panel
+    that is *not* in the table fails here.
     """
 
-    profiles = list(_sample(gen, 100, "pixel-8-pro-android14"))
+    from novaprofile.core.device_catalog_market import ratio_for_density
+    from novaprofile.core.identity import _DENSITY_VARIANTS, _PANEL_VARIANTS
+
+    family = "pixel-8-pro-android14"
+    panels = _PANEL_VARIANTS[family]
+    buckets = _DENSITY_VARIANTS[family]
+
+    expected = {
+        (round(width / ratio_for_density(density)), round(height / ratio_for_density(density)))
+        for width, height in panels
+        for density in buckets
+    }
+
+    profiles = list(_sample(gen, 200, family))
     for p in profiles:
-        # The physical panels of the family are 1344x2992 and 1284x2778;
-        # the logical screen is the panel divided by the ratio, which the
-        # device may report as 2.625 or as 3.0.
-        assert (p.screen.width, p.screen.height) in (
-            (512, 1140),
-            (489, 1058),
-            (448, 997),
-            (428, 926),
-        )
+        assert (p.screen.width, p.screen.height) in expected
         assert p.screen.avail_width <= p.screen.width
         assert p.screen.avail_height <= p.screen.height
 
@@ -330,9 +340,7 @@ def test_the_screen_reports_logical_pixels_like_a_phone(gen):
         assert p.screen.device_pixel_ratio >= 1.0
         if _is_handset(p.screen):
             assert p.screen.density_dpi >= 160
-            assert p.screen.device_pixel_ratio == ratio_for_density(
-                p.screen.density_dpi
-            )
+            assert p.screen.device_pixel_ratio == ratio_for_density(p.screen.density_dpi)
 
 
 def _is_handset(screen) -> bool:
@@ -392,9 +400,7 @@ def test_catalogue_separates_users_within_a_country():
     # The countries that really do span several clocks.
     multi_zone = {country for country, count in zones.items() if count > 1}
     for country in ("US", "CA", "BR", "MX", "CN", "ID", "MY"):
-        assert country in multi_zone, (
-            f"{country} spans several time zones and must keep them"
-        )
+        assert country in multi_zone, f"{country} spans several time zones and must keep them"
 
     # Every country contributes at least one entry, and the countries
     # whose users differ by their language list contribute more than one.

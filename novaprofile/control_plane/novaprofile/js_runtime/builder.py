@@ -94,7 +94,78 @@ RUNTIME_JS = r"""
   var P = window.__NOVA_PROFILE__;
   if (!P) { return; }
 
-  var NATIVE = 'function () { [native code] }';
+  // The source text a native function reports.
+  //
+  // A stock Blink accessor names itself in the text it reports:
+  //
+  //   Function.prototype.toString.call(stockGetter)
+  //     -> "function get userAgent() { [native code] }"
+  //
+  // V8 produces that text for built-ins only.  A function written in
+  // JavaScript reports its own source, and a proxy reports the bare
+  // "function () { [native code] }" with no name -- which is a
+  // different text from the stock one, and the difference is visible
+  // without any source check at all.
+  //
+  // The replacement therefore registers the text it will report, and
+  // the source text of every replacement is read back through one
+  // place -- ``Function.prototype.toString`` -- which is itself
+  // replaced by a proxy that reports the text of the original.
+  function nativeSource(name) {
+    if (name === undefined || name === null) {
+      return 'function () { [native code] }';
+    }
+    return 'function ' + name + '() { [native code] }';
+  }
+
+  var NATIVE = nativeSource();
+
+  // The text each replacement reports.
+  //
+  // A weak map from the replacement to the text it reports.  The
+  // entries are what ``Function.prototype.toString`` answers with, so
+  // a replacement and the accessor it took the place of report the
+  // same text -- and report it through the same route, which is what
+  // a page compares.
+  var TEXTS = new WeakMap();
+
+  function registerText(fn, text) {
+    try {
+      TEXTS.set(fn, text);
+    } catch (e) { /* a primitive cannot be a key, but fn is a function */ }
+    return fn;
+  }
+
+  // Whether an accessor has already been replaced by this runtime.
+  //
+  // The text alone cannot answer the question, because a stock Blink
+  // accessor already reads "function get userAgent() { [native code] }"
+  // -- exactly what a correct replacement reads.  Comparing the text
+  // would therefore skip the stock accessors and leave the browser's
+  // own values in place.
+  //
+  // So the replacement is marked instead.  The mark is kept in a weak
+  // set rather than in a property on the replacement, because a
+  // property would be one of the own property names of the function
+  // -- and a stock accessor has only "length" and "name".  A weak set
+  // leaves no trace on the function at all.
+  var REPLACED = new WeakSet();
+
+  function isReplaced(desc) {
+    if (!desc || !desc.get) { return false; }
+    try {
+      return REPLACED.has(desc.get);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function markReplaced(fn) {
+    try {
+      REPLACED.add(fn);
+    } catch (e) { /* a frozen function still works */ }
+    return fn;
+  }
 
   // -- the source hiding ------------------------------------------------
   //
@@ -110,50 +181,146 @@ RUNTIME_JS = r"""
   // entirely -- so an own toString that claims to be native leaves the
   // real source right there for the page to read.
   //
-  // The function is therefore returned behind a Proxy.  The Proxy
-  // answers the 'toString' property with the native text, and
-  // ``Function.prototype.toString`` -- which reads the source of the
-  // *target*, not of the proxy -- sees a function whose own source is
-  // already native.  The proxy forwards the call, the name, the length
-  // and the own property names, so the override still behaves like the
-  // function it replaces.
+  // There are only two ways for a function to report the internal
+  // source text of a built-in: it has to *be* a built-in, or it has to
+  // be a proxy -- V8 reports a proxy as native without a name.  Neither
+  // gives the name of the accessor, and the name is part of the text a
+  // stock accessor reports.
   //
-  // The name is the one thing the proxy does not forward.  A native
-  // accessor getter is named "get" (or "get userAgent" in Blink), and
-  // the name of the replacement -- "raw", "value", "fn" -- is a
-  // giveaway that needs no source check to spot.  The proxy therefore
-  // reports the name of the getter it replaced.
-  function hide(fn, name) {
+  // So the text is supplied by the one function that reads it.  The
+  // original ``Function.prototype.toString`` is kept, a replacement is
+  // put in its place, and the replacement answers with the registered
+  // text of the function it is asked about.  Every other function --
+  // the stock accessors, the built-ins, the ordinary JavaScript
+  // functions -- is answered by the original, exactly as before.
+  //
+  // The replacement is a proxy over an arrow function.  The arrow has
+  // no 'prototype' of its own, so the list of the replacement's own
+  // property names is the same two entries the original has --
+  // "length" and "name".  A proxy over an ordinary function would list
+  // a third, and that third would be a difference a page could read.
+  //
+  // The proxy forwards the call with the receiver the page used, so
+  // the original still sees the function it is asked about.
+  var ORIGINAL_TO_STRING = Function.prototype.toString;
+
+  function installSourceText() {
+    var target = (self) => {
+      var text = TEXTS.get(self);
+      if (text !== undefined) { return text; }
+      return ORIGINAL_TO_STRING.call(self);
+    };
+
+    var replacement;
     try {
-      return new Proxy(fn, {
-        apply: function (target, thisArg, args) {
-          return Reflect.apply(target, thisArg, args);
+      replacement = new Proxy(target, {
+        apply: function (fn, thisArg, args) {
+          // The receiver is the function the page asked about.  It
+          // travels as an argument because the arrow function has no
+          // 'this' of its own.
+          return fn(thisArg);
         },
-        construct: function (target, args, newTarget) {
-          return Reflect.construct(target, args, newTarget);
-        },
-        get: function (target, prop, receiver) {
+        get: function (fn, prop, receiver) {
+          if (prop === 'name') { return 'toString'; }
+          if (prop === 'length') { return 0; }
           if (prop === 'toString') {
-            return function () { return NATIVE; };
+            // The own 'toString' of the replacement reports the text
+            // of the original, so that the two routes -- the built-in
+            // call and the own call -- answer the same.
+            return function () { return nativeSource('toString'); };
           }
+          return Reflect.get(fn, prop, receiver);
+        }
+      });
+    } catch (e) {
+      return;
+    }
+
+    // The replacement reports the text of the original, so that the
+    // page cannot tell it apart by reading its source.
+    registerText(replacement, nativeSource('toString'));
+
+    try {
+      Object.defineProperty(Function.prototype, 'toString', {
+        value: replacement,
+        writable: true,
+        enumerable: false,
+        configurable: true
+      });
+    } catch (e) { /* a frozen prototype still works */ }
+  }
+
+  // The name of a replacement is the name of the accessor it took the
+  // place of.  A native accessor getter is named "get userAgent" in
+  // Blink, and the name of the replacement -- "raw", "value", "fn" --
+  // is a giveaway that needs no source check to spot.
+  //
+  // The proxy is over an arrow function rather than over the
+  // replacement itself, because the list of own property names is one
+  // of the things a page can read.  A stock accessor getter has only
+  // "length" and "name"; an ordinary function has a third entry,
+  // "prototype", and that third entry would be a difference.
+  //
+  // The arrow function has no 'prototype' of its own, so the proxy
+  // lists exactly the two entries the stock getter lists.  The arrow
+  // has no 'this' either, so the receiver travels as an argument --
+  // the proxy's apply trap is the one that has it.
+  function hide(fn, name) {
+    markReplaced(fn);
+    var text = nativeSource(name);
+    // The text the replacement reports is the text the accessor it
+    // took the place of reported.
+    registerText(fn, text);
+    try {
+      var arrow = (receiver, args) => {
+        return Reflect.apply(fn, receiver, args || []);
+      };
+      var replacement = new Proxy(arrow, {
+        apply: function (fn2, thisArg, args) {
+          return fn2(thisArg, args);
+        },
+        get: function (fn2, prop, receiver) {
           if (prop === 'name' && name !== undefined) {
             return name;
           }
-          return Reflect.get(target, prop, receiver);
+          if (prop === 'length') {
+            return 0;
+          }
+          if (prop === 'toString') {
+            // The own 'toString' has to report the same text as the
+            // one the stock getter reports.  Left alone, the proxy
+            // would forward it to the built-in, and the built-in
+            // reports a proxy as native without a name -- so the two
+            // routes would answer differently.
+            return function () { return text; };
+          }
+          return Reflect.get(fn2, prop, receiver);
         }
       });
+      // The page reads the proxy, not the function behind it, so the
+      // text is registered for the proxy.
+      registerText(replacement, text);
+      markReplaced(replacement);
+      return replacement;
     } catch (e) {
       // A Proxy is not available: fall back to the own property, which
       // at least survives a direct ``fn.toString()`` call.
       try {
         Object.defineProperty(fn, 'toString', {
-          value: function () { return NATIVE; },
+          value: function () { return nativeSource(name); },
           writable: true, enumerable: false, configurable: true
         });
       } catch (inner) { /* a frozen function is still fine */ }
       return fn;
     }
   }
+
+  // The source text has to be in place before the first replacement,
+  // because the replacement of the source text is itself a
+  // replacement, and a page that reads the source of the function that
+  // reports sources would otherwise read the JavaScript source of the
+  // reporter.
+  installSourceText();
 
   function nativeLike(obj, name, fn, descriptor) {
     var target = descriptor && descriptor.configurable !== undefined
@@ -166,9 +333,29 @@ RUNTIME_JS = r"""
     try {
       if (descriptor && descriptor.get && descriptor.get.name) {
         getterName = descriptor.get.name;
+      } else if (descriptor && descriptor.set && descriptor.set.name) {
+        getterName = descriptor.set.name;
+      } else if (name) {
+        // Without a descriptor the name of the property is the best
+        // guess at the name of the accessor, and Blink names its
+        // accessors "get <property>".
+        getterName = 'get ' + name;
       }
     } catch (e) { /* the name is a nicety, not a requirement */ }
     try {
+      if (descriptor && !descriptor.get && !descriptor.set
+          && descriptor.value !== undefined) {
+        // A data property stays a data property.  Turning it into an
+        // accessor would change the shape of the object, and the shape
+        // is one of the three things a page can read.
+        Object.defineProperty(obj, name, {
+          value: fn(),
+          writable: descriptor.writable !== false,
+          enumerable: target.enumerable,
+          configurable: target.configurable
+        });
+        return true;
+      }
       Object.defineProperty(obj, name, {
         get: hide(fn, getterName),
         set: undefined,
@@ -200,7 +387,7 @@ RUNTIME_JS = r"""
         // detected.
         if (key === 'webdriver') { return; }
         var desc = Object.getOwnPropertyDescriptor(Navigator.prototype, key);
-        if (desc && desc.get && desc.get.toString && desc.get.toString() === NATIVE) {
+        if (isReplaced(desc)) {
           // Already native -- do not wrap it.
           return;
         }
@@ -215,8 +402,12 @@ RUNTIME_JS = r"""
     var screenValues = P.screen;
     Object.keys(screenValues).forEach(function (key) {
       var value = screenValues[key];
+      // The device pixel ratio is not a property of the screen object
+      // in a browser -- it belongs to the window -- so it is skipped
+      // here and set on the window below.
+      if (key === 'devicePixelRatio') { return; }
       var desc = Object.getOwnPropertyDescriptor(Screen.prototype, key);
-      if (desc && desc.get && desc.get.toString && desc.get.toString() === NATIVE) { return; }
+      if (isReplaced(desc)) { return; }
       if (desc && desc.value !== undefined && desc.value === value) { return; }
       nativeLike(Screen.prototype, key, function () { return value; }, desc);
     });
@@ -232,12 +423,14 @@ RUNTIME_JS = r"""
       outerHeight: vp.outer_height,
       screenX: vp.screen_x,
       screenY: vp.screen_y,
-      devicePixelRatio: P.screen ? P.screen.device_pixel_ratio : undefined
+      // The payload carries the camel case name of the screen field,
+      // the same name the property has in the browser.
+      devicePixelRatio: P.screen ? P.screen.devicePixelRatio : undefined
     };
     Object.keys(windowValues).forEach(function (key) {
       if (windowValues[key] === undefined) { return; }
       var desc = Object.getOwnPropertyDescriptor(window, key);
-      if (desc && desc.get && desc.get.toString && desc.get.toString() === NATIVE) { return; }
+      if (isReplaced(desc)) { return; }
       nativeLike(window, key, function () { return windowValues[key]; }, desc);
     });
   }
@@ -247,7 +440,9 @@ RUNTIME_JS = r"""
     var uad = P.user_agent_data;
     var uadValues = {
       brands: uad.brands,
-      fullVersionList: uad.full_version_list,
+      // The payload carries the version list under the name the
+      // property has in the browser.
+      fullVersionList: uad.fullVersionList,
       mobile: uad.mobile,
       platform: uad.platform,
       platformVersion: uad.platform_version,
@@ -261,9 +456,54 @@ RUNTIME_JS = r"""
       var value = uadValues[key];
       if (value === undefined) { return; }
       var desc = Object.getOwnPropertyDescriptor(uadProto, key);
-      if (desc && desc.get && desc.get.toString && desc.get.toString() === NATIVE) { return; }
+      if (isReplaced(desc)) { return; }
       nativeLike(uadProto, key, function () { return value; }, desc);
     });
+
+    // The high entropy values are a *method*, not an accessor, and a
+    // page reads them through it:
+    //
+    //   navigator.userAgentData.getHighEntropyValues(['fullVersionList'])
+    //
+    // The browser answers with its own version, so a profile that
+    // claims to be Chrome 116 is read back as Chrome 160.  The
+    // versions in the list are the ones the profile carries, and the
+    // rest of the answer comes from the profile as well.
+    try {
+      var nativeGetHighEntropy = navigator.userAgentData.getHighEntropyValues;
+      if (typeof nativeGetHighEntropy === 'function') {
+        var highValues = {
+          brands: uad.brands,
+          fullVersionList: uad.fullVersionList,
+          mobile: uad.mobile,
+          platform: uad.platform,
+          platformVersion: uad.platform_version,
+          architecture: uad.architecture,
+          bitness: uad.bitness,
+          model: uad.model,
+          wow64: uad.wow64,
+          uaFullVersion: uad.uaFullVersion
+        };
+        navigator.userAgentData.getHighEntropyValues = hide(function (hints) {
+          return nativeGetHighEntropy.call(this, hints).then(function (answer) {
+            var out = {};
+            try {
+              var keys = Array.isArray(hints) ? hints : [];
+              keys.forEach(function (hint) {
+                if (highValues[hint] !== undefined) {
+                  out[hint] = highValues[hint];
+                }
+              });
+              // The brands are the same in both answers.
+              out.brands = highValues.brands;
+              return out;
+            } catch (e) {
+              return answer;
+            }
+          });
+        }, 'getHighEntropyValues');
+      }
+    } catch (e) { /* stays stock */ }
   }
 
   // -- the timezone and the locale -----------------------------------------
@@ -310,6 +550,31 @@ RUNTIME_JS = r"""
       });
       window.Date = DateProxy;
     } catch (e) { /* a locked-down Date stays stock */ }
+
+    // The time zone is read from ``Intl``, not from ``Date``: a page
+    // that wants the zone asks the formatter for it.  The offset of
+    // ``Date`` and the name of the zone have to agree, so both come
+    // from the profile.
+    try {
+      if (typeof Intl !== 'undefined' && Intl.DateTimeFormat) {
+        var NativeDateTimeFormat = Intl.DateTimeFormat;
+        var IanaName = tz.iana_name;
+        var IntlProxy = function (locales, options) {
+          var formatter = new NativeDateTimeFormat(locales, options);
+          var resolved = formatter.resolvedOptions.bind(formatter);
+          formatter.resolvedOptions = function () {
+            var options = resolved();
+            if (options && options.timeZone !== undefined && IanaName) {
+              options.timeZone = IanaName;
+            }
+            return options;
+          };
+          return formatter;
+        };
+        IntlProxy.prototype = NativeDateTimeFormat.prototype;
+        Intl.DateTimeFormat = IntlProxy;
+      }
+    } catch (e) { /* a locked-down Intl stays stock */ }
   }
 
   // -- the network information ------------------------------------------------
@@ -326,7 +591,7 @@ RUNTIME_JS = r"""
     Object.keys(connectionValues).forEach(function (key) {
       var value = connectionValues[key];
       var desc = Object.getOwnPropertyDescriptor(connProto, key);
-      if (desc && desc.get && desc.get.toString && desc.get.toString() === NATIVE) { return; }
+      if (isReplaced(desc)) { return; }
       nativeLike(connProto, key, function () { return value; }, desc);
     });
   }
@@ -428,14 +693,14 @@ RUNTIME_JS = r"""
         var img = nativeGetImageData.call(this, x, y, w, h);
         img.data = perturb(img.data);
         return img;
-      });
+      }, 'getImageData');
     }
     if (targets.indexOf('toDataURL') !== -1) {
       var nativeToDataURL = HTMLCanvasElement.prototype.toDataURL;
       HTMLCanvasElement.prototype.toDataURL = hide(function () {
         var url = nativeToDataURL.apply(this, arguments);
         return url;
-      });
+      }, 'toDataURL');
     }
     // The font metrics are not a noisy surface and not a target the
     // profile picks: they are always right, because a font the device
@@ -517,7 +782,8 @@ RUNTIME_JS = r"""
         }
         if (descriptor && (descriptor.set || descriptor.get)) {
           Object.defineProperty(m, 'width', {
-            get: function () { return w; }, set: function () {},
+            get: hide(function () { return w; }, 'get width'),
+            set: function () {},
             enumerable: true, configurable: true
           });
         } else if (descriptor) {
@@ -525,7 +791,7 @@ RUNTIME_JS = r"""
           try { m.width = w; } catch (e) { /* frozen */ }
         }
         return m;
-      });
+      }, 'measureText');
     }
   }
 
@@ -560,7 +826,7 @@ RUNTIME_JS = r"""
         var nativeRect = Element.prototype.getBoundingClientRect;
         Element.prototype.getBoundingClientRect = hide(function () {
           return shiftRect(nativeRect.call(this));
-        });
+        }, 'getBoundingClientRect');
       }
       if (rectTargets.indexOf('getClientRects') !== -1) {
         var nativeClientRects = Element.prototype.getClientRects;
@@ -574,14 +840,14 @@ RUNTIME_JS = r"""
             out.item = function (i) { return this[i] || null; };
           } catch (e) { /* a frozen list stays as it is */ }
           return out;
-        });
+        }, 'getClientRects');
       }
       if (typeof Range !== 'undefined') {
         if (rectTargets.indexOf('Range.getBoundingClientRect') !== -1) {
           var nativeRangeRect = Range.prototype.getBoundingClientRect;
           Range.prototype.getBoundingClientRect = hide(function () {
             return shiftRect(nativeRangeRect.call(this));
-          });
+          }, 'getBoundingClientRect');
         }
         if (rectTargets.indexOf('Range.getClientRects') !== -1) {
           var nativeRangeRects = Range.prototype.getClientRects;
@@ -593,7 +859,7 @@ RUNTIME_JS = r"""
               out.item = function (i) { return this[i] || null; };
             } catch (e) { /* a frozen list stays as it is */ }
             return out;
-          });
+          }, 'getClientRects');
         }
       }
     }
@@ -615,15 +881,15 @@ RUNTIME_JS = r"""
           var ctx = new NativeAudio(contextOptions);
           try {
             Object.defineProperty(ctx, 'sampleRate', {
-              get: hide(function () { return au.sample_rate; }),
+              get: hide(function () { return au.sample_rate; }, 'get sampleRate'),
               configurable: true, enumerable: true
             });
             Object.defineProperty(ctx, 'baseLatency', {
-              get: hide(function () { return au.base_latency; }),
+              get: hide(function () { return au.base_latency; }, 'get baseLatency'),
               configurable: true, enumerable: true
             });
             Object.defineProperty(ctx, 'outputLatency', {
-              get: hide(function () { return au.output_latency; }),
+              get: hide(function () { return au.output_latency; }, 'get outputLatency'),
               configurable: true, enumerable: true
             });
           } catch (e) { /* a locked-down context stays stock */ }
@@ -642,52 +908,160 @@ RUNTIME_JS = r"""
     var params = gl.parameters || {};
     var paramKeys = Object.keys(params);
     var nativeGetParameter = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = hide(function (pname) {
-      for (var i = 0; i < paramKeys.length; i++) {
-        if (params[paramKeys[i]] && params[paramKeys[i]].__pname === pname) {
-          return params[paramKeys[i]].__value;
-        }
-      }
-      return nativeGetParameter.call(this, pname);
-    });
+
+    // The identity of the graphics card is the loudest fingerprint
+    // there is.  It is read through ``getParameter`` with the enum
+    // values the WebGL specification gives, and the enums are what
+    // the profile carries.
+    //
+    //   VENDOR                   0x1F00  7936
+    //   RENDERER                 0x1F01  7937
+    //   VERSION                  0x1F02  7938
+    //   SHADING_LANGUAGE_VERSION 0x8B8C  35724
+    //   UNMASKED_VENDOR_WEBGL    0x9245  37445
+    //   UNMASKED_RENDERER_WEBGL  0x9246  37446
+    //
+    // The two unmasked ones are reached through the
+    // ``WEBGL_debug_renderer_info`` extension, so the extension has to
+    // be answered as well: a browser that does not have the extension
+    // cannot be asked for the unmasked names.
+    var IDENTITY = {
+      7936: gl.vendor,
+      7937: gl.renderer,
+      7938: gl.version,
+      35724: gl.shading_language_version,
+      37445: gl.unmasked_vendor,
+      37446: gl.unmasked_renderer
+    };
+
     var nativeGetExtension = WebGLRenderingContext.prototype.getExtension;
     var supported = gl.extensions ? gl.extensions.supported : [];
-    WebGLRenderingContext.prototype.getExtension = hide(function (name) {
-      if (supported.indexOf(name) !== -1) {
-        // The real extension object is not reproducible in JavaScript;
-        // a minimal stub with the right shape is what a probe reads.
-        var stub = { isSupported: true };
-        ['getParameter', 'getSupportedExtensions'].forEach(function (m) {
-          if (typeof stub[m] !== 'function') {
-            stub[m] = hide(function () { return null; });
+
+    // The limits are read through ``getParameter`` with the enum the
+    // specification gives each one.  The enums were read off a live
+    // browser, so they are the ones the browser answers with.
+    var PARAM_ENUMS = {
+      max_texture_size: 3379,
+      max_cube_map_texture_size: 34076,
+      max_3d_texture_size: 32883,
+      max_array_texture_layers: 35071,
+      max_renderbuffer_size: 34024,
+      max_viewport_dims: 3386,
+      max_vertex_attribs: 34921,
+      max_vertex_uniform_vectors: 36347,
+      max_vertex_uniform_components: 35658,
+      max_fragment_uniform_vectors: 36349,
+      max_fragment_uniform_components: 35657,
+      max_varying_vectors: 36348,
+      max_combined_texture_image_units: 35661,
+      max_vertex_texture_image_units: 35660,
+      max_texture_image_units: 34930,
+      max_color_attachments: 36063,
+      max_draw_buffers: 34852,
+      max_samples: 36183,
+      max_uniform_buffer_bindings: 35375,
+      aliased_line_width_range: 33902,
+      aliased_point_size_range: 33901,
+      sample_buffers: 32936,
+      samples: 32937
+    };
+
+    function makeGetParameter(native) {
+      return hide(function (pname) {
+        if (Object.prototype.hasOwnProperty.call(IDENTITY, pname)) {
+          var value = IDENTITY[pname];
+          if (value !== undefined && value !== null) { return value; }
+        }
+        for (var i = 0; i < paramKeys.length; i++) {
+          var entry = params[paramKeys[i]];
+          if (entry === undefined || entry === null) { continue; }
+          // A parameter may carry its own enum; otherwise the enum is
+          // the one the table names.
+          var enumValue = entry.__pname !== undefined
+            ? entry.__pname
+            : PARAM_ENUMS[paramKeys[i]];
+          if (enumValue !== undefined && enumValue === pname) {
+            return entry.__value !== undefined ? entry.__value : entry;
           }
-        });
-        return stub;
-      }
-      return nativeGetExtension.call(this, name);
-    });
+        }
+        return native.call(this, pname);
+      }, 'getParameter');
+    }
+
+    function makeGetExtension(native) {
+      return hide(function (name) {
+        if (supported.indexOf(name) !== -1) {
+          // The real extension object is not reproducible in JavaScript;
+          // a minimal stub with the right shape is what a probe reads.
+          var stub = { isSupported: true };
+          if (name === 'WEBGL_debug_renderer_info') {
+            // The unmasked names travel through this extension's two
+            // enum values, so a stub without them would answer every
+            // question with the masked name.
+            stub.UNMASKED_VENDOR_WEBGL = 37445;
+            stub.UNMASKED_RENDERER_WEBGL = 37446;
+          }
+          ['getParameter', 'getSupportedExtensions'].forEach(function (m) {
+            if (typeof stub[m] !== 'function') {
+              stub[m] = hide(function () { return null; }, m);
+            }
+          });
+          return stub;
+        }
+        return native.call(this, name);
+      }, 'getExtension');
+    }
+
+    // The two contexts are separate interfaces in Blink -- a WebGL 2
+    // context does not inherit from the WebGL 1 one -- so the methods
+    // have to be replaced on both prototypes.  A page that asks for
+    // the graphics card asks the context it has, and it usually asks
+    // for the WebGL 2 one.
+    WebGLRenderingContext.prototype.getParameter = makeGetParameter(nativeGetParameter);
+    WebGLRenderingContext.prototype.getExtension = makeGetExtension(nativeGetExtension);
+
+    if (typeof WebGL2RenderingContext !== 'undefined') {
+      WebGL2RenderingContext.prototype.getParameter = makeGetParameter(
+        WebGL2RenderingContext.prototype.getParameter);
+      WebGL2RenderingContext.prototype.getExtension = makeGetExtension(
+        WebGL2RenderingContext.prototype.getExtension);
+    }
   }
 
   // -- the WebGPU ---------------------------------------------------------------------
-  if (typeof navigator !== 'undefined' && navigator.gpu && P.webgpu && P.webgpu.enabled) {
+  if (typeof navigator !== 'undefined' && navigator.gpu && P.webgpu) {
     var gpu = P.webgpu;
-    try {
-      navigator.gpu.requestAdapter = function () {
-        return Promise.resolve({
-          features: new Set(gpu.features),
-          limits: gpu.limits,
-          isFallbackAdapter: gpu.adapter.is_fallback_adapter,
-          requestAdapterInfo: function () {
-            return Promise.resolve({
-              vendor: gpu.adapter.vendor,
-              architecture: gpu.adapter.architecture,
-              device: gpu.adapter.device,
-              description: gpu.adapter.description
-            });
-          }
-        });
-      };
-    } catch (e) { /* a locked-down GPU object stays stock */ }
+    if (gpu.enabled) {
+      try {
+        navigator.gpu.requestAdapter = hide(function () {
+          return Promise.resolve({
+            features: new Set(gpu.features),
+            limits: gpu.limits,
+            isFallbackAdapter: gpu.adapter.is_fallback_adapter,
+            requestAdapterInfo: function () {
+              return Promise.resolve({
+                vendor: gpu.adapter.vendor,
+                architecture: gpu.adapter.architecture,
+                device: gpu.adapter.device,
+                description: gpu.adapter.description
+              });
+            }
+          });
+        }, 'requestAdapter');
+      } catch (e) { /* a locked-down GPU object stays stock */ }
+    } else {
+      // The profile does not carry WebGPU, and a browser that does not
+      // carry it answers ``requestAdapter`` with nothing.  Left alone,
+      // the host's own adapter would answer -- and a page that asks
+      // for the adapter would read the graphics card of the machine
+      // the browser runs on, which is not the device the profile
+      // describes.
+      try {
+        navigator.gpu.requestAdapter = hide(function () {
+          return Promise.resolve(null);
+        }, 'requestAdapter');
+      } catch (e) { /* a locked-down GPU object stays stock */ }
+    }
   }
 
   // -- the permissions -----------------------------------------------------------------
@@ -780,7 +1154,7 @@ RUNTIME_JS = r"""
         ));
       }
       return nativeQuery.call(this, descriptor);
-    });
+    }, 'query');
   }
 
   // -- the battery, the speech and the gamepad --------------------------------------------
@@ -850,7 +1224,7 @@ RUNTIME_JS = r"""
 
       var proto = Object.getPrototypeOf(speechSynthesis);
       Object.defineProperty(proto, 'getVoices', {
-        value: hide(function () { return voices; }),
+        value: hide(function () { return voices; }, 'getVoices'),
         configurable: true, enumerable: false
       });
 
@@ -885,7 +1259,7 @@ RUNTIME_JS = r"""
           list.push(pads.devices[i]);
         }
         return list;
-      });
+      }, 'getGamepads');
     } catch (e) { /* stays stock */ }
   }
 
@@ -901,7 +1275,7 @@ RUNTIME_JS = r"""
           .trim().replace(/^["']|["']$/g, '');
         if (family && installed.indexOf(family) !== -1) { return true; }
         return nativeCheck(font);
-      });
+      }, 'check');
     } catch (e) { /* stays stock */ }
   }
 
@@ -917,6 +1291,11 @@ RUNTIME_JS = r"""
       var abs = sensors.absolute_orientation || {};
       var rel = sensors.relative_orientation || {};
 
+      // The interval the profile carries.  A motion event says how
+      // often it was sampled, and a page that reads the interval and
+      // divides it into a frequency is reading the sensor's rate.
+      var SAMPLE_INTERVAL = Math.round(1000 / (sensors.sampling_hz || 60));
+
       function motionEvent(init) {
         return new DeviceMotionEvent('devicemotion', init);
       }
@@ -927,7 +1306,7 @@ RUNTIME_JS = r"""
           accelerationIncludingGravity: includeGravity
             ? { x: accel.x, y: accel.y, z: accel.z } : null,
           rotationRate: { x: gyro.x, y: gyro.y, z: gyro.z },
-          interval: Math.round(1000 / (sensors.sampling_hz || 60))
+          interval: SAMPLE_INTERVAL
         };
         try {
           return motionEvent(init);
@@ -941,21 +1320,71 @@ RUNTIME_JS = r"""
         }
       }
 
-      var nativeRequest = navigator.permissions ? null : null;
-      var requestMotion = function (cb) {
-        var last = buildMotion(true, true);
-        var timer = setInterval(function () {
-          var e = buildMotion(true, true);
-          cb(e);
-        }, Math.round(1000 / (sensors.sampling_hz || 60)));
-        if (timer && typeof timer.unref === 'function') { timer.unref(); }
-        return last;
-      };
-
-      if (typeof DeviceOrientationEvent !== 'undefined') {
-        var orientationProto = DeviceOrientationEvent.prototype;
-        var nativeOrientationRequest = null;
+      function buildOrientation() {
+        var init = {
+          absolute: abs.absolute !== undefined ? abs.absolute : true,
+          alpha: abs.alpha !== undefined ? abs.alpha : null,
+          beta: abs.beta !== undefined ? abs.beta : null,
+          gamma: abs.gamma !== undefined ? abs.gamma : null
+        };
+        try {
+          return new DeviceOrientationEvent('deviceorientation', init);
+        } catch (e) {
+          return init;
+        }
       }
+
+      // The events have to be *delivered*, not merely constructed: a
+      // page that adds a listener for ``devicemotion`` and waits for
+      // it must receive one, and the one it receives has to carry the
+      // profile's readings and the profile's interval.  A browser
+      // that has no sensor hardware never delivers the event at all,
+      // and a page that waits for it would hang -- which is itself a
+      // difference between the profile and the host.
+      var motionListeners = [];
+      var orientationListeners = [];
+
+      function startSensors() {
+        if (motionListeners.length) {
+          setInterval(function () {
+            var event = buildMotion(true, true);
+            motionListeners.forEach(function (fn) {
+              try { fn(event); } catch (e) { /* a listener that throws */ }
+            });
+          }, SAMPLE_INTERVAL);
+        }
+        if (orientationListeners.length) {
+          setInterval(function () {
+            var event = buildOrientation();
+            orientationListeners.forEach(function (fn) {
+              try { fn(event); } catch (e) { /* a listener that throws */ }
+            });
+          }, SAMPLE_INTERVAL);
+        }
+      }
+
+      try {
+        nativeMotion.addEventListener = nativeMotion.addEventListener
+          || function () {};
+        var nativeAddEventListener = window.addEventListener;
+        window.addEventListener = hide(function (type, listener, options) {
+          if (type === 'devicemotion') {
+            if (motionListeners.indexOf(listener) === -1) {
+              motionListeners.push(listener);
+              startSensors();
+            }
+            return undefined;
+          }
+          if (type === 'deviceorientation') {
+            if (orientationListeners.indexOf(listener) === -1) {
+              orientationListeners.push(listener);
+              startSensors();
+            }
+            return undefined;
+          }
+          return nativeAddEventListener.call(this, type, listener, options);
+        }, 'addEventListener');
+      } catch (e) { /* a locked-down window stays stock */ }
     } catch (e) { /* stays stock */ }
   }
 
@@ -993,7 +1422,7 @@ RUNTIME_JS = r"""
         };
       }
       return nativeMatchMedia.call(this, query);
-    });
+    }, 'matchMedia');
   }
 
   // -- the floating-point precision --------------------------------------------
@@ -1046,9 +1475,24 @@ RUNTIME_JS = r"""
       && performance.memory && P.heap_size_limit) {
     try {
       var hl = P.heap_size_limit;
-      var heapDescriptor = Object.getOwnPropertyDescriptor(performance.memory, 'jsHeapSizeLimit');
+      // The limit is an accessor, and in Blink it lives on the
+      // prototype of the memory object rather than on the object
+      // itself.  Both places are looked at, and the replacement is
+      // installed on the object that actually holds the accessor --
+      // installing it on the instance when the accessor is on the
+      // prototype would shadow it, and installing it on the prototype
+      // when the accessor is on the instance would miss it.
+      var memoryProto = Object.getPrototypeOf(performance.memory);
+      var heapDescriptor = Object.getOwnPropertyDescriptor(
+        performance.memory, 'jsHeapSizeLimit');
+      var heapTarget = performance.memory;
+      if (!heapDescriptor && memoryProto) {
+        heapDescriptor = Object.getOwnPropertyDescriptor(
+          memoryProto, 'jsHeapSizeLimit');
+        heapTarget = memoryProto;
+      }
       nativeLike(
-        performance.memory,
+        heapTarget,
         'jsHeapSizeLimit',
         function () { return hl.js_heap_size_limit; },
         heapDescriptor
@@ -1075,7 +1519,7 @@ RUNTIME_JS = r"""
     var uad = navigator.userAgentData;
     try {
       Object.defineProperty(uad, 'brands', {
-        get: hide(function () { return P.user_agent_data.brands; }),
+        get: hide(function () { return P.user_agent_data.brands; }, 'get brands'),
         configurable: true, enumerable: true
       });
     } catch (e) { /* stays stock */ }
@@ -1087,11 +1531,11 @@ RUNTIME_JS = r"""
     var langs = P.navigator.languages;
     try {
       Object.defineProperty(Navigator.prototype, 'language', {
-        get: hide(function () { return lang; }),
+        get: hide(function () { return lang; }, 'get language'),
         configurable: true, enumerable: true
       });
       Object.defineProperty(Navigator.prototype, 'languages', {
-        get: hide(function () { return langs; }),
+        get: hide(function () { return langs; }, 'get languages'),
         configurable: true, enumerable: true
       });
     } catch (e) { /* stays stock */ }
@@ -1209,11 +1653,23 @@ class JSRuntimeBuilder:
     # -- the client hints ----------------------------------------------
     def _fill_user_agent_data(self, config: ProfileConfig) -> None:
         uad = config.user_agent_data
+        # The full version of the browser the profile claims to be.
+        # It is read out of the user agent, because that is where the
+        # version is written: "Chrome/116.0.5845.188".
+        ua_full_version = ""
+        agent = config.navigator.user_agent
+        marker = "Chrome/"
+        index = agent.find(marker)
+        if index != -1:
+            rest = agent[index + len(marker) :]
+            end = rest.find(" ")
+            ua_full_version = rest[:end] if end != -1 else rest
         self._payload.user_agent_data = {
             "brands": [{"brand": b.brand, "version": b.version} for b in uad.brands],
             "fullVersionList": [
                 {"brand": b.brand, "version": b.version} for b in uad.full_version_list
             ],
+            "uaFullVersion": ua_full_version,
             "mobile": uad.mobile,
             "platform": uad.platform,
             "platform_version": uad.platform_version,
@@ -1418,6 +1874,30 @@ class JSRuntimeBuilder:
     def build(self, config: ProfileConfig) -> str:
         """The complete script for one profile."""
 
+        payload = self._build_payload(config)
+        return (
+            "window.__NOVA_PROFILE__="
+            + payload
+            + ";\n"
+            + RUNTIME_JS
+        )
+
+    def build_payload_only(self, config: ProfileConfig) -> str:
+        """The profile payload, without the runtime that installs it.
+
+        The payload is what the runtime reads, and what the
+        verification harness reads to know what the browser is supposed
+        to report.  A harness that runs without the runtime still needs
+        the payload -- otherwise it has nothing to compare against --
+        but it must not have the runtime, or the browser would be
+        reporting the profile's values rather than its own.
+        """
+
+        return "window.__NOVA_PROFILE__=" + self._build_payload(config) + ";\n"
+
+    def _build_payload(self, config: ProfileConfig) -> str:
+        """The profile payload, as the JSON the runtime reads."""
+
         self._payload = JSRuntimePayload()
         self._fill_navigator(config)
         self._fill_screen(config)
@@ -1441,14 +1921,8 @@ class JSRuntimeBuilder:
         self._fill_heap_size_limit(config)
         self._fill_media_decode(config)
 
-        payload = json.dumps(
+        return json.dumps(
             self._payload.__dict__, ensure_ascii=False, separators=(",", ":"), default=str
-        )
-        return (
-            "window.__NOVA_PROFILE__="
-            + payload
-            + ";\n"
-            + RUNTIME_JS
         )
 
     def build_hash(self, config: ProfileConfig) -> str:

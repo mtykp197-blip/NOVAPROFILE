@@ -92,9 +92,17 @@ def test_the_band_is_derived_from_the_registry() -> None:
 
 
 def test_the_band_matches_the_shipped_table() -> None:
-    """The derived bands are the ones the registry's table describes."""
+    """The derived bands are the ones the registry's table describes.
 
-    assert _chromium_band_for_android_release("13") == (100, 113)
+    Chromium 103 is the first major that shipped with Android 13, and
+    Chromium 114 is the first that shipped with Android 14.  The majors
+    below 103 shipped with Android 12, so they are not in the band of
+    Android 13 -- a profile that claims Android 13 and reports Chrome
+    101 claims a browser version the release never shipped.
+    """
+
+    assert _chromium_band_for_android_release("12") == (100, 102)
+    assert _chromium_band_for_android_release("13") == (103, 113)
     assert _chromium_band_for_android_release("14") == (114, 127)
     assert _chromium_band_for_android_release("15") == (128, 155)
 

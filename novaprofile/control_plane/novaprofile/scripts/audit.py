@@ -42,6 +42,7 @@ that only meets one of them has not met the goal.
 from __future__ import annotations
 
 import math
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
@@ -58,6 +59,21 @@ TARGET_FLEET = 100_000_000
 
 #: The bits every identifying axis needs at the target fleet size.
 REQUIRED_BITS = math.log2(TARGET_FLEET)
+
+#: The characters a real device model name is made of.
+#:
+#: A model name is not restricted to the letters and the digits: the
+#: manufacturers of the Vietnamese market ship devices whose names carry
+#: parentheses -- "Nothing Phone (2a)", "Oppo Reno8 (China)", "Realme 12x
+#: (India)" -- and the plus sign -- "Realme 12+", "Realme 13+".  Those
+#: are the names the devices report in the User-Agent and in the
+#: ``Sec-CH-UA-Model`` hint, and a rule that rejected them would reject
+#: the devices themselves.
+#:
+#: What the pattern excludes is a name that carries a character no
+#: manufacturer puts into a product name -- a comma, a colon, a slash or
+#: a control character.
+_MODEL_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 .()_+/-]*")
 
 
 # ----------------------------------------------------------------------
@@ -338,7 +354,16 @@ def _gpu_vs_client_hints(profile: ProfileConfig) -> str | None:
 
     # The model is a codename such as "Pixel 8 Pro"; it has to be a
     # name a manufacturer would actually put on a device.
-    if not model.replace(" ", "").replace("-", "").replace("_", "").isalnum():
+    #
+    # The set of characters a real model name uses is wider than the
+    # alphanumeric one.  The manufacturers of the Vietnamese market ship
+    # devices whose names carry parentheses -- "Nothing Phone (2a)",
+    # "Oppo Reno8 (China)", "Realme 12x (India)" -- and the plus sign
+    # -- "Realme 12+", "Realme 13+".  Those are the names the devices
+    # report, so a rule that rejects them would reject the devices
+    # themselves.  What the rule really excludes is a name that carries
+    # a character no manufacturer puts in a product name.
+    if not _MODEL_NAME_PATTERN.fullmatch(model):
         return f"the client-hint model '{model}' is not a real model name"
 
     # The architecture hint has to agree with the ABI the profile claims.

@@ -345,7 +345,16 @@ _COMMON_BASE: frozenset[str] = frozenset(
 )
 
 #: Android release -> (sdk_int, first Chromium major shipped with it).
+#:
+#: The table lists the release each Chromium major *first* shipped with.
+#: Chromium 100 to 102 shipped with Android 12, which is why the oldest
+#: release is listed first: without it, the majors below 103 would fall
+#: through to the fallback of
+#: :func:`_android_for_major` and be attributed to Android 13, which
+#: would put a Chromium major in the profile that never shipped with the
+#: Android release the profile claims.
 _ANDROID_SHIPPED: tuple[tuple[str, int, int], ...] = (
+    ("12", 31, 100),
     ("13", 33, 103),
     ("14", 34, 114),
     ("15", 35, 128),
@@ -355,19 +364,23 @@ _ANDROID_SHIPPED: tuple[tuple[str, int, int], ...] = (
 def _android_for_major(major: int) -> tuple[str, int]:
     """The Android release that shipped Chromium ``major``.
 
-    Chromium 100 predates Android 13, so it is mapped onto the oldest
-    supported release.  The mapping is deliberately coarse: a Chromium major
-    can ship with several Android releases over its lifetime.
+    A Chromium major is attributed to the release that first shipped it.
+    Chromium 100 to 102 shipped with Android 12, Chromium 103 to 113
+    shipped with Android 13, Chromium 114 to 127 with Android 14, and
+    Chromium 128 onwards with Android 15.
+
+    The mapping is deliberately coarse: a Chromium major can ship with
+    several Android releases over its lifetime.
     """
 
     release = ""
-    sdk = 33
+    sdk = 31
     for android_release, android_sdk, first_major in _ANDROID_SHIPPED:
         if major >= first_major:
             release = android_release
             sdk = android_sdk
     if not release:
-        release, sdk = "13", 33
+        release, sdk = _ANDROID_SHIPPED[0][0], _ANDROID_SHIPPED[0][1]
     return release, sdk
 
 

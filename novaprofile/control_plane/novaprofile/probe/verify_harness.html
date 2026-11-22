@@ -1,0 +1,1546 @@
+<!DOCTYPE html>
+<!--
+  NOVA PROFILE -- independent verification harness.
+
+  This page is deliberately *independent* of the control plane: it contains
+  no Python, no template variables and no external reference.  It runs in a
+  stock Chrome and does exactly one thing -- it reads the fingerprint
+  surfaces twice:
+
+    * the **profile** side: the values the profile declares, taken from
+      ``window.__NOVA_PROFILE__`` (the payload the JavaScript runtime
+      installs before the page's first script), and
+    * the **browser** side: the values the *real* browser reports right
+      now, read with the same accessors a fingerprinting script uses.
+
+  Both sides are then compared field by field and the result is published
+  on ``window.__NOVA_VERIFY__``.  The runner reads that object over the
+  DevTools protocol.
+
+  The comparison is *explicit*: every axis declares the list of fields it
+  compares, and every field declares the path it is read from on the
+  profile side and on the browser side.  Nothing is compared implicitly,
+  so a field that exists on one side only is reported as such instead of
+  being silently skipped.
+
+  The page loads no external resource: it works from a ``file://`` URL
+  inside an isolated profile with no network access.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NOVA profile verification harness</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #ffffff; color: #202124; }
+  body { font: 13px/1.5 -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+  #nova-verify-root { padding: 12px; }
+  #nova-verify-log { white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace; }
+  #nova-host { position: absolute; left: 11px; top: 7px; width: 273px; height: 61px; }
+  #nova-inner { width: 120px; height: 23px; }
+</style>
+</head>
+<body>
+<div id="nova-verify-root"><div id="nova-verify-log">NOVA verification harness loading...</div></div>
+
+<!-- The layout probes need a stable, laid-out box. -->
+<div id="nova-host">
+  <div id="nova-inner">nova-rects-probe</div>
+</div>
+
+<script>
+"use strict";
+(function () {
+  // ------------------------------------------------------------------
+  // Small helpers
+  // ------------------------------------------------------------------
+
+  function round(n, digits) {
+    if (typeof n !== "number" || !isFinite(n)) { return null; }
+    var f = Math.pow(10, digits);
+    return Math.round(n * f) / f;
+  }
+
+  function fnv1aHex(bytes) {
+    var h = 0x811c9dc5;
+    for (var i = 0; i < bytes.length; i++) {
+      h ^= bytes[i];
+      h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    var out = "";
+    for (var j = 7; j >= 0; j--) {
+      var nib = (h >>> (j * 4)) & 0xf;
+      out += nib.toString(16);
+    }
+    return out;
+  }
+
+  function hashString(text) {
+    var enc = new TextEncoder();
+    return fnv1aHex(enc.encode(text));
+  }
+
+  // Read a dotted path out of an object.  Returns ``undefined`` when any
+  // step of the path is missing.
+  function at(root, path) {
+    if (!path) { return undefined; }
+    var parts = String(path).split(".");
+    var current = root;
+    for (var i = 0; i < parts.length; i++) {
+      if (current === null || current === undefined) { return undefined; }
+      if (typeof current !== "object") { return undefined; }
+      current = current[parts[i]];
+    }
+    return current;
+  }
+
+  // The profile payload uses two naming conventions depending on the
+  // axis: camelCase for the navigator/screen blocks and snake_case for
+  // the rest.  ``pick`` accepts a list of candidate keys and returns the
+  // first one that is present.
+  function pick(container, names) {
+    if (!container || typeof container !== "object") { return undefined; }
+    for (var i = 0; i < names.length; i++) {
+      if (Object.prototype.hasOwnProperty.call(container, names[i])) {
+        return container[names[i]];
+      }
+    }
+    return undefined;
+  }
+
+  function same(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
+  // ------------------------------------------------------------------
+  // The profile side -- read from window.__NOVA_PROFILE__
+  // ------------------------------------------------------------------
+
+  function readProfile() {
+    var P = window.__NOVA_PROFILE__ || {};
+    var nav = P.navigator || {};
+    var scr = P.screen || {};
+    var vp = P.viewport || {};
+    var uad = P.user_agent_data || {};
+    var tz = P.timezone || {};
+    var sn = P.storage_network || {};
+    var md = P.media_devices || {};
+    var cv = P.canvas_2d || {};
+    var au = P.audio || {};
+    var rc = P.rects || {};
+    var gl = P.webgl || {};
+    var gpu = P.webgpu || {};
+    var perm = P.permissions || {};
+    var bat = P.battery || {};
+    var fonts = P.fonts || {};
+    var sensors = P.sensors || {};
+    var mq = P.media_queries || {};
+    var geo = P.geolocation || {};
+    var mp = P.math_precision || {};
+    var hl = P.heap_size_limit || {};
+    var mdec = P.media_decode || {};
+
+    var brands = uad.brands || [];
+    var fullVersionList = uad.fullVersionList || uad.full_version_list || [];
+    var deviceList = []
+      .concat(md.audio_inputs || [])
+      .concat(md.audio_outputs || [])
+      .concat(md.video_inputs || []);
+
+    return {
+      navigator: {
+        userAgent: pick(nav, ["userAgent", "user_agent"]),
+        appVersion: pick(nav, ["appVersion", "app_version"]),
+        appName: pick(nav, ["appName", "app_name"]),
+        appCodeName: pick(nav, ["appCodeName", "app_code_name"]),
+        product: pick(nav, ["product"]),
+        productSub: pick(nav, ["productSub", "product_sub"]),
+        vendor: pick(nav, ["vendor"]),
+        vendorSub: pick(nav, ["vendorSub", "vendor_sub"]),
+        platform: pick(nav, ["platform"]),
+        hardwareConcurrency: pick(nav, ["hardwareConcurrency", "hardware_concurrency"]),
+        deviceMemory: pick(nav, ["deviceMemory", "device_memory"]),
+        maxTouchPoints: pick(nav, ["maxTouchPoints", "max_touch_points"]),
+        language: pick(nav, ["language"]),
+        languages: pick(nav, ["languages"]),
+        pdfViewerEnabled: pick(nav, ["pdfViewerEnabled", "pdf_viewer_enabled"])
+      },
+      client_hints: {
+        brands: brands,
+        fullVersionList: fullVersionList,
+        mobile: pick(uad, ["mobile"]),
+        platform: pick(uad, ["platform"]),
+        platformVersion: pick(uad, ["platformVersion", "platform_version"]),
+        architecture: pick(uad, ["architecture"]),
+        bitness: pick(uad, ["bitness"]),
+        model: pick(uad, ["model"]),
+        wow64: pick(uad, ["wow64"])
+      },
+      screen: {
+        width: pick(scr, ["width"]),
+        height: pick(scr, ["height"]),
+        availWidth: pick(scr, ["availWidth", "avail_width"]),
+        availHeight: pick(scr, ["availHeight", "avail_height"]),
+        colorDepth: pick(scr, ["colorDepth", "color_depth"]),
+        pixelDepth: pick(scr, ["pixelDepth", "pixel_depth"]),
+        devicePixelRatio: pick(scr, ["devicePixelRatio", "device_pixel_ratio"])
+      },
+      viewport: {
+        innerWidth: pick(vp, ["inner_width", "innerWidth"]),
+        innerHeight: pick(vp, ["inner_height", "innerHeight"]),
+        outerWidth: pick(vp, ["outer_width", "outerWidth"]),
+        outerHeight: pick(vp, ["outer_height", "outerHeight"]),
+        visualViewportScale: pick(vp, ["visual_viewport_scale", "visualViewportScale"])
+      },
+      timezone: {
+        ianaName: pick(tz, ["iana_name", "ianaName"]),
+        offsetMinutes: pick(tz, ["offset_minutes", "offsetMinutes"])
+      },
+      storage: {
+        quota: pick(sn, ["quota_bytes", "quota"]),
+        usage: pick(sn, ["usage_bytes", "usage"]),
+        effectiveType: pick(sn, ["effective_type", "effectiveType"]),
+        rtt: pick(sn, ["rtt"]),
+        downlink: pick(sn, ["downlink"]),
+        saveData: pick(sn, ["save_data", "saveData"]),
+        connectionType: pick(sn, ["connection_type", "connectionType"])
+      },
+      media_devices: {
+        count: deviceList.length,
+        kinds: deviceList.map(function (d) { return d.kind; }).sort()
+      },
+      canvas: {
+        // The observable consequence of the canvas configuration: the
+        // 2D readback surface has to be substituted.  The noise
+        // *strength* itself is not readable from the page -- the noise
+        // is supposed to be invisible -- so it is reported but not
+        // asserted.
+        mode: pick(cv, ["mode"]),
+        substituted: (pick(cv, ["mode"]) || "noise") !== "off",
+        noiseStrength: pick(cv, ["noise_strength", "noiseStrength"]),
+        salt: pick(cv, ["salt"])
+      },
+      audio: {
+        sampleRate: pick(au, ["sample_rate", "sampleRate"]),
+        baseLatency: pick(au, ["base_latency", "baseLatency"]),
+        outputLatency: pick(au, ["output_latency", "outputLatency"]),
+        channelCount: pick(au, ["channel_count", "channelCount"])
+      },
+      rects: {
+        mode: pick(rc, ["mode"]),
+        substituted: (pick(rc, ["mode"]) || "noise") !== "off",
+        deltaX: pick(rc, ["delta_x", "deltaX"]),
+        deltaY: pick(rc, ["delta_y", "deltaY"]),
+        deltaWidth: pick(rc, ["delta_width", "deltaWidth"]),
+        deltaHeight: pick(rc, ["delta_height", "deltaHeight"])
+      },
+      webgl: {
+        unmaskedVendor: pick(gl, ["unmasked_vendor", "unmaskedVendor"]),
+        unmaskedRenderer: pick(gl, ["unmasked_renderer", "unmaskedRenderer"]),
+        version: pick(gl, ["version"]),
+        shadingLanguageVersion: pick(gl, ["shading_language_version", "shadingLanguageVersion"]),
+        maxTextureSize: pick(gl.parameters, ["max_texture_size", "maxTextureSize"])
+      },
+      webgpu: {
+        enabled: pick(gpu, ["enabled"]),
+        vendor: pick(gpu.adapter, ["vendor"]),
+        architecture: pick(gpu.adapter, ["architecture"]),
+        device: pick(gpu.adapter, ["device"]),
+        description: pick(gpu.adapter, ["description"]),
+        maxTextureDimension2D: pick(gpu.limits, ["maxTextureDimension2D"])
+      },
+      permissions: {
+        policies: perm
+      },
+      battery: {
+        charging: pick(bat, ["charging"]),
+        level: pick(bat, ["level"]),
+        chargingTime: pick(bat, ["charging_time", "chargingTime"]),
+        dischargingTime: pick(bat, ["discharging_time", "dischargingTime"])
+      },
+      fonts: {
+        installed: pick(fonts, ["installed"])
+      },
+      sensors: {
+        enabled: pick(sensors, ["enabled"]),
+        samplingHz: pick(sensors, ["sampling_hz", "samplingHz"]),
+        // The reading a motion event carries is the accelerometer's:
+        // ``accelerationIncludingGravity`` is the acceleration with
+        // the gravity in it, which is what the accelerometer reports.
+        accelerationZ: pick(sensors.accelerometer, ["z"])
+      },
+      media_queries: {
+        prefersColorScheme: pick(mq, ["prefers_color_scheme", "prefersColorScheme"]),
+        prefersReducedMotion: pick(mq, ["prefers_reduced_motion", "prefersReducedMotion"]),
+        pointer: pick(mq, ["pointer"]),
+        hover: pick(mq, ["hover"]),
+        colorGamut: pick(mq, ["color_gamut", "colorGamut"]),
+        dynamicRange: pick(mq, ["dynamic_range", "dynamicRange"]),
+        forcedColors: pick(mq, ["forced_colors", "forcedColors"])
+      },
+      geolocation: {
+        mode: pick(geo, ["mode"]),
+        // The observable form of the mode: a profile that allows a
+        // custom position answers the geolocation permission with
+        // "granted", a profile that prompts answers "prompt".
+        permission: (pick(geo, ["mode"]) || "prompt") === "allow_custom" ? "granted" : "prompt",
+        latitude: pick(geo, ["latitude"]),
+        longitude: pick(geo, ["longitude"]),
+        accuracy: pick(geo, ["accuracy"])
+      },
+      math_precision: {
+        acos: pick(mp, ["acos"]),
+        asin: pick(mp, ["asin"]),
+        sinh: pick(mp, ["sinh"]),
+        cosh: pick(mp, ["cosh"]),
+        tanh: pick(mp, ["tanh"]),
+        atan: pick(mp, ["atan"])
+      },
+      heap: {
+        jsHeapSizeLimit: pick(hl, ["js_heap_size_limit", "jsHeapSizeLimit"])
+      },
+      media_decode: {
+        supported: pick(mdec, ["supported"])
+      }
+    };
+  }
+
+  // ------------------------------------------------------------------
+  // The browser side -- read from the real Chrome
+  // ------------------------------------------------------------------
+
+  function readBrowserNavigator() {
+    var nav = navigator;
+    return {
+      userAgent: nav.userAgent,
+      appVersion: nav.appVersion,
+      appName: nav.appName,
+      appCodeName: nav.appCodeName,
+      product: nav.product,
+      productSub: nav.productSub,
+      vendor: nav.vendor,
+      vendorSub: nav.vendorSub,
+      platform: nav.platform,
+      hardwareConcurrency: nav.hardwareConcurrency,
+      deviceMemory: nav.deviceMemory,
+      maxTouchPoints: nav.maxTouchPoints,
+      language: nav.language,
+      languages: Array.prototype.slice.call(nav.languages || []),
+      pdfViewerEnabled: nav.pdfViewerEnabled === true
+    };
+  }
+
+  function readBrowserClientHints() {
+    var uad = navigator.userAgentData;
+    if (!uad) { return { available: false }; }
+    var base = {
+      available: true,
+      brands: (uad.brands || []).map(function (b) {
+        return { brand: b.brand, version: b.version };
+      }),
+      fullVersionList: (uad.fullVersionList || []).map(function (b) {
+        return { brand: b.brand, version: b.version };
+      }),
+      mobile: uad.mobile === true,
+      platform: uad.platform,
+      platformVersion: uad.platformVersion,
+      architecture: uad.architecture,
+      bitness: uad.bitness,
+      model: uad.model,
+      wow64: uad.wow64 === true
+    };
+    try {
+      if (typeof uad.getHighEntropyValues === "function") {
+        return uad.getHighEntropyValues([
+          "fullVersionList", "platformVersion", "architecture", "bitness", "model"
+        ]).then(function (high) {
+          // ``getHighEntropyValues`` is answered by the *browser*, not
+          // by the JavaScript runtime: it travels over the native
+          // client-hints channel and therefore ignores the overridden
+          // prototype accessors.  The values it returns are the host
+          // machine's, not the profile's, so they must never *replace*
+          // what the patched accessors reported.  They are only used
+          // to fill in a value that the accessors did not provide at
+          // all, and the raw response is reported separately so that
+          // the operator can see the discrepancy.
+          base.highEntropyResponse = {
+            fullVersionList: (high.fullVersionList || []).map(function (b) {
+              return { brand: b.brand, version: b.version };
+            }),
+            platformVersion: high.platformVersion,
+            architecture: high.architecture,
+            bitness: high.bitness,
+            model: high.model
+          };
+          // An accessor that reports an *empty* list is still a
+          // reading.  A profile that claims to be a browser old enough
+          // not to send the full version list reports an empty list,
+          // and the host's list would tell the reader that the
+          // profile is a lie: the list names a browser major the
+          // profile does not claim to be.  So the fill-in only happens
+          // when the accessor is genuinely absent, which is what
+          // ``undefined`` means -- an empty array is a value.
+          if (base.fullVersionList === undefined) {
+            base.fullVersionList = (high.fullVersionList || []).map(function (b) {
+              return { brand: b.brand, version: b.version };
+            });
+          }
+          if (base.platformVersion === undefined || base.platformVersion === null) {
+            base.platformVersion = high.platformVersion;
+          }
+          if (base.architecture === undefined || base.architecture === null) {
+            base.architecture = high.architecture;
+          }
+          if (base.bitness === undefined || base.bitness === null) {
+            base.bitness = high.bitness;
+          }
+          if (base.model === undefined || base.model === null) {
+            base.model = high.model;
+          }
+          return base;
+        }, function () { return base; });
+      }
+    } catch (e) { /* the high-entropy hints are optional */ }
+    return base;
+  }
+
+  function readBrowserScreen() {
+    return {
+      width: screen.width,
+      height: screen.height,
+      availWidth: screen.availWidth,
+      availHeight: screen.availHeight,
+      colorDepth: screen.colorDepth,
+      pixelDepth: screen.pixelDepth,
+      devicePixelRatio: window.devicePixelRatio
+    };
+  }
+
+  function readBrowserViewport() {
+    var vv = null;
+    if (window.visualViewport) {
+      vv = { width: window.visualViewport.width, height: window.visualViewport.height, scale: window.visualViewport.scale };
+    }
+    return {
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      outerWidth: window.outerWidth,
+      outerHeight: window.outerHeight,
+      visualViewportScale: vv ? vv.scale : null
+    };
+  }
+
+  function readBrowserTimezone() {
+    var resolved = Intl.DateTimeFormat().resolvedOptions();
+    return {
+      ianaName: resolved.timeZone,
+      offsetMinutes: -new Date().getTimezoneOffset()
+    };
+  }
+
+  function readBrowserStorage() {
+    function estimatePromise() {
+      return new Promise(function (resolve) {
+        if (!navigator.storage || !navigator.storage.estimate) {
+          resolve({ available: false });
+          return;
+        }
+        navigator.storage.estimate().then(function (est) {
+          resolve({ available: true, quota: est.quota, usage: est.usage });
+        }).catch(function () { resolve({ available: false }); });
+      });
+    }
+    var conn = null;
+    try {
+      var c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+      if (c) {
+        conn = {
+          effectiveType: c.effectiveType,
+          rtt: c.rtt,
+          downlink: c.downlink,
+          saveData: c.saveData,
+          connectionType: c.type === undefined ? null : c.type
+        };
+      }
+    } catch (e) { conn = null; }
+    return estimatePromise().then(function (est) {
+      return {
+        available: est.available === true,
+        quota: est.quota === undefined ? null : est.quota,
+        usage: est.usage === undefined ? null : est.usage,
+        connection: conn
+      };
+    });
+  }
+
+  function readBrowserMediaDevices() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+      return Promise.resolve({ available: false, count: 0, kinds: [] });
+    }
+    return navigator.mediaDevices.enumerateDevices().then(function (devices) {
+      var list = devices || [];
+      return {
+        available: true,
+        count: list.length,
+        kinds: list.map(function (d) { return d.kind; }).sort()
+      };
+    }).catch(function () { return { available: false, count: 0, kinds: [] }; });
+  }
+
+  // ------------------------------------------------------------------
+  // Substitution detection
+  // ------------------------------------------------------------------
+  //
+  // The JavaScript runtime deliberately hides its overrides behind a
+  // ``Proxy`` that answers ``toString`` with the native source text, so
+  // ``Function.prototype.toString`` always reports "native" and cannot
+  // be used to detect a substitution.
+  //
+  // The reliable signal is the *identity* of the installed function: the
+  // runtime replaces a prototype method with a **new function object**.
+  // The pristine built-in is captured at document start, before the
+  // runtime runs, and published on ``window.__NOVA_PRISTINE__``.
+
+  function pristine() {
+    return window.__NOVA_PRISTINE__ || {};
+  }
+
+  // ``true`` when the installed method is not the pristine built-in.
+  function isSubstituted(installed, pristineValue) {
+    if (!installed || !pristineValue) { return false; }
+    try { return installed !== pristineValue; } catch (e) { return false; }
+  }
+
+  function readBrowserCanvas() {
+    var canvas = document.createElement("canvas");
+    canvas.width = 280;
+    canvas.height = 120;
+    var ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) { return { available: false }; }
+
+    // The substitution state has to be sampled *before* the readback:
+    // a substituted ``getImageData`` may refuse to hand out the pixels
+    // (the runtime rebuilds the ``ImageData`` and the native ``data``
+    // property is read-only), in which case the readback throws and
+    // the evidence would be lost.  The identity of the installed
+    // accessor says whether the surface was substituted at all.
+    var substituted = false;
+    try {
+      substituted = isSubstituted(
+        CanvasRenderingContext2D.prototype.getImageData,
+        pristine().getImageData
+      );
+    } catch (e) { substituted = false; }
+
+    try {
+      ctx.fillStyle = "#f2f4f7";
+      ctx.fillRect(0, 0, 280, 120);
+      var lin = ctx.createLinearGradient(0, 0, 280, 120);
+      lin.addColorStop(0, "#1a73e8");
+      lin.addColorStop(0.5, "#34a853");
+      lin.addColorStop(1, "#ea4335");
+      ctx.fillStyle = lin;
+      ctx.fillRect(6, 6, 268, 108);
+      ctx.font = "16px Arial";
+      ctx.fillStyle = "#0b8043";
+      ctx.fillText("NOVA-2D", 24, 48);
+      var data = ctx.getImageData(0, 0, 280, 120).data;
+      var bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      var dataUrl = "";
+      try { dataUrl = canvas.toDataURL("image/png"); } catch (e) { dataUrl = ""; }
+      var sample = [];
+      for (var i = 0; i < 8 && i < data.length; i++) { sample.push(data[i]); }
+      canvas.width = 0;
+      canvas.height = 0;
+      // The noise strength is not readable from the page -- the noise is
+      // supposed to be invisible.  What *is* readable is whether the
+      // canvas surface was substituted at all.
+      return {
+        available: true,
+        hash: fnv1aHex(bytes),
+        dataUrlHash: dataUrl ? hashString(dataUrl) : "",
+        dataUrlLength: dataUrl.length,
+        firstPixels: sample,
+        substituted: substituted
+      };
+    } catch (err) {
+      // The readback failed.  That does not invalidate the axis: the
+      // substitution state was already sampled above and is the value
+      // the axis actually compares.  The missing pixel data is
+      // reported so that the operator can see the readback itself
+      // failed.
+      canvas.width = 0;
+      canvas.height = 0;
+      return {
+        available: true,
+        readbackFailed: true,
+        readbackError: String((err && err.message) || err),
+        substituted: substituted
+      };
+    }
+  }
+
+  function readBrowserAudio() {
+    var OfflineCtor = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!OfflineCtor) { return Promise.resolve({ available: false }); }
+    var context = new OfflineCtor(1, 44100, 44100);
+    var osc = context.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.value = 10000;
+    var comp = context.createDynamicsCompressor();
+    comp.threshold.value = -50;
+    comp.knee.value = 40;
+    comp.ratio.value = 12;
+    comp.attack.value = 0;
+    comp.release.value = 0.25;
+    osc.connect(comp);
+    comp.connect(context.destination);
+    osc.start(0);
+    return context.startRendering().then(function (buffer) {
+      var out = {
+        available: true,
+        sampleRate: buffer.sampleRate,
+        numberOfChannels: buffer.numberOfChannels
+      };
+      try {
+        var live = new (window.AudioContext || window.webkitAudioContext)();
+        out.baseLatency = live.baseLatency === undefined ? null : round(live.baseLatency, 6);
+        out.outputLatency = live.outputLatency === undefined ? null : round(live.outputLatency, 6);
+        live.close();
+      } catch (e) {
+        out.baseLatency = null;
+        out.outputLatency = null;
+      }
+      return out;
+    }).catch(function (err) {
+      return { available: false, error: String((err && err.message) || err) };
+    });
+  }
+
+  function readBrowserRects() {
+    var host = document.getElementById("nova-host");
+    var inner = document.getElementById("nova-inner");
+    if (!host || !inner) { return { available: false }; }
+    function rectToObj(r) {
+      return {
+        x: round(r.x, 2), y: round(r.y, 2),
+        top: round(r.top, 2), right: round(r.right, 2),
+        bottom: round(r.bottom, 2), left: round(r.left, 2),
+        width: round(r.width, 2), height: round(r.height, 2)
+      };
+    }
+    var range = document.createRange();
+    range.selectNodeContents(inner);
+    var hostRect = host.getBoundingClientRect();
+    var innerRect = inner.getBoundingClientRect();
+    // The stock layout of the probe boxes is known -- the stylesheet of
+    // this page declares it -- so the *delta* the browser applied is
+    // observable: the measured geometry minus the declared geometry.
+    // A profile that declares a delta of +1 in x has to produce a host
+    // rectangle that is one pixel to the right of the declared one.
+    var BASE_HOST = { x: 11, y: 7, width: 273, height: 61 };
+    var BASE_INNER = { x: 11, y: 7, width: 120, height: 23 };
+    var substituted = false;
+    try {
+      substituted = isSubstituted(
+        Element.prototype.getBoundingClientRect,
+        pristine().getBoundingClientRect
+      );
+    } catch (e) { substituted = false; }
+    return {
+      available: true,
+      host: rectToObj(hostRect),
+      inner: rectToObj(innerRect),
+      range: rectToObj(range.getBoundingClientRect()),
+      deltaX: round(hostRect.x - BASE_HOST.x, 2),
+      deltaY: round(hostRect.y - BASE_HOST.y, 2),
+      deltaWidth: round(hostRect.width - BASE_HOST.width, 2),
+      deltaHeight: round(hostRect.height - BASE_HOST.height, 2),
+      innerDeltaX: round(innerRect.x - BASE_INNER.x, 2),
+      innerDeltaWidth: round(innerRect.width - BASE_INNER.width, 2),
+      substituted: substituted
+    };
+  }
+
+  function readBrowserWebgl() {
+    var canvas = document.createElement("canvas");
+    canvas.width = 64;
+    canvas.height = 64;
+    var gl = null;
+    var contextName = "";
+    try {
+      gl = canvas.getContext("webgl2", { preserveDrawingBuffer: true, antialias: false });
+      if (gl) { contextName = "webgl2"; }
+    } catch (e) { gl = null; }
+    if (!gl) {
+      try {
+        gl = canvas.getContext("webgl", { preserveDrawingBuffer: true, antialias: false });
+        if (gl) { contextName = "webgl"; }
+      } catch (e) { gl = null; }
+    }
+    if (!gl) { return { available: false }; }
+    var debugInfo = gl.getExtension("WEBGL_debug_renderer_info");
+    var vendor = debugInfo
+      ? gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL)
+      : gl.getParameter(gl.VENDOR);
+    var renderer = debugInfo
+      ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL)
+      : gl.getParameter(gl.RENDERER);
+    function param(name) {
+      try {
+        var v = gl.getParameter(gl[name]);
+        return v === null || v === undefined ? null : v;
+      } catch (e) { return null; }
+    }
+    var out = {
+      available: true,
+      context: contextName,
+      unmaskedVendor: String(vendor),
+      unmaskedRenderer: String(renderer),
+      version: String(gl.getParameter(gl.VERSION)),
+      shadingLanguageVersion: String(gl.getParameter(gl.SHADING_LANGUAGE_VERSION)),
+      maxTextureSize: param("MAX_TEXTURE_SIZE"),
+      maxVaryingVectors: param("MAX_VARYING_VECTORS"),
+      maxFragmentUniformVectors: param("MAX_FRAGMENT_UNIFORM_VECTORS"),
+      maxVertexUniformVectors: param("MAX_VERTEX_UNIFORM_VECTORS"),
+      maxTextureImageUnits: param("MAX_TEXTURE_IMAGE_UNITS")
+    };
+    canvas.width = 0;
+    canvas.height = 0;
+    return out;
+  }
+
+  function readBrowserWebgpu() {
+    // Whether the adapter request was substituted is observable: the
+    // runtime replaces ``navigator.gpu.requestAdapter`` with its own
+    // function when the profile enables WebGPU.
+    var substituted = false;
+    try {
+      substituted = isSubstituted(
+        navigator.gpu && navigator.gpu.requestAdapter,
+        pristine().requestAdapter
+      );
+    } catch (e) { substituted = false; }
+    if (!navigator.gpu || typeof navigator.gpu.requestAdapter !== "function") {
+      return Promise.resolve({ available: false, substituted: substituted, hasAdapter: false });
+    }
+    return navigator.gpu.requestAdapter().then(function (adapter) {
+      // Whether the browser has an adapter is the observable fact.  The
+      // profile says whether the device carries WebGPU, and a browser
+      // that does not carry it answers with nothing -- so the presence
+      // of an adapter is what the axis compares, not whether the
+      // runtime happened to replace the method.
+      if (!adapter) {
+        return {
+          available: false, reason: "no-adapter",
+          substituted: substituted, hasAdapter: false
+        };
+      }
+      var info = {};
+      try {
+        if (adapter.info && typeof adapter.info === "object") {
+          info.vendor = adapter.info.vendor === undefined ? null : adapter.info.vendor;
+          info.architecture = adapter.info.architecture === undefined ? null : adapter.info.architecture;
+          info.device = adapter.info.device === undefined ? null : adapter.info.device;
+          info.description = adapter.info.description === undefined ? null : adapter.info.description;
+        }
+      } catch (e) { info = {}; }
+      var limits = {};
+      try {
+        var raw = adapter.limits || {};
+        var keys = ["maxTextureDimension2D", "maxBindGroups", "maxBufferSize"];
+        for (var i = 0; i < keys.length; i++) {
+          limits[keys[i]] = raw[keys[i]] === undefined ? null : raw[keys[i]];
+        }
+      } catch (e) { limits = {}; }
+      return {
+        available: true,
+        substituted: substituted,
+        hasAdapter: true,
+        vendor: info.vendor,
+        architecture: info.architecture,
+        device: info.device,
+        description: info.description,
+        maxTextureDimension2D: limits.maxTextureDimension2D
+      };
+    }).catch(function (err) {
+      return {
+        available: false, error: String((err && err.message) || err),
+        hasAdapter: false
+      };
+    });
+  }
+
+  function readBrowserPermissions() {
+    if (!navigator.permissions || typeof navigator.permissions.query !== "function") {
+      return Promise.resolve({ available: false, policies: {} });
+    }
+    // The names that are queried are the ones the *profile* declares:
+    // the runtime answers exactly those, and a name the browser does
+    // not know is a programming error the browser rejects.
+    var profilePerm = (window.__NOVA_PROFILE__ || {}).permissions || {};
+    var names = Object.keys(profilePerm);
+    if (!names.length) {
+      names = [
+        "geolocation", "notifications", "camera", "microphone",
+        "accelerometer", "gyroscope", "magnetometer", "persistent-storage"
+      ];
+    }
+    var tasks = names.map(function (name) {
+      return navigator.permissions.query({ name: name }).then(function (status) {
+        return { name: name, state: status.state };
+      }, function (err) {
+        return { name: name, error: String((err && err.message) || err) };
+      });
+    });
+    return Promise.all(tasks).then(function (results) {
+      var policies = {};
+      for (var i = 0; i < results.length; i++) {
+        if (results[i].state) { policies[results[i].name] = results[i].state; }
+      }
+      return { available: true, policies: policies };
+    });
+  }
+
+  function readBrowserBattery() {
+    if (!navigator.getBattery) { return Promise.resolve({ available: false }); }
+    return navigator.getBattery().then(function (b) {
+      return {
+        available: true,
+        charging: b.charging,
+        level: b.level,
+        chargingTime: b.chargingTime,
+        dischargingTime: b.dischargingTime
+      };
+    }).catch(function () { return { available: false }; });
+  }
+
+  var FONT_CANDIDATES = [
+    "Roboto", "Noto Sans", "Noto Sans Arabic", "Noto Sans Thai", "Noto Serif",
+    "Noto Color Emoji", "Arial", "Helvetica", "Times New Roman", "Courier New",
+    "Dancing Script", "Carrois Gothic SC", "Cutive Mono", "Coming Soon", "Eczar",
+    "Sourc Code Pro", "Ubuntu Medium", "Droid Sans Mono", "Droid Serif"
+  ];
+
+  function readBrowserFonts() {
+    try {
+      var canvas = document.createElement("canvas");
+      canvas.width = 800;
+      canvas.height = 120;
+      var ctx = canvas.getContext("2d");
+      if (!ctx) { return { available: false, installed: [] }; }
+      var BASE = 72;
+      var TEXT = "mmmwwwiiilll0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+      var generics = ["monospace", "sans-serif", "serif"];
+      var genericWidths = {};
+      ctx.font = BASE + "px monospace";
+      genericWidths.monospace = ctx.measureText(TEXT).width;
+      ctx.font = BASE + "px sans-serif";
+      genericWidths.sansSerif = ctx.measureText(TEXT).width;
+      ctx.font = BASE + "px serif";
+      genericWidths.serif = ctx.measureText(TEXT).width;
+      var widths = {};
+      var installed = [];
+      for (var i = 0; i < FONT_CANDIDATES.length; i++) {
+        var family = FONT_CANDIDATES[i];
+        ctx.font = BASE + "px " + family;
+        var w = round(ctx.measureText(TEXT).width, 2);
+        widths[family] = w;
+        if (generics.indexOf(family) !== -1) { continue; }
+        if (w === genericWidths.monospace) { continue; }
+        if (w === genericWidths.sansSerif) { continue; }
+        if (w === genericWidths.serif) { continue; }
+        installed.push(family);
+      }
+      canvas.width = 0;
+      canvas.height = 0;
+      // The font *inventory* the profile declares is exposed through
+      // ``document.fonts.check`` -- the runtime substitutes it, and it
+      // is the accessor a fingerprinting script uses to ask whether a
+      // family is present.
+      var declared = [];
+      var profileFonts = ((window.__NOVA_PROFILE__ || {}).fonts || {}).installed || [];
+      for (var j = 0; j < profileFonts.length; j++) {
+        var present = false;
+        try {
+          present = document.fonts.check("16px " + JSON.stringify(profileFonts[j]));
+        } catch (e) {
+          try { present = document.fonts.check("16px " + profileFonts[j]); } catch (e2) { present = false; }
+        }
+        if (present) { declared.push(profileFonts[j]); }
+      }
+      return {
+        available: true,
+        installed: installed.sort(),
+        declaredInstalled: declared.sort(),
+        widths: widths
+      };
+    } catch (err) {
+      return { available: false, installed: [], error: String((err && err.message) || err) };
+    }
+  }
+
+  function readBrowserSensors() {
+    function once(target, eventName, timeoutMs) {
+      return new Promise(function (resolve) {
+        var settled = false;
+        function finish(value) {
+          if (settled) { return; }
+          settled = true;
+          resolve(value);
+        }
+        var timer = setTimeout(function () { finish(null); }, timeoutMs || 1200);
+        try {
+          target.addEventListener(eventName, function handler(event) {
+            clearTimeout(timer);
+            target.removeEventListener(eventName, handler);
+            finish(event);
+          }, { passive: true });
+        } catch (e) {
+          clearTimeout(timer);
+          finish(null);
+        }
+      });
+    }
+    var hasMotion = "DeviceMotionEvent" in window;
+    var hasOrientation = "DeviceOrientationEvent" in window;
+    var tasks = [];
+    if (hasMotion) {
+      tasks.push(once(window, "devicemotion", 1200).then(function (event) {
+        if (!event) { return null; }
+        return {
+          interval: event.interval,
+          accelerationZ: event.accelerationIncludingGravity
+            ? event.accelerationIncludingGravity.z : null
+        };
+      }));
+    }
+    if (hasOrientation) {
+      tasks.push(once(window, "deviceorientation", 1200).then(function (event) {
+        if (!event) { return null; }
+        return { absolute: event.absolute, alpha: event.alpha, beta: event.beta, gamma: event.gamma };
+      }));
+    }
+    return Promise.all(tasks).then(function (values) {
+      var motion = hasMotion ? values[0] : null;
+      var orientation = hasOrientation ? values[hasMotion ? 1 : 0] : null;
+      // A motion event that actually arrived is the observable form of
+      // "the sensors are live".  The sampling rate follows the interval
+      // the event carries.
+      var interval = motion && typeof motion.interval === "number" ? motion.interval : null;
+      return {
+        available: hasMotion || hasOrientation,
+        hasDeviceMotion: hasMotion,
+        hasDeviceOrientation: hasOrientation,
+        enabled: !!motion,
+        samplingInterval: interval,
+        samplingHz: interval ? round(1000 / interval, 2) : null,
+        accelerationZ: motion ? motion.accelerationZ : null,
+        orientation: orientation
+      };
+    });
+  }
+
+  function readBrowserMediaQueries() {
+    function mq(query) {
+      try { return window.matchMedia(query).matches === true; } catch (e) { return null; }
+    }
+    return {
+      prefersColorScheme: mq("(prefers-color-scheme: dark)") ? "dark" : "light",
+      prefersReducedMotion: mq("(prefers-reduced-motion: reduce)") ? "reduce" : "no-preference",
+      pointer: mq("(pointer: coarse)") ? "coarse" : (mq("(pointer: fine)") ? "fine" : "none"),
+      hover: mq("(hover: hover)") ? "hover" : "none",
+      colorGamut: mq("(color-gamut: rec2020)") ? "rec2020" : (mq("(color-gamut: p3)") ? "p3" : "srgb"),
+      dynamicRange: mq("(dynamic-range: high)") ? "high" : "standard",
+      forcedColors: mq("(forced-colors: active)") ? "active" : "none"
+    };
+  }
+
+  function readBrowserGeolocation() {
+    function permissionPromise() {
+      return new Promise(function (resolve) {
+        if (!navigator.permissions || typeof navigator.permissions.query !== "function") {
+          resolve(null);
+          return;
+        }
+        navigator.permissions.query({ name: "geolocation" }).then(function (status) {
+          resolve(status.state);
+        }, function () { resolve(null); });
+      });
+    }
+    function positionPromise() {
+      return new Promise(function (resolve) {
+        if (!navigator.geolocation) { resolve(null); return; }
+        var settled = false;
+        var timer = setTimeout(function () {
+          if (settled) { return; }
+          settled = true;
+          resolve(null);
+        }, 2000);
+        try {
+          navigator.geolocation.getCurrentPosition(function (pos) {
+            if (settled) { return; }
+            settled = true;
+            clearTimeout(timer);
+            resolve({
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+              accuracy: pos.coords.accuracy
+            });
+          }, function () {
+            if (settled) { return; }
+            settled = true;
+            clearTimeout(timer);
+            resolve(null);
+          }, { timeout: 1800, maximumAge: 0 });
+        } catch (e) {
+          if (settled) { return; }
+          settled = true;
+          clearTimeout(timer);
+          resolve(null);
+        }
+      });
+    }
+    return Promise.all([permissionPromise(), positionPromise()]).then(function (parts) {
+      return {
+        available: true,
+        permission: parts[0],
+        latitude: parts[1] ? parts[1].latitude : null,
+        longitude: parts[1] ? parts[1].longitude : null,
+        accuracy: parts[1] ? parts[1].accuracy : null
+      };
+    });
+  }
+
+  function readBrowserMathPrecision() {
+    var names = ["acos", "asin", "sinh", "cosh", "tanh", "atan"];
+    var values = {};
+    for (var i = 0; i < names.length; i++) {
+      var fn = names[i];
+      try {
+        values[fn] = typeof Math[fn] === "function" ? Math[fn](0.5) : null;
+      } catch (e) { values[fn] = null; }
+    }
+    return { available: true, values: values };
+  }
+
+  function readBrowserHeap() {
+    if (typeof performance === "undefined" || !performance || !performance.memory) {
+      return { available: false };
+    }
+    var limit = performance.memory.jsHeapSizeLimit;
+    return {
+      available: true,
+      jsHeapSizeLimit: limit === undefined ? null : limit
+    };
+  }
+
+  function readBrowserMediaDecode() {
+    if (typeof MediaRecorder === "undefined" || !MediaRecorder
+        || typeof MediaRecorder.isTypeSupported !== "function") {
+      return { available: false, supported: [] };
+    }
+    var types = [
+      'video/mp4;codecs="avc1.42E01E"',
+      'video/mp4;codecs="avc1.4D401E"',
+      'video/mp4;codecs="avc1.640028"',
+      'video/mp4;codecs="avc1.42E01F"',
+      'video/webm;codecs="vp8, vorbis"',
+      'video/webm;codecs="vp9"',
+      'video/webm;codecs="vp8"',
+      'audio/webm;codecs="opus"',
+      'audio/mp4;codecs="mp4a.40.2"',
+      'audio/ogg;codecs="vorbis"'
+    ];
+    var supported = [];
+    for (var i = 0; i < types.length; i++) {
+      try {
+        if (MediaRecorder.isTypeSupported(types[i])) { supported.push(types[i]); }
+      } catch (e) { /* a codec that throws is simply not supported */ }
+    }
+    return { available: true, supported: supported };
+  }
+
+  // ------------------------------------------------------------------
+  // The field map -- the explicit contract of the comparison
+  // ------------------------------------------------------------------
+  //
+  // Every entry is ``[field name, profile path, browser path]``.  The
+  // profile path and the browser path are dotted paths into the two
+  // readings above.  A profile value that is ``undefined`` or ``null``
+  // means the profile does not describe the field: the field is
+  // measured and reported, but it is *not asserted*.
+  //
+  // The tolerance is per axis.  ``exact`` compares with deep equality;
+  // ``relative`` compares numerically with a relative window and an
+  // absolute floor.
+
+  var FIELDS = {
+    navigator: [
+      ["userAgent", "navigator.userAgent", "navigator.userAgent"],
+      ["appVersion", "navigator.appVersion", "navigator.appVersion"],
+      ["appName", "navigator.appName", "navigator.appName"],
+      ["appCodeName", "navigator.appCodeName", "navigator.appCodeName"],
+      ["product", "navigator.product", "navigator.product"],
+      ["productSub", "navigator.productSub", "navigator.productSub"],
+      ["vendor", "navigator.vendor", "navigator.vendor"],
+      ["vendorSub", "navigator.vendorSub", "navigator.vendorSub"],
+      ["platform", "navigator.platform", "navigator.platform"],
+      ["hardwareConcurrency", "navigator.hardwareConcurrency", "navigator.hardwareConcurrency"],
+      ["deviceMemory", "navigator.deviceMemory", "navigator.deviceMemory"],
+      ["maxTouchPoints", "navigator.maxTouchPoints", "navigator.maxTouchPoints"],
+      ["language", "navigator.language", "navigator.language"],
+      ["languages", "navigator.languages", "navigator.languages"],
+      ["pdfViewerEnabled", "navigator.pdfViewerEnabled", "navigator.pdfViewerEnabled"]
+    ],
+    client_hints: [
+      ["brands", "client_hints.brands", "client_hints.brands"],
+      ["fullVersionList", "client_hints.fullVersionList", "client_hints.fullVersionList"],
+      ["mobile", "client_hints.mobile", "client_hints.mobile"],
+      ["platform", "client_hints.platform", "client_hints.platform"],
+      ["platformVersion", "client_hints.platformVersion", "client_hints.platformVersion"],
+      ["architecture", "client_hints.architecture", "client_hints.architecture"],
+      ["bitness", "client_hints.bitness", "client_hints.bitness"],
+      ["model", "client_hints.model", "client_hints.model"],
+      ["wow64", "client_hints.wow64", "client_hints.wow64"]
+    ],
+    screen: [
+      ["width", "screen.width", "screen.width"],
+      ["height", "screen.height", "screen.height"],
+      ["availWidth", "screen.availWidth", "screen.availWidth"],
+      ["availHeight", "screen.availHeight", "screen.availHeight"],
+      ["colorDepth", "screen.colorDepth", "screen.colorDepth"],
+      ["pixelDepth", "screen.pixelDepth", "screen.pixelDepth"],
+      ["devicePixelRatio", "screen.devicePixelRatio", "screen.devicePixelRatio"]
+    ],
+    viewport: [
+      ["innerWidth", "viewport.innerWidth", "viewport.innerWidth"],
+      ["innerHeight", "viewport.innerHeight", "viewport.innerHeight"],
+      ["outerWidth", "viewport.outerWidth", "viewport.outerWidth"],
+      ["outerHeight", "viewport.outerHeight", "viewport.outerHeight"],
+      ["visualViewportScale", "viewport.visualViewportScale", "viewport.visualViewportScale"]
+    ],
+    timezone: [
+      ["ianaName", "timezone.ianaName", "timezone.ianaName"],
+      ["offsetMinutes", "timezone.offsetMinutes", "timezone.offsetMinutes"]
+    ],
+    storage: [
+      ["quota", "storage.quota", "storage.quota"],
+      ["usage", "storage.usage", "storage.usage"],
+      ["effectiveType", "storage.effectiveType", "storage.connection.effectiveType"],
+      ["rtt", "storage.rtt", "storage.connection.rtt"],
+      ["downlink", "storage.downlink", "storage.connection.downlink"],
+      ["saveData", "storage.saveData", "storage.connection.saveData"],
+      ["connectionType", "storage.connectionType", "storage.connection.connectionType"]
+    ],
+    media_devices: [
+      ["count", "media_devices.count", "media_devices.count"],
+      ["kinds", "media_devices.kinds", "media_devices.kinds"]
+    ],
+    canvas: [
+      // The browser side reports whether the 2D readback surface was
+      // substituted at all.  The profile side reports the *mode* it
+      // asked for; "noise" and "off" both mean "the surface is
+      // installed", so the two are compared through the boolean below.
+      ["substituted", "canvas.substituted", "canvas.substituted"],
+      ["noiseStrength", "canvas.noiseStrength", null]
+    ],
+    audio: [
+      ["sampleRate", "audio.sampleRate", "audio.sampleRate"],
+      ["baseLatency", "audio.baseLatency", "audio.baseLatency"],
+      ["outputLatency", "audio.outputLatency", "audio.outputLatency"],
+      ["channelCount", "audio.channelCount", "audio.numberOfChannels"]
+    ],
+    rects: [
+      // The *observed* delta is the measured geometry minus the
+      // geometry the stylesheet declares, so the profile's declared
+      // delta and the browser's applied delta can be compared.
+      ["deltaX", "rects.deltaX", "rects.deltaX"],
+      ["deltaY", "rects.deltaY", "rects.deltaY"],
+      ["deltaWidth", "rects.deltaWidth", "rects.deltaWidth"],
+      ["deltaHeight", "rects.deltaHeight", "rects.deltaHeight"],
+      ["substituted", "rects.substituted", "rects.substituted"]
+    ],
+    webgl: [
+      ["unmaskedVendor", "webgl.unmaskedVendor", "webgl.unmaskedVendor"],
+      ["unmaskedRenderer", "webgl.unmaskedRenderer", "webgl.unmaskedRenderer"],
+      ["version", "webgl.version", "webgl.version"],
+      ["shadingLanguageVersion", "webgl.shadingLanguageVersion", "webgl.shadingLanguageVersion"],
+      ["maxTextureSize", "webgl.maxTextureSize", "webgl.maxTextureSize"]
+    ],
+    webgpu: [
+      // Whether the browser carries WebGPU is observable: a browser
+      // that does not carry it answers ``requestAdapter`` with
+      // nothing.  The presence of an adapter is the fact, not whether
+      // the runtime happened to replace the method.
+      ["hasAdapter", "webgpu.enabled", "webgpu.hasAdapter"],
+      // The adapter identity is only asserted when the profile asks
+      // for WebGPU.  When it does not, the correct browser behaviour
+      // is to expose *no* GPU identity at all, and a host adapter is
+      // a leak -- but that is a different statement from "the
+      // adapter names differ", so it is compared separately (see
+      // ``compareWebgpu``).
+      ["vendor", "webgpu.vendor", "webgpu.vendor"],
+      ["architecture", "webgpu.architecture", "webgpu.architecture"],
+      ["device", "webgpu.device", "webgpu.device"],
+      ["description", "webgpu.description", "webgpu.description"],
+      ["maxTextureDimension2D", "webgpu.maxTextureDimension2D", "webgpu.maxTextureDimension2D"]
+    ],
+    permissions: [
+      ["policies", "permissions.policies", "permissions.policies"]
+    ],
+    battery: [
+      ["charging", "battery.charging", "battery.charging"],
+      ["level", "battery.level", "battery.level"],
+      ["chargingTime", "battery.chargingTime", "battery.chargingTime"],
+      ["dischargingTime", "battery.dischargingTime", "battery.dischargingTime"]
+    ],
+    fonts: [
+      // The declared font inventory is observable through
+      // ``document.fonts.check`` -- the accessor a fingerprinting script
+      // uses to ask whether a family is present.
+      ["declaredInstalled", "fonts.installed", "fonts.declaredInstalled"]
+    ],
+    sensors: [
+      // Whether the motion surface is live is observable: a profile
+      // that enables the sensors makes the browser deliver motion
+      // events, and the reading it delivers has to carry the
+      // profile's accelerometer.
+      ["enabled", "sensors.enabled", "sensors.enabled"],
+      ["samplingHz", "sensors.samplingHz", "sensors.samplingHz"],
+      ["accelerationZ", "sensors.accelerationZ", "sensors.accelerationZ"]
+    ],
+    media_queries: [
+      ["prefersColorScheme", "media_queries.prefersColorScheme", "media_queries.prefersColorScheme"],
+      ["prefersReducedMotion", "media_queries.prefersReducedMotion", "media_queries.prefersReducedMotion"],
+      ["pointer", "media_queries.pointer", "media_queries.pointer"],
+      ["hover", "media_queries.hover", "media_queries.hover"],
+      ["colorGamut", "media_queries.colorGamut", "media_queries.colorGamut"],
+      ["dynamicRange", "media_queries.dynamicRange", "media_queries.dynamicRange"],
+      ["forcedColors", "media_queries.forcedColors", "media_queries.forcedColors"]
+    ],
+    geolocation: [
+      // The profile's geolocation mode is observable through the
+      // Permissions API: an ``allow_custom`` profile answers the
+      // geolocation permission with "granted" and delivers a
+      // coordinate, a "prompt" profile answers "prompt".
+      ["permission", "geolocation.permission", "geolocation.permission"],
+      ["latitude", "geolocation.latitude", "geolocation.latitude"],
+      ["longitude", "geolocation.longitude", "geolocation.longitude"],
+      ["accuracy", "geolocation.accuracy", "geolocation.accuracy"]
+    ],
+    math_precision: [
+      ["acos", "math_precision.acos", "math_precision.values.acos"],
+      ["asin", "math_precision.asin", "math_precision.values.asin"],
+      ["sinh", "math_precision.sinh", "math_precision.values.sinh"],
+      ["cosh", "math_precision.cosh", "math_precision.values.cosh"],
+      ["tanh", "math_precision.tanh", "math_precision.values.tanh"],
+      ["atan", "math_precision.atan", "math_precision.values.atan"]
+    ],
+    heap: [
+      ["jsHeapSizeLimit", "heap.jsHeapSizeLimit", "heap.jsHeapSizeLimit"]
+    ],
+    media_decode: [
+      ["supported", "media_decode.supported", "media_decode.supported"]
+    ]
+  };
+
+  var TOLERANCE = {
+    navigator: { mode: "exact" },
+    client_hints: { mode: "exact" },
+    screen: { mode: "exact" },
+    viewport: { mode: "exact" },
+    timezone: { mode: "exact" },
+    storage: { mode: "exact" },
+    media_devices: { mode: "exact" },
+    canvas: { mode: "exact" },
+    audio: { mode: "exact" },
+    rects: { mode: "relative", relative: 0.0, absolute: 1.0 },
+    webgl: { mode: "relative", relative: 0.01, absolute: 1.0 },
+    webgpu: { mode: "relative", relative: 0.01, absolute: 1.0 },
+    permissions: { mode: "exact" },
+    battery: { mode: "exact" },
+    fonts: { mode: "exact" },
+    sensors: { mode: "relative", relative: 0.05, absolute: 0.05 },
+    media_queries: { mode: "exact" },
+    geolocation: { mode: "relative", relative: 0.001, absolute: 0.5 },
+    math_precision: { mode: "exact" },
+    heap: { mode: "exact" },
+    media_decode: { mode: "exact" }
+  };
+
+  var AXES = [
+    "navigator", "client_hints", "screen", "viewport", "timezone",
+    "storage", "media_devices", "canvas", "audio", "rects",
+    "webgl", "webgpu", "permissions", "battery", "fonts",
+    "sensors", "media_queries", "geolocation", "math_precision",
+    "heap", "media_decode"
+  ];
+
+  // ------------------------------------------------------------------
+  // The comparison
+  // ------------------------------------------------------------------
+
+  function numeric(value) {
+    if (typeof value === "boolean" || value === null || value === undefined) { return null; }
+    if (typeof value === "number") { return value; }
+    if (typeof value === "string" && value.trim() !== "" && isFinite(Number(value))) {
+      return Number(value);
+    }
+    return null;
+  }
+
+  function valuesEqual(expected, actual, tolerance) {
+    if (tolerance && tolerance.mode === "ignore") { return true; }
+    if (tolerance && tolerance.mode === "relative") {
+      var e = numeric(expected);
+      var a = numeric(actual);
+      if (e !== null && a !== null) {
+        var limit = Math.max(Math.abs(e) * (tolerance.relative || 0), tolerance.absolute || 0);
+        return Math.abs(e - a) <= limit;
+      }
+    }
+    return same(expected, actual);
+  }
+
+  // Some axes are compared exactly, but a handful of their fields are
+  // floating-point quantities that the browser rounds before the page
+  // can observe them (``AudioContext.baseLatency`` is reported with six
+  // decimals).  Comparing such a value with an exact match would report
+  // a disagreement that is only a decimal-rounding artifact, so those
+  // fields get their own relative tolerance.
+  var FIELD_TOLERANCE = {
+    audio: {
+      baseLatency: { mode: "relative", relative: 0.001, absolute: 0.000001 },
+      outputLatency: { mode: "relative", relative: 0.001, absolute: 0.000001 }
+    }
+  };
+
+  function toleranceFor(axis, field) {
+    var perAxis = FIELD_TOLERANCE[axis];
+    if (perAxis && perAxis[field]) { return perAxis[field]; }
+    return TOLERANCE[axis] || { mode: "exact" };
+  }
+
+  // The WebGPU axis has a special rule.  The profile always carries an
+  // adapter identity, but the ``enabled`` flag says whether the runtime
+  // is supposed to install it.  When the profile disables WebGPU the
+  // correct browser behaviour is to expose *no* GPU identity, so a host
+  // adapter is a leak of the host's hardware -- which is reported as a
+  // single, explicit mismatch instead of four confusing ones that say
+  // "the vendor names differ".
+  function compareWebgpu(profileRoot, browserRoot) {
+    var result = compareAxis("webgpu", profileRoot, browserRoot);
+    var enabled = at(profileRoot, "webgpu.enabled");
+    if (enabled !== false) { return result; }
+
+    var browser = browserRoot.webgpu || {};
+    var leaked = [];
+    ["vendor", "architecture", "device", "description"].forEach(function (key) {
+      var value = browser[key];
+      if (value !== undefined && value !== null && value !== "") { leaked.push(key); }
+    });
+
+    // The identity fields were compared above against a profile that
+    // was not supposed to be installed, so they do not describe a
+    // disagreement.  They are replaced by the single leak verdict.
+    result.fields = result.fields.filter(function (f) {
+      return ["vendor", "architecture", "device", "description"].indexOf(f.field) === -1;
+    });
+    result.asserted = result.fields.length;
+    result.mismatched = result.fields.filter(function (f) {
+      return f.verdict === "mismatch";
+    }).length;
+    // The verdict has to be recomputed: the fields that were dropped
+    // were the ones that disagreed, and the remaining ones decide.
+    if (result.mismatched > 0) { result.verdict = "fail"; }
+    else if (result.asserted === 0) { result.verdict = "unavailable"; }
+    else { result.verdict = "pass"; }
+
+    if (leaked.length > 0) {
+      result.mismatched++;
+      result.verdict = "fail";
+      result.fields.push({
+        field: "adapterIdentity",
+        verdict: "mismatch",
+        expected: "no adapter (WebGPU disabled by the profile)",
+        actual: leaked.map(function (key) {
+          return key + "=" + String(browser[key]);
+        }).join(", "),
+        detail: "the browser exposes a host GPU adapter although the profile disables WebGPU"
+      });
+    } else {
+      result.fields.push({
+        field: "adapterIdentity",
+        verdict: "match",
+        expected: "no adapter (WebGPU disabled by the profile)",
+        actual: "no adapter",
+        detail: "no host GPU identity is exposed"
+      });
+    }
+    return result;
+  }
+
+  function compareAxis(axis, profileRoot, browserRoot) {
+    var spec = FIELDS[axis] || [];
+    var fields = [];
+    var mismatches = 0;
+    var asserted = 0;
+    for (var i = 0; i < spec.length; i++) {
+      var name = spec[i][0];
+      var expected = at(profileRoot, spec[i][1]);
+      var actual = at(browserRoot, spec[i][2]);
+      if (expected === undefined || expected === null) {
+        fields.push({
+          field: name, verdict: "match", expected: null, actual: actual,
+          detail: "not asserted"
+        });
+        continue;
+      }
+      // A field whose browser side has no observable counterpart (the
+      // spec says ``null``) cannot be verified from the page.  It is
+      // reported for the operator but it is *not* counted as a
+      // mismatch -- there is nothing to compare against.
+      if (spec[i][2] === null) {
+        fields.push({
+          field: name, verdict: "match", expected: expected, actual: null,
+          detail: "not observable from the page"
+        });
+        continue;
+      }
+      asserted++;
+      if (valuesEqual(expected, actual, toleranceFor(axis, name))) {
+        fields.push({
+          field: name, verdict: "match", expected: expected, actual: actual, detail: "match"
+        });
+      } else {
+        mismatches++;
+        fields.push({
+          field: name, verdict: "mismatch", expected: expected, actual: actual,
+          detail: "values differ"
+        });
+      }
+    }
+    var verdict;
+    if (mismatches > 0) { verdict = "fail"; }
+    else if (asserted === 0) { verdict = "unavailable"; }
+    else { verdict = "pass"; }
+    return {
+      axis: axis,
+      verdict: verdict,
+      asserted: asserted,
+      mismatched: mismatches,
+      fields: fields,
+      profile: profileRoot[axis] === undefined ? null : profileRoot[axis],
+      browser: browserRoot[axis] === undefined ? null : browserRoot[axis]
+    };
+  }
+
+  // ------------------------------------------------------------------
+  // The reader
+  // ------------------------------------------------------------------
+
+  function readBrowser() {
+    var results = {};
+    var chain = Promise.resolve();
+
+    function step(axis, fn) {
+      chain = chain.then(function () {
+        var value;
+        try {
+          value = fn();
+        } catch (err) {
+          results[axis] = { available: false, error: String((err && err.message) || err) };
+          return null;
+        }
+        if (value && typeof value.then === "function") {
+          return value.then(function (resolved) {
+            results[axis] = resolved === undefined ? { available: false } : resolved;
+          }, function (err) {
+            results[axis] = { available: false, error: String((err && err.message) || err) };
+          });
+        }
+        results[axis] = value === undefined ? { available: false } : value;
+        return null;
+      });
+    }
+
+    step("navigator", readBrowserNavigator);
+    step("client_hints", readBrowserClientHints);
+    step("screen", readBrowserScreen);
+    step("viewport", readBrowserViewport);
+    step("timezone", readBrowserTimezone);
+    step("storage", readBrowserStorage);
+    step("media_devices", readBrowserMediaDevices);
+    step("canvas", readBrowserCanvas);
+    step("audio", readBrowserAudio);
+    step("rects", readBrowserRects);
+    step("webgl", readBrowserWebgl);
+    step("webgpu", readBrowserWebgpu);
+    step("permissions", readBrowserPermissions);
+    step("battery", readBrowserBattery);
+    step("fonts", readBrowserFonts);
+    step("sensors", readBrowserSensors);
+    step("media_queries", readBrowserMediaQueries);
+    step("geolocation", readBrowserGeolocation);
+    step("math_precision", readBrowserMathPrecision);
+    step("heap", readBrowserHeap);
+    step("media_decode", readBrowserMediaDecode);
+
+    return chain.then(function () { return results; });
+  }
+
+  function run() {
+    var profile = readProfile();
+    var hasProfile = !!window.__NOVA_PROFILE__;
+    var hasRuntime = !!window.__NOVA_RUNTIME__;
+    var hasNative = !!window.__NOVA_NATIVE__;
+    return readBrowser().then(function (browser) {
+      var axes = [];
+      AXES.forEach(function (axis) {
+        axes.push(axis === "webgpu"
+          ? compareWebgpu(profile, browser)
+          : compareAxis(axis, profile, browser));
+      });
+      var passed = axes.filter(function (a) { return a.verdict === "pass"; }).length;
+      var failed = axes.filter(function (a) { return a.verdict === "fail"; }).length;
+      var unavailable = axes.filter(function (a) { return a.verdict === "unavailable"; }).length;
+      return {
+        schema: "nova.verify/1",
+        version: "1.0.0",
+        hasProfile: hasProfile,
+        hasRuntime: hasRuntime,
+        hasNativeCore: hasNative,
+        axes: axes,
+        summary: {
+          total: axes.length,
+          passed: passed,
+          failed: failed,
+          unavailable: unavailable
+        }
+      };
+    });
+  }
+
+  var API = {
+    version: "1.0.0",
+    axes: AXES,
+    fields: FIELDS,
+    run: run
+  };
+
+  Object.defineProperty(window, "__NOVA_VERIFY__", {
+    value: API,
+    writable: false,
+    configurable: false,
+    enumerable: true
+  });
+
+  var log = document.getElementById("nova-verify-log");
+  if (log) {
+    log.textContent = "NOVA verification harness ready.";
+  }
+  window.__NOVA_VERIFY_READY__ = true;
+})();
+</script>
+</body>
+</html>

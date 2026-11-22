@@ -986,6 +986,73 @@ SDK_BY_RELEASE: dict[str, int] = {
 
 _ANDROID_VERSION = re.compile(r"Android\s+(\d{1,2})(?:\.\d+)?", re.IGNORECASE)
 
+#: The operating systems a record may name that are *not* Android.
+#:
+#: The dataset the market catalogue is built from carries every handset
+#: that is sold in the Vietnamese market, and some of them are not
+#: Android phones: the iPhone and the iPad run iOS and iPadOS, the
+#: watch runs watchOS, and a handful of the older feature phones run
+#: KaiOS or a proprietary system.
+#:
+#: A record that names one of these cannot become an Android preset.
+#: The engine builds an *Android* profile: the User-Agent says Android,
+#: the WebView is the Android one, and the whole surface set is the
+#: Android surface set.  An iPhone placed on "Android 13" produces a
+#: profile that no device can be, and the market catalogue would then
+#: hold seventy-nine of them.
+#:
+#: The list is deliberately about the *platform* and not about the
+#: brand: an Apple handset that ran Android is a different thing, and
+#: its record says "Android" in the operating system text.
+_NON_ANDROID_PLATFORMS: tuple[str, ...] = (
+    "iOS",
+    "iPadOS",
+    "watchOS",
+    "tvOS",
+    "macOS",
+    "KaiOS",
+    "KaiOS",
+    "HarmonyOS",
+    "Windows Phone",
+    "BlackBerry OS",
+    "Symbian",
+    "Bada",
+    "Firefox OS",
+    "Tizen",
+    "Sailfish OS",
+    "Palm OS",
+    "webOS",
+    "MeeGo",
+    "Maemo",
+    "Bada OS",
+)
+
+#: The operating system texts that name an Android release.
+_ANDROID_OS_MARKER = re.compile(r"\bAndroid\b", re.IGNORECASE)
+
+
+def _record_runs_android(os_text: str) -> bool:
+    """Whether the operating system text names an Android release.
+
+    A record whose text names a *different* platform is not an Android
+    device, and the catalogue skips it.  A record whose text names
+    nothing at all -- a bare model name with no operating system on it
+    -- is treated as an Android device, because the dataset holds
+    Android handsets whose sheet does not repeat the platform, and
+    dropping them would empty parts of the fleet.
+    """
+
+    text = (os_text or "").strip()
+    if not text:
+        return True
+    lowered = text.lower()
+    for platform in _NON_ANDROID_PLATFORMS:
+        if lowered.startswith(platform.lower()):
+            return False
+    # The text names a platform this list does not know, and it is not
+    # Android either: the record is not an Android device.
+    return bool(_ANDROID_OS_MARKER.search(text))
+
 #: The release a handset of a given year shipped with.
 RELEASE_BY_YEAR: tuple[tuple[int, str], ...] = (
     (2025, "15"),
@@ -1523,10 +1590,18 @@ def _record_is_usable(record: dict) -> bool:
 
     A record without a chipset, without a GPU or without a resolution is
     dropped rather than guessed at.
+
+    A record that runs something other than Android is dropped as
+    well.  The dataset holds every handset sold in the Vietnamese
+    market, and the iPhone, the iPad and the watch are not Android
+    devices; placing them on an Android release would put a profile in
+    the fleet that describes a device that cannot exist.
     """
 
     fields = _record_fields(record)
-    return bool(fields["chipset"] and fields["gpu_renderer"] and fields["resolution"])
+    if not (fields["chipset"] and fields["gpu_renderer"] and fields["resolution"]):
+        return False
+    return _record_runs_android(fields["os_text"])
 
 
 # --------------------------------------------------------------------------
@@ -1553,6 +1628,11 @@ def build_local_preset(record: dict, ram_options: tuple[int, ...] | None = None)
         raise ValueError(
             f"{fields['source_id']!r} lacks the chipset, the GPU or the resolution "
             "and cannot become a coherent preset"
+        )
+    if not _record_runs_android(fields["os_text"]):
+        raise ValueError(
+            f"{fields['source_id']!r} runs {fields['os_text']!r} and is not an "
+            "Android device, so it cannot become an Android preset"
         )
     if not _pairing_is_possible(fields["chipset"], fields["gpu_renderer"]):
         raise ValueError(

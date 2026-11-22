@@ -1,167 +1,242 @@
-# Khảo sát cơ chế chống bot của sáu trang đăng ký
+# Survey of anti-bot mechanisms on six registration sites
 
-Tài liệu này ghi lại những gì đo được trên sáu trang đăng ký mà
-NOVA PROFILE nhắm tới. Mọi thứ trong đây là quan sát, không phải suy
-đoán: mỗi mục đều kèm theo nơi lấy ra.
+This document records what was measured on the six registration sites NOVA
+PROFILE targets. Everything here is an observation, not a guess: every entry
+carries the place it was taken from.
 
-Bảng tổng hợp:
+## Verification pass — 2026-11-22
 
-| Trang | Nền tảng | CDN | Fingerprint | Điểm rủi ro thiết bị |
-|---|---|---|---|---|
-| `m.ssc8111.vip` | Lobby (Cocos) | CloudFront | FingerprintJS (public key) + Geetest | `lobby@device@score@v2` |
-| `c168j.vip` | Lobby (Cocos) | Cloudflare | Cùng bộ với SC88 | Cùng bộ với SC88 |
-| `yaccm8h.cc` | Lobby (Cocos) | Aliyun | Cùng bộ với SC88 | Cùng bộ với SC88 |
-| `8jjunsyj.cc` | Vue tự dựng | Cloudflare | Cloudflare Bot Management | Không có điểm thiết bị |
-| `linkantoan.vip` | Không mở được | Cloudflare | Cloudflare WAF | Không đo được |
-| `oon6a1.ink` | WPS/uni-app | Cloudflare | **ThumbmarkJS** + `encrypt.js` | `SHELL_deviceId` |
+Every claim in this document was re-measured on **2026-11-22** (14:35–15:05
+UTC+7). Each row in the tables below carries a verification marker:
 
-### Số đo được trên mã trang
-
-Ba bảng dưới đây là số lần gọi API trình duyệt đếm được trong các
-tệp tập lệnh của từng trang. Chúng là số đo, không phải ước lượng;
-tệp đo nằm ở `.dataset_probe/survey/`.
-
-`m.ssc8111.vip` — 9 bề mặt:
-
-| Bề mặt | Số lần |
+| Marker | Meaning |
 |---|---|
-| `user_agent` | 8 |
-| `screen_size` | 5 |
-| `function_source` | 4 |
-| `max_touch_points` | 3 |
-| `inner_size` | 4 |
-| `local_storage` | 4 |
-| `session_storage` | 1 |
-| `pixel_ratio` | 1 |
-| `canvas_2d` | 1 |
+| ✅ | Claim re-confirmed; the cited evidence was observed again |
+| ❌ | Claim is wrong or outdated; the corrected value is given |
+| ⚠️ | Could not be verified from this machine |
 
-`oon6a1.ink` — 19 bề mặt, nhiều gấp bốn lần:
+### How the verification was done
 
-| Bề mặt | Số lần | | Bề mặt | Số lần |
+Two independent channels were used, because neither alone is sufficient:
+
+* **Browser** (`cursor-ide-browser`): `browser_navigate` to each URL, then
+  `browser_snapshot` / `browser_take_screenshot` to read the rendered DOM.
+  `browser_cdp` (`Runtime.evaluate`) was **broken for the whole session** —
+  every call returned `Error invoking remote method
+  'vscode:webviewSendCDPCommand': Error: Invalid parameters`, for every tab,
+  every method, including `DOM.getDocument` and a trivial `Runtime.evaluate`
+  with `expression: "1+1"` on a fresh `about:blank` tab. This is a tool-side
+  failure, not a page-side one.
+* **Direct HTTP** (Python `urllib` from the shell): full page HTML, response
+  headers, and every referenced JavaScript bundle fetched and grepped.
+
+The second channel was the one that produced most of the evidence below,
+because it reaches the bundles and the headers that the rendered DOM does
+not expose. Anything that could only be observed in the live DOM (the
+Lobby register form, the linkantoan front page, the Jun88 home page) is
+marked as such.
+
+Two measurement notes that matter for reading the counts:
+
+* The three Lobby sites serve **gzip-compressed** HTML. A naive fetch that
+  does not decompress returns a ~49 KB binary blob for `yaccm8h.cc` and
+  finds nothing. All counts below are from decompressed bodies.
+* `c168j.vip` and `yaccm8h.cc` return different bundle hashes than
+  `m.ssc8111.vip`, but the browser-API surface counts inside them are
+  identical (see §1.2).
+
+## Summary table
+
+| Site | Platform | CDN (verified) | Fingerprint | Device-risk signal |
 |---|---|---|---|---|
-| `session_storage` | 326 | | `canvas_2d` | 24 |
-| `local_storage` | 166 | | `error_stack` | 24 |
-| `user_agent` | 49 | | `to_data_url` | 17 |
-| `function_source` | 86 | | `indexed_db` | 14 |
-| `inner_size` | 26 | | `performance_timing` | 6 |
-| `cookie` | 19 | | `pixel_ratio` | 5 |
-| `platform` | 4 | | `avail_size` | 2 |
-| `user_agent_data` | 4 | | `canvas_webgl` | 2 |
-| `max_touch_points` | 7 | | `screen_size` | 1 |
-| `fonts` | 1 | | | |
+| `m.ssc8111.vip` | Lobby (Cocos) | AWS CloudFront (`3.162.58.x`) + Aliyun OSS | FingerprintJS (server-side) + Geetest | `lobby@device@score@v2` |
+| `c168j.vip` | Lobby (Cocos) | Cloudflare (`104.18.26.248`) | same set as SC88 | same as SC88 |
+| `yaccm8h.cc` | Lobby (Cocos) | Alibaba CDN / Tengine (`107.155.62.x`) | same set as SC88 | same as SC88 |
+| `8jjunsyj.cc` | Vue SPA (`vi5prod`-style) | Cloudflare (`104.21.15.157`) | Cloudflare Web Analytics only | none |
+| `linkantoan.vip` | Vue SPA (78win) | Cloudflare (`104.18.4.14`) | Cloudflare Web Analytics only | none |
+| `oon6a1.ink` | WPS / uni-app | Cloudflare (`104.21.19.149`) | **ThumbmarkJS + ClientJS** + `encrypt.js` | `SHELL_deviceId` |
 
-`8jjunsyj.cc` — 11 bề mặt:
+### Corrections to the previous summary table
 
-| Bề mặt | Số lần | | Bề mặt | Số lần |
-|---|---|---|---|---|
-| `function_source` | 30 | | `cookie` | 3 |
-| `user_agent` | 15 | | `canvas_2d` | 2 |
-| `error_stack` | 14 | | `to_data_url` | 2 |
-| `inner_size` | 5 | | `session_storage` | 2 |
-| `local_storage` | 5 | | `performance_timing` | 4 |
-| `user_agent_data` | 4 | | | |
+| Column | Was | Now | Why |
+|---|---|---|---|
+| `m.ssc8111.vip` CDN | CloudFront | ✅ CloudFront, **plus Aliyun OSS** for the API bucket | `Server: AliyunOSS`, `x-oss-request-id` header; DNS `3.162.58.x` is AWS CloudFront. Both are used. |
+| `c168j.vip` CDN | Cloudflare | ✅ Cloudflare | `Server: cloudflare`; DNS `104.18.26.248`. It also references the asset host `pubsgppp.c1oudfront.com`, but that is an asset CDN, not the page host. |
+| `yaccm8h.cc` CDN | Aliyun | ✅ Alibaba CDN | `Server: Tengine`, `Ali-Swift-Global-Savetime`, `x-oss-*` headers; DNS `107.155.62.x`. The label "Aliyun" was right in substance. |
+| `linkantoan.vip` | "Cannot be opened" | ❌ **Opens fine in a browser** | The front page loads and renders (branded *78win*). Only non-browser TLS clients fail. See §4. |
+| `8jjunsyj.cc` fingerprint | "Cloudflare Bot Management" | ⚠️ **Correct at the network layer, not verifiable from the page** | The page loads only the Cloudflare analytics beacon. Bot Management is a network-layer product and leaves no marker in the HTML. |
+| `oon6a1.ink` fingerprint | "ThumbmarkJS + `encrypt.js`" | ❌ **ThumbmarkJS + ClientJS + `encrypt.js`** | ClientJS 0.2.1 is loaded as a failover with two CDN mirrors. See §2.2. |
 
-Điểm đáng chú ý nhất trong ba bảng trên là `function_source`: 4 lần ở
-SC88, 30 lần ở Jun88 và **86 lần** ở ON68. Đây là dấu vân tay của
-`fn.toString()`, và nó xuất hiện nhiều nhất ở đúng trang dùng
-ThumbmarkJS.
+---
 
-## 1. Nhóm Lobby: SC88, c168j, yaccm8h
+## 1. Lobby group: SC88, C168, CM88
 
-Ba trang này chạy cùng một ứng dụng, nên cơ chế của chúng giống
-nhau và đo được trên cả ba.
+All three sites run the same application, so the mechanisms are the same and
+were measured on all three.
 
-### 1.1 Trường đăng ký
+### 1.1 Registration form
+
+✅ Re-confirmed on **2026-11-22** from the live DOM of `m.ssc8111.vip`
+(`browser_snapshot`, tab `fe63b0`), and confirmed byte-identical in the HTML
+of `c168j.vip` and `yaccm8h.cc`.
 
 ```
 Tài khoản            (placeholder: "Nhập Tên tài khoản")
 Mật khẩu             (placeholder: "Nhập mật khẩu")
 Họ và tên thật        (placeholder: "Vui lòng nhập Họ và Tên thật của bạn")
-[X] Tôi trên 18 tuổi, đã đọc và đồng ý với Thỏa thuận đăng ký người dùng
+[X] Tôi trên 18 tuổi, đã đọc và đồng ý với 《 Thỏa thuận đăng ký người dùng
 ```
 
-Không có trường email hay số điện thoại. Có Google Sign-In và
-Facebook (app id `SC88.COM`) làm đường đăng nhập thứ ba. Có một
-trường `cpfValidateType` với giá trị `2`, và một trường
-`inviter_code_required` bằng `0`, nên mã giới thiệu là tuỳ chọn.
+There are exactly three text inputs and two checkboxes. Every `<input>`
+carries **`type="text"` even for the password field** — the password box is
+`type="text"`, not `type="password"`. All inputs have `class="ui-input__input"`
+or `class="ui-checkbox__input"`, and **no `name` and no `id` attributes at
+all**:
 
-### 1.2 FingerprintJS
-
-Trong cấu hình trang có:
-
-```json
-"fingerprintJS": { "publicKey": "cIMrDd2qJKZFByajXD7O" }
+```html
+<input type="checkbox" class="ui-checkbox__input">
+<input type="text" class="ui-input__input" placeholder="Nhập Tên tài khoản">
+<input type="text" class="ui-input__input" placeholder="Nhập mật khẩu">
+<input type="text" class="ui-input__input" placeholder="Vui lòng nhập Họ và Tên thật của bạn">
+<input type="checkbox" class="ui-checkbox__input">
 ```
 
-Đây là FingerprintJS mã nguồn mở, dùng khóa công khai để mã hoá
-kết quả trước khi gửi. Nó đọc: canvas, WebGL, audio, fonts, màn
-hình, CPU, bộ nhớ, timezone, plugins.
+This is worth flagging for NOVA: because there is no `name`/`id`, a
+fill strategy cannot key off DOM attributes. It has to key off the
+placeholder or the DOM order.
 
-#### Kiểm chứng lại: cùng một khóa trên cả ba trang
+The API that receives the registration is `POST /api/member/register`, and
+the pre-check is `POST /api/member/check/register`. Both were located in
+`chunk-closure-startup.js`:
 
-Đo lại trực tiếp ngày 2026-11-22 trên ba trang, mỗi trang trả về
-đúng một khóa:
-
-| Trang | `fingerprintJS.publicKey` |
-|---|---|
-| `m.ssc8111.vip` | `cIMrDd2qJKZFByajXD7O` |
-| `c168j.vip` | `cIMrDd2qJKZFByajXD7O` |
-| `yaccm8h.cc` | `cIMrDd2qJKZFByajXD7O` |
-
-Cả ba cùng một khóa, nên cả ba cùng một tenant FingerprintJS Pro.
-Hệ quả thực tế: **một profile NOVA đăng ký trên một trang sẽ bị
-nhận diện là cùng khách trên hai trang còn lại**, vì visitor ID
-được tính bằng khóa đó và gửi kèm mọi lần đăng ký. Đây là điểm
-cần biết khi quyết định dùng chung hay tách profile theo từng
-trang. Với profile dùng cho một trang duy nhất thì không sao; với
-profile dùng chung thì cần biết sự liên kết này tồn tại.
-
-Không có `fingerId` trong `localStorage` ở tầng này — FingerprintJS
-được gọi ở phía server sau khi biểu mẫu gửi, không phải ngay lúc
-tải trang.
-
-### 1.3 Geetest
-
-```json
-"geetest_captcha_id": {
-    "register": "62c528ead784206de7e6db17765b9ac0",
-    "login":    "62c528ead784206de7e6db17765b9ac0",
-    "recharge": "62c528ead784206de7e6db17765b9ac0",
-    "force_geetest": "62c528ead784206de7e6db17765b9ac0"
+```javascript
+nL = '/api/member/register',
+rL = (e, t) => {
+  let { systemInfos: n } = Z();
+  return J.request({ ...e, url: nL, method: 'post',
+    data: { ...R0().isP2aParamsByChannel, ...Y().userLoginBasePayload,
+             token: n?.token, version: 9, ...e.data } }, ...);
 }
 ```
 
-`force_geetest` bằng `register` nghĩa là trang đăng ký **luôn**
-bắt Geetest, không phải khi nghi ngờ. Geetest đọc chuỗi hành vi
-(chuột, gõ, chuyển động) và gửi lại kèm `lot_number` cùng
-`captcha_output` đã mã hoá.
+`version: 9` is sent on every registration.
 
-### 1.4 Điểm rủi ro thiết bị
+### 1.2 One build, three domains — and one FingerprintJS tenant
 
-Đây là phần đáng chú ý nhất, vì nó là cơ chế **chấm điểm** chứ không
-phải chỉ thu thập. Trong `localStorage`:
+✅ Re-confirmed on **2026-11-22**. All three pages carry the same
+configuration blob, and all three carry the **same FingerprintJS public
+key**:
+
+| Site | `fingerprintJS.publicKey` | `render-init` | Result |
+|---|---|---|---|
+| `m.ssc8111.vip` | `cIMrDd2qJKZFByajXD7O` | `v7.6.9` | ✅ |
+| `c168j.vip` | `cIMrDd2qJKZFByajXD7O` | `v7.6.9` | ✅ |
+| `yaccm8h.cc` | `cIMrDd2qJKZFByajXD7O` | `v7.6.9` | ✅ |
+
+The three pages have different lengths (184041 / 183425 / 206998 bytes),
+because each embeds its own brand, phone list, banner and jackpot data.
+
+All three also carry the same Geetest captcha id for every flow
+(✅ confirmed, identical string on all three):
+
+```json
+"geetest_captcha_id": {
+    "feedback":      "62c528ead784206de7e6db17765b9ac0",
+    "force_geetest": "62c528ead784206de7e6db17765b9ac0",
+    "login":         "62c528ead784206de7e6db17765b9ac0",
+    "recharge":      "62c528ead784206de7e6db17765b9ac0",
+    "register":      "62c528ead784206de7e6db17765b9ac0"
+}
+```
+
+`force_geetest` equals `register`, so registration **always** shows a
+Geetest challenge rather than only on suspicion.
+
+#### The bundle counts are identical across the three sites
+
+✅ Measured on **2026-11-22** by fetching each site's own startup chunk and
+grepping it. The three use different content hashes
+(`CUpFIxPM` / `DTb7eq1w` / `Dzm0__Ey`) but the browser-API surface counts
+are **byte-for-byte identical**, which is strong evidence they are the same
+build:
+
+| Surface | SC88 | C168 | CM88 |
+|---|---|---|---|
+| `navigator.userAgent` | 16 | 16 | 16 |
+| `userAgentData` | 4 | 4 | 4 |
+| `navigator.platform` | 1 | 1 | 1 |
+| `hardwareConcurrency` | 2 | 2 | 2 |
+| `maxTouchPoints` | 7 | 7 | 7 |
+| `screen.width` | 3 | 3 | 3 |
+| `screen.availWidth` | 1 | 1 | 1 |
+| `screen.colorDepth` | 1 | 1 | 1 |
+| `devicePixelRatio` | 1 | 1 | 1 |
+| `window.innerWidth` | 8 | 8 | 8 |
+| `getParameter` (WebGL) | 1 | 1 | 1 |
+| `getTimezoneOffset` | 5 | 5 | 5 |
+| `permissions.query` | 1 | 1 | 1 |
+| `indexedDB` | 4 | 4 | 4 |
+| `navigator.connection` | 4 | 4 | 4 |
+| `mimeTypes` | 2 | 2 | 2 |
+| `localStorage` | 103 | 103 | 103 |
+| `sessionStorage` | 25 | 23 | 23 |
+| `document.cookie` | 10 | 10 | 10 |
+| `performance.now` | 12 | 12 | 12 |
+
+Startup chunk sizes: 1579637 / 1508959 / 1508513 bytes.
+
+### 1.3 FingerprintJS is server-side — the library is never shipped
+
+✅ **Confirmed, and this is the most important correction in the Lobby
+section.** The survey's claim "FingerprintJS is called on the server after
+the form is submitted, not at page load" is correct, and it is now
+mechanically proven rather than inferred:
+
+* The string `fingerprintJS` appears **0 times** in
+  `chunk-closure-startup.CUpFIxPM.js` (1579637 bytes), and `FingerprintJS`,
+  `fingerprintjs`, `@fingerprintjs/fingerprintjs` and `fpjs` also appear
+  **0 times**. There is no FingerprintJS bundle on the page at all.
+* The key lives only in the server-rendered config: `fingerprintJS:{publicKey:"cIMrDd2qJKZFByajXD7O"}`.
+* The client calls two endpoints for it, both found in the startup chunk:
+  `/api/member/getFingerprint` and `/api/member/noauth/getFingerprint`.
+* `fingerId` is populated from the **server response**, not computed locally:
+
+```javascript
+getToken: async () => {
+  let t = await CR.getToken();
+  let [r, i] = await kE(yDe(t.token));
+  let a = (i?.data.data || {}).fingerprint;
+  if (a && n.userInfos) return n.fingerId = a, n.userInfos.deviceFingerprint = a, a;
+}
+```
+
+The client therefore never sees a raw FingerprintJS hash. Whatever the
+server computes from the request is what becomes `fingerId`.
+
+⚠️ Neither `getFingerprint` endpoint could be reached directly from this
+machine (they return `404` from the static host and `405 MethodNotAllowed`
+from the OSS bucket, because the API gateway requires the browser's exact
+request shape). The endpoints are named and referenced from the bundle; the
+payload could not be captured.
+
+### 1.4 The device-risk score — and where it is really computed
+
+✅ Re-confirmed on **2026-11-22**, with **three corrections** to the
+previous description.
+
+The stored object is exactly as previously recorded:
 
 ```json
 {
-  "lobby@device@score@v2": {
-    "version": "2.4.2",
-    "result": {
-      "score": 90,
-      "tier": "HIGH",
-      "confidence": "mid",
-      "proposed": {
-        "score": 90, "tier": "HIGH",
-        "earlyReturn": true,
-        "source": "pc-fast-path",
-        "reasons": ["pc-desktop"]
-      }
-    },
+  "version": "2.4.2",
+  "result": {
+    "score": 90, "tier": "HIGH", "confidence": "mid",
+    "proposed": { "score": 90, "tier": "HIGH", "earlyReturn": true,
+                  "source": "pc-fast-path", "reasons": ["pc-desktop"] },
     "details": {
       "gpu": {
         "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 5060 Ti (0x00002D04) Direct3D11 vs_5_0 ps_5_0, D3D11)",
-        "confidence": "none",
-        "rendererConfidence": "none",
-        "mapVersion": "1.0.3"
+        "confidence": "none", "rendererConfidence": "none", "mapVersion": "1.0.3"
       }
     },
     "dimensionScores": {},
@@ -171,54 +246,346 @@ phải chỉ thu thập. Trong `localStorage`:
 }
 ```
 
-Bốn trục chấm điểm, với trọng số:
-
-| Trục | Trọng số | Nguồn |
-|---|---|---|
-| `memory` | 0.5 | `navigator.deviceMemory` |
-| `sort` | 0.2 | `navigator.hardwareConcurrency` |
-| `cpu` | 0.2 | Kiến trúc CPU, số nhân |
-| `image` | 0.1 | GPU, canvas |
-
-Giá trị cũ (bản 1) được giữ ở `lobby@device@score@detail`:
-
-```json
-{ "score": 100, "details": { "cpu": 100, "memory": 100 } }
-```
-
-Vài điểm cần ghi nhớ:
-
-* `earlyReturn` và `source: "pc-fast-path"` nghĩa là khi nhận ra là
-  máy tính, hệ thống **thoát sớm** và cho điểm 90 mà không tính
-  `dimensionScores` (rỗng). Với một profile giả lập điện thoại, đường
-  này không dùng được, và hệ thống sẽ tính đủ bốn trục.
-* `gpu.renderer` được đối chiếu với một bản đồ (`mapVersion:
-  "1.0.3"`) để suy ra thiết bị thật. `confidence` và
-  `rendererConfidence` đều là `"none"` khi bản đồ không nhận ra.
-* Điểm `tier` có ba bậc. `HIGH` là bậc cao nhất.
-
-### 1.5 Nhận diện thiết bị
-
-`LobbyDeviceCompatibility` kiểm tra bốn trục cùng lúc, và trục nào
-cũng phải khớp:
+**Correction 1 — the scoring module does exist in the browser.** The
+previous survey could not find it and inferred the score was purely
+server-side. It is not. The score is computed client-side in a
+separately loaded chunk that the main chunk pulls in through a dynamic
+import:
 
 ```javascript
-e.userAgent.test(navigator.userAgent)
-  && navigator.maxTouchPoints >= e.minTouchPoints
-  && window.innerWidth === e.viewportWidth
-  && window.screen.width === e.screenWidth
-  && window.screen.height >= e.screenHeight.min
-  && window.screen.height <= e.screenHeight.max
+import(/* @vite-ignore */ __lobbyRetryUrl
+      ? __lobbyRetryUrl
+      : import('./optimized-chunk-device-score.DVbwnoFr.js'))
 ```
 
-Danh sách trắng chỉ có iPhone Duo (iOS chạy trong cửa sổ trên
-iPad). Nhưng cơ chế kiểm tra này áp dụng cho mọi thiết bị, kể cả
-khi không có mục nào trong danh sách.
+That chunk exists and is 23548 bytes. It contains the `pc-fast-path`
+function verbatim:
 
-`detectDeviceType` phân biệt máy tính, máy tính bảng và điện thoại
-bằng UA, `maxTouchPoints` và `screen.height > screen.width`.
+```javascript
+function xe({ isPc: e, details: t, weights: n }) {
+  if (!e) return null;
+  let r = 'HIGH';
+  return { score: 90, tier: r, confidence: 'mid',
+    proposed: { score: 90, tier: r, earlyReturn: true,
+                source: 'pc-fast-path', reasons: ['pc-desktop'] },
+    details: t, dimensionScores: {}, weights: n,
+    capsApplied: ['pc-fast-path→90'] };
+}
+```
 
-### 1.6 Định danh khách
+and it writes the result:
+
+```javascript
+window.localStorage.setItem(p, JSON.stringify({ version: y, result: n }))
+```
+
+**Correction 2 — there are three fast paths, not one.** The survey
+described only `pc-fast-path`. The module actually implements three
+mutually exclusive short-circuits, checked in this order:
+
+| Order | `source` | Trigger | Score |
+|---|---|---|---|
+| 1 | `market-low-model` | UA `model` matches the known-low-model list | 35 (`LOW`) |
+| 2 | `android-hardware-fast-path` | Android + GPU tier + RAM heuristics | 35 / 69 / 90 |
+| 3 | `pc-fast-path` | Desktop UA (`Windows NT`, `Macintosh`, `CrOS`, `X11`) | 90 (`HIGH`) |
+
+The Android path has its own sub-branches, quoted from the chunk:
+
+```javascript
+if (t.tier === 'LOW' && Y(t) && r != null)       o = 35, s = 'LOW',  c = ['low-gpu(...)']
+else if (r != null && r <= 2)                      o = 35, s = 'LOW',  c = ['low-memory(${r}GB<=2)']
+else if (ve(t, r))                                 o = 35, s = 'LOW',  c = ['low-edge-gpu-low-ram(adreno-619,${r}GB<=4GB)']
+else if (t.tier === 'MID' && Y(t))                 o = 69, s = 'MID',  c = ['mid-gpu(...)']
+else if (t.tier === 'HIGH' && Y(t))                o = 90, s = 'HIGH', c = ['high-gpu(...)']
+```
+
+`ve()` requires `confidence === 'high' && rendererConfidence === 'exact' &&
+matchedKey === 'adreno-619'` plus `deviceMemory <= 4`. So the GPU renderer
+string must map to a *known* key for the fast path to fire; an unmapped
+renderer (`confidence: "none"`) falls through to the full four-axis
+scoring. **For NOVA this means an unmapped, synthetic GPU renderer is not
+a neutral choice — it forces the slow path, where all four axes are
+computed and compared.**
+
+**Correction 3 — the tier bands are five, not three.** The previous survey
+said "three tiers". The chunk defines five:
+
+```javascript
+vk = function (e) {
+  return e.LOWEST = '0-39', e.LOW = '40-59', e.MEDIUM = '60-74',
+         e.HIGH = '75-89', e.HIGHEST = '90-100';
+}
+```
+
+The `tier` field on the stored object uses three names (`LOW` / `MID` /
+`HIGH`) which map onto those bands via:
+
+```javascript
+mCe = e => e >= 90 && e <= 100 ? '90-100'
+       : e >= 75 && e <= 89  ? '75-89'
+       : e >= 60 && e <= 74  ? '60-74'
+       : e >= 40 && e <= 59  ? '40-59' : '0-39'
+```
+
+#### The four axes and their weights
+
+✅ The weights are confirmed in the source, in one place:
+
+```javascript
+fk = '2.4.2', pk = 'lobby@device@score@v2',
+iCe = 1e3, aCe = 15e3, oCe = .2, sCe = .2, cCe = .5, lCe = .1, uCe = 3e4
+```
+
+which are used as `weights: { sort: i, cpu: a, memory: o, image: s }`.
+
+| Axis | Weight | Source | Notes |
+|---|---|---|---|
+| `memory` | 0.5 | `navigator.deviceMemory` | scored `≤2 → 20`, `≤4 → 45`, `≥8 → 95`, else `70` |
+| `sort` | 0.2 | sort benchmark in a Worker | `ae(sort)` |
+| `cpu` | 0.2 | CPU benchmark in a Worker | `oe(cpuPure)`; a value under 5 ms is treated as "DCE" and discarded as invalid |
+| `image` | 0.1 | canvas decode timing | `de(decode)` → `high` / `mid` / `low` |
+
+The `sort` and `cpu` numbers come from a separate Worker file,
+`/assets/benchmark.worker-BCVIEdOS.js` (2290 bytes), which reports
+`sort`, `cpuPure`, `cpuThroughput`, `decode` and `multiRound`.
+
+The memory scoring function, quoted exactly:
+
+```javascript
+function W(e) { return e == null ? null : e <= 2 ? 20 : e <= 4 ? 45 : e >= 8 ? 95 : 70 }
+```
+
+The decode scoring function:
+
+```javascript
+function de(e) {
+  return e.median >= 100 || e.p75 >= 100 ? 'high'
+       : e.median >= 50 || e.p75 >= 66 || e.p90 >= 120 ? 'mid' : 'low';
+}
+```
+
+#### The GPU renderer map
+
+✅ The map is present, and its version is **`1.0.0`** in the current build:
+
+```javascript
+R = `1.0.0`
+```
+
+The previously recorded `mapVersion: "1.0.3"` in `localStorage` is a
+**stale value written by an older build** — the live source now ships
+`1.0.0`. The map contains at least `adreno-306`, `adreno-308`, `adreno-405`,
+`adreno-619` and a `mali-t-series` / `mali-g31` family.
+
+The renderer is read through the standard extension, in the startup chunk:
+
+```javascript
+function _re() {
+  let e = document, t = ia.get(e);
+  if (t !== undefined) return t;
+  let n = e.createElement('canvas');
+  let r = n.getContext('webgl') || n.getContext('experimental-webgl');
+  if (!r) return;
+  let i = r.getExtension('WEBGL_debug_renderer_info');
+  if (!i) return '';
+  let a = r.getParameter(i.UNMASKED_RENDERER_WEBGL);
+  return typeof a == 'string' && a.trim() && ia.set(e, a), a;
+}
+```
+
+Note the canvas is **created fresh** for the probe, and the result is cached
+per-document in a `WeakMap`. A NOVA profile that returns a stable renderer
+from `getContext('webgl')` is read once and then cached for the page
+lifetime.
+
+#### Silent degradation — a surface that was missing entirely
+
+✅ **New finding.** The score is not just recorded; it *gates a large set of
+page behaviours*. When the score falls in the `40-59` or `0-39` bands, the
+page silently disables features and announces itself as a low-end device.
+The list was read out of the startup chunk:
+
+```javascript
+kk = {
+  stopScrollAnimation: Ok('stopScrollAnimation', ...),
+  stopRouterAnimation: Ok('stopRouterAnimation', ...),
+  lightRouterAnimation: Ok('lightRouterAnimation', ...),
+  stopOverlayAnimation: Ok('stopOverlayAnimation', ...),
+  staticGameLoading:   Ok('staticGameLoading', ...),
+  delayAutoDialogOpen: Ok('delayAutoDialogOpen', ...),
+  disableAvif:         Ok('disableAvif', ...),
+  deferLoginSuccessTasks: Ok('deferLoginSuccessTasks', ...),
+  reduceFirstScreenEagerList: Ok('reduceFirstScreenEagerList', ...),
+  asyncDecodeImageByDeviceScore: Ok('asyncDecodeImageByDeviceScore', ...),
+  disableCountToAnimation: Ok('disableCountToAnimation', ...),
+  disableAutoSlide: Ok('disableAutoSlide', ...),
+  disableSeamlessScroll: Ok('disableSeamlessScroll', ...),
+  disableWinnerScroll: Ok('disableWinnerScroll', ...),
+  disableMarketingAnimation: Ok('disableMarketingAnimation', ...),
+  disableApngByDeviceScore: Ok('disableApngByDeviceScore', ...),
+  disableLottieAnimation: Ok('disableLottieAnimation', ...),
+  disableRedPackRain: Ok('disableRedPackRain', ...)
+}
+```
+
+The console even says so in Chinese, when the downgrade is first applied:
+
+```javascript
+console.info('[低端机降级] ${e} 已启用 (score=${t == null ? '-' : t}, quality=${Sk()}, scoreVersion=${n == null ? '-' : n})')
+```
+
+**This matters for NOVA directly.** A profile that scores below 60 does not
+just look weak — it changes the page's behaviour in ways that are visible to
+any observer: no scroll animation, no AVIF, static loading, no Lottie, no
+APNG, no red-packet rain. A mid-range Android profile that scores 45 will
+behave visibly differently from a real mid-range phone. The four axes must
+land in a band that produces normal behaviour.
+
+Also confirmed: the old v1 score is still written and read:
+
+```
+localStorage: lobby@device@score          = "0.0.1:100"
+localStorage: lobby@device@score@detail   = "0.0.1:{ \"score\": 100, \"details\": { \"cpu\": 100, \"memory\": 100 } }"
+```
+
+with the version prefix `0.0.1` and the same two keys hard-coded in the
+bundle:
+
+```javascript
+jne = `0.0.1`, vn = `lobby@device@score`, Mne = `lobby@device@score@detail`
+```
+
+⚠️ One consistency note: the `lowDeviceHint` fallback for a missing score
+is hard-coded to **35 / `LOW` / `not-ready-low-fallback`**, so a profile that
+never completes the device-score run is treated as the worst possible
+device by every degradation gate.
+
+### 1.5 Device identification — `LobbyDeviceCompatibility`
+
+✅ **Re-confirmed, and relocated.** The previous survey could not find
+`LobbyDeviceCompatibility` in the JavaScript. It is not in a chunk at all —
+it is an **inline `<script>` in the page HTML**, defined before the bundles
+load. Exact source, as served:
+
+```javascript
+const LobbyDeviceCompatibility = {
+  whitelist: [
+    { name: "iPhone Duo inner landscape",
+      userAgent: /iPhone|iPad|Macintosh/i,
+      minTouchPoints: 2, viewportWidth: 951, screenWidth: 951,
+      screenHeight: { min: 585, max: 700 } },
+    { name: "iPhone Duo inner landscape with outer-screen dimensions",
+      userAgent: /iPhone|iPad|Macintosh/i,
+      minTouchPoints: 2, viewportWidth: 951, screenWidth: 466,
+      screenHeight: { min: 678, max: 678 } }
+  ],
+  matches() {
+    return this.whitelist.some(function (e) {
+      return e.userAgent.test(navigator.userAgent)
+        && navigator.maxTouchPoints >= e.minTouchPoints
+        && window.innerWidth === e.viewportWidth
+        && window.screen.width === e.screenWidth
+        && window.screen.height >= e.screenHeight.min
+        && window.screen.height <= e.screenHeight.max;
+    });
+  }
+};
+```
+
+The whitelist has **two** entries, both iPhone Duo variants — the previous
+survey said "only iPhone Duo", which was right in substance. Note that the
+UA regex accepts `Macintosh` as well, so a desktop Mac with
+`maxTouchPoints >= 2`, `innerWidth === 951` and `screen.width === 951` would
+also match the first entry.
+
+`detectDeviceType` is a method on `window.LOBBY_UTILS`, also inline in the
+HTML:
+
+```javascript
+detectDeviceType() {
+  let e = navigator.userAgent,
+      t = () => "undefined" != typeof LobbyDeviceCompatibility && LobbyDeviceCompatibility.matches(),
+      i = () => e.match(/(iPad)/) || !e.match(/(iPhone\sOS)\s([\d_]+)/)
+               && window.screen.height > window.screen.width
+               && /macintosh|mac os x/i.test(e),
+      o = () => /iPhone|Android.+Mobile/.test(e)
+               || (navigator.maxTouchPoints && navigator.maxTouchPoints > 1
+                   && /Android|webOS|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i.test(e));
+  return { tablet: i, mobile: o, desktop: () => !i() && !o() && !t(),
+           whitelistedMobile: t, appleMobile: () => /iPhone|iPad/i.test(e) };
+}
+```
+
+The `whitelistedMobile` result feeds `mediaScreen()`, which sets an
+`html` attribute to `1` when the viewport is wider than 450 px and the
+device is desktop or whitelisted-mobile:
+
+```javascript
+mediaScreen() {
+  let e = this.detectDeviceType(), t = e.desktop(),
+      i = window.innerWidth, o = window.innerHeight, n = "mobile", a = "0",
+      d = i > 450 && t, r = i > 450 && e.whitelistedMobile();
+  if (d || r) a = "1";
+  ...
+}
+```
+
+There is also a **device redirect** that reads the same signals and rewrites
+the URL between `/` and `/pc/`, using a `__device_redirect` query parameter.
+A NOVA profile whose UA says "Android phone" but whose viewport is wide
+enough will be bounced to `/pc/`, or will be bounced away from it if the
+signals disagree.
+
+### 1.6 The device probe function `zxe()`
+
+✅ **Confirmed, with one correction.** The function exists and is quoted
+below, but it is **not a global** — it is a module-local `function zxe()`
+inside `chunk-closure-startup.js`. It is called by `Bxe` and `Vxe`, the
+network-attribution helpers:
+
+```javascript
+function zxe() {
+  let { os: e, device: t } = Yp(), { uuid: n } = Uw();
+  return {
+    screenSpec: {
+      physRes: { w: screen.width, h: screen.height },
+      availRes: { w: screen.availWidth, h: screen.availHeight },
+      logRes:  { w: window.innerWidth, h: window.innerHeight },
+      aspRatio: Number((screen.width / screen.height).toFixed(2)),
+      pixDens:  window.devicePixelRatio,
+      colDepth:  screen.colorDepth
+    },
+    langTzInfo: {
+      prefLang: navigator.language,
+      tzOffset:  new Date().getTimezoneOffset() * -1,
+      tzName:    Intl.DateTimeFormat().resolvedOptions().timeZone
+    },
+    sysVer:     e.version,
+    cpuCores:   navigator.hardwareConcurrency,
+    deviceModel: t.model,
+    deviceID:   n
+  };
+}
+```
+
+❌ Correction: the previous survey listed `zxe()` among the "global
+variables that are read". It is a local function; the **globals it reads**
+are `screen.width`, `screen.height`, `screen.availWidth`,
+`screen.availHeight`, `window.innerWidth`, `window.innerHeight`,
+`window.devicePixelRatio`, `screen.colorDepth`, `navigator.language`,
+`Date.getTimezoneOffset`, `Intl.DateTimeFormat().resolvedOptions().timeZone`,
+`navigator.hardwareConcurrency`, plus a device UUID from `Uw()` and a model
+string from `Yp()`.
+
+Also note `zxe()` is a **name collision hazard**: on `c168j.vip` the
+*same* identifier `zxe` resolves to a completely different, unrelated
+function in the same chunk (a `navigator.scheduling.isInputPending` probe).
+Any grep-based analysis that searches for the literal `zxe` will hit both.
+
+### 1.7 Customer identification
+
+✅ Re-confirmed on **2026-11-22** from the live `localStorage` of all three
+sites (values differ per site, structure is identical):
 
 ```
 localStorage: web_lobby_next_user_webpush_visitor_fingerId
@@ -229,14 +596,30 @@ localStorage: web__lobby__persisted__user
               = {..., "fingerId":"", ...}
 ```
 
-`fingerId` là định danh khách do FingerprintJS sinh ra. Nó được gửi
-lên khi đăng ký và lưu vào hồ sơ người dùng.
+Measured values per site on the verification run:
 
-Có thêm `deviceIdSecurityVerify`, với các phương thức xác thực
-email, Google, số điện thoại, câu hỏi bảo mật và mật khẩu rút
-tiền. Đây là cách nhà cung cấp gắn một tài khoản với một thiết bị.
+| Site | `fingerId` | device `uuid` |
+|---|---|---|
+| `m.ssc8111.vip` | `4fad10ea-57a4-4dd1-b545-c715388b2ec2` | `64d50e44-69a6-4c46-b3b1-db9ed9094dc3` |
+| `c168j.vip` | `ce614baf-ede6-4504-bcfa-5f49d40a7574` | `a95db9db-7598-444c-a726-5a7a8e29754b` |
+| `yaccm8h.cc` | `6e726bb0-fe24-45fc-ace7-6af7914eec1b` | `447374c8-4d0b-4934-953b-ed1e3ad787a7` |
 
-### 1.7 Chống gian lận khác
+`fingerId` is populated **server-side** (§1.3), so on a fresh profile it is
+the empty string until the server has returned one.
+
+`deviceIdSecurityVerify` is confirmed verbatim:
+
+```json
+"deviceIdSecurityVerify": {
+  "deviceIdEmail": 1, "deviceIdGoogleAuth": 1, "deviceIdLoginPasswd": 1,
+  "deviceIdPassQuestion": 1, "deviceIdPhone": 1,
+  "deviceIdThirdPartyLogin": 1, "deviceIdWithdrawPasswd": 1
+}
+```
+
+### 1.8 Other anti-fraud configuration
+
+✅ Re-confirmed on all three sites, byte-identical:
 
 ```json
 "antiSwitch": "0",
@@ -244,513 +627,910 @@ tiền. Đây là cách nhà cung cấp gắn một tài khoản với một thi
 "humanVerify": -1
 ```
 
-`humanVerify: -1` nghĩa là kiểm tra người thật đang tắt ở cấu
-hình, nhưng Geetest vẫn bắt ở đăng ký (`force_geetest`).
+`humanVerify: -1` means the human check is off at the configuration level,
+but Geetest still fires at registration because `force_geetest` is set
+(§1.2).
 
-Ngoài ra còn có:
+Also confirmed present:
 
-* `lobby@network-samples` — đo độ ổn định mạng, độ trễ, thông lượng.
-* `webLobbyindexedDBRequestStats` — đếm số lần đọc IndexedDB
-  theo nhóm độ trễ (`INDEXEDDB:200`, `INDEXEDDB_NORMAL:0`).
-  Một người thật không đọc IndexedDB hàng loạt vào lúc đăng ký.
-* `lobby@support@media` — kiểm tra định dạng ảnh mà trình duyệt hỗ
-  trợ, lưu kết quả để không hỏi lại.
-* `web__lobby__persisted__base` — có `skinAssetsHash` với `lastMD5`.
+* `lobby@network-samples` — network stability / latency / throughput
+  sampling. Live value on SC88:
+  `{"stability":[{"ts":1795332887219,"ok":true}],"ttfb":[],"throughput":[],"probe":[]}`
+* `webLobbyindexedDBRequestStats` — IndexedDB read counter bucketed by
+  latency. Live value on SC88:
+  `{"buckets":{"INDEXEDDB:200":1,"INDEXEDDB_NORMAL:200":1,"INDEXEDDB:100":5,...},"totalRequests":9}`.
+  Note the bucket names use the **latency in milliseconds** (`INDEXEDDB:200`
+  means 200 ms), not a fixed set of three buckets.
+* `lobby@support@media` — image format support, cached as `0.0.6:1`. The
+  loader is inline in the HTML and fetches `/libs/browser-media-match@0.0.6/index.js`.
+* `web__lobby__persisted__base` — `skinAssetsHash` with `lastMD5`. Live
+  value on SC88: `lastMD5: "9420a09c1eb2c27b8a7e391c59267889"`.
+* `lobby@domain@order`, `lobby@gossip`, `lobby@image@cache`,
+  `lobby@lcp@banner`, `lobby@first_load`, `lobby@i18n` — all confirmed in
+  the startup chunk as `lobby@*` storage keys.
 
-### 1.8 Những gì trang đọc trong mã
+### 1.9 Social login — Facebook is present but disabled
 
-Từ `chunk-closure-startup.js` (1,5 MB), những lần gọi tìm thấy:
+❌ **Correction.** The previous survey listed Facebook (app id `SC88.COM`)
+as an available third-party login path. The configuration is:
+
+| Site | `facebook` | `google` |
+|---|---|---|
+| `m.ssc8111.vip` | `{app_id:"SC88.COM",status:0}` | `{app_id:"143341858492-...",status:1}` |
+| `c168j.vip` | `{app_id:"C168.COM",status:0}` | `{app_id:"1037925999164-...",status:1}` |
+| `yaccm8h.cc` | `{app_id:"",status:0}` | `{app_id:"764511882549-...",status:1}` |
+
+`status: 0` means **Facebook login is switched off on all three sites**.
+Only Google Sign-In is enabled (`status: 1`). The app id is not `SC88.COM`
+on every site — it follows the brand (`C168.COM` on C168, empty on CM88).
+
+### 1.10 The API host is obfuscated
+
+✅ **New finding.** The page does not call its own origin for API traffic.
+The real API host is stored base64-encoded in the page and rewritten at
+runtime. From `m.ssc8111.vip`:
+
+```javascript
+n = [["7bfa0","c2NyaXB0"], ["7bfa1","amRldTJmLTI4NjgtcHBw"], ["7bfa2","b3NzLWFjY2VsZXJhdGUuYWxpeXVuY3MuY29t"]]
+```
+
+Decoded:
+
+| Token | Encoded | Decoded |
+|---|---|---|
+| `7bfa0` | `c2NyaXB0` | `script` |
+| `7bfa1` | `amRldTJmLTI4NjgtcHBw` | `jdeu2f-2868-ppp` |
+| `7bfa2` | `b3NzLWFjY2VsZXJhdGUuYWxpeXVuY3MuY29t` | `oss-accelerate.aliyuncs.com` |
+
+So the API host is **`jdeu2f-2868-ppp.oss-accelerate.aliyuncs.com`**
+(Alibaba OSS, same `-2868-ppp` suffix as the APK bucket
+`8zl03s-2868-ppp.s3-accelerate.amazonaws.com` seen in the page). A second
+base64 pair with a UUID salt performs the final rewrite to
+`location.origin`, so the browser ends up talking to the page host while
+the OSS bucket serves the API.
+
+The API traffic is **encrypted**: `GET /cocos/config_data.json` on the OSS
+host returns `200` but the body is ciphertext, and the startup chunk
+contains a `cryptoKey` and a `crypto:{enable:!0}` request option. The same
+`encrypt.js` idea as ON68, implemented natively.
+
+The full endpoint list was extracted from the startup chunk:
 
 ```
-user_agent ×16    user_agent_data ×4    platform ×1
-hardware_concurrency ×2                max_touch_points ×7
-screen_size ×6    avail_size ×2        color_depth ×1
-pixel_ratio ×1    inner_size ×19       webgl_renderer ×1
-webgl_params ×1   timezone ×2          permissions ×1
-indexed_db ×4     connection ×4        mime_types ×2
-local_storage ×103  session_storage ×25  cookie ×10
-error_stack ×21  function_source ×76  performance_timing ×14
+/api/member/register                     /api/member/check/register
+/api/member/fastRegister                  /api/member/fastLogin
+/api/member/getFastLogin                  /api/member/getFingerprint
+/api/member/noauth/getFingerprint         /api/member/login
+/api/member/logout                        /api/member/listAccount
+/api/member/thirdPartyLogin               /api/member/agent/login
+/api/member/temporaryAccountLogin         /api/member/auth/telegram/login
+/api/member/v2/user/temporary/upgrade     /api/member/check/cpf
+/api/member/publicityPlaza/postingRestrictions
 ```
 
-`function_source` (76 lần) và `error_stack` (21 lần) là dấu hiệu
-của **phát hiện hàm bị thay**: lấy `fn.toString()` rồi so với mã
-nguyên bản của hàm dựng sẵn. Đây là cách phát hiện việc ghi đè
-`navigator.*` bằng `Object.defineProperty` hoặc bằng một lớp bọc.
+### 1.11 What the page code reads
 
-`chunk-closure-entry-reuse.js` tạo một `Worker` — thường là để đo
-số nhân CPU mà không chặn giao diện.
+✅ Re-confirmed on **2026-11-22**, from
+`chunk-closure-startup.CUpFIxPM.js` (1579637 bytes) and
+`optimized-chunk-guest-interaction.CtUX_qj1.js` (1117186 bytes).
 
-`optimized-chunk-guest-interaction.js` có `measureText` và
-`toDataURL`, tức là đo phông chữ và băm canvas.
+Startup chunk:
+
+```
+navigator.userAgent ×16   userAgentData ×4        navigator.platform ×1
+hardwareConcurrency ×2    maxTouchPoints ×7       screen.width ×3
+screen.availWidth ×1      screen.colorDepth ×1    devicePixelRatio ×1
+window.innerWidth ×8      getParameter ×1         getTimezoneOffset ×5
+permissions.query ×1      indexedDB ×4            navigator.connection ×4
+mimeTypes ×2              localStorage ×103       sessionStorage ×25
+document.cookie ×10       performance.now ×12
+```
+
+The previous survey's figures for this chunk (`local_storage ×103`,
+`session_storage ×25`, `cookie ×10`, `error_stack ×21`, `function_source ×76`,
+`inner_size ×19`, `user_agent ×16`) are confirmed on SC88 and reproduce
+almost exactly on the other two.
+
+Guest-interaction chunk:
+
+```
+navigator.userAgent ×5    maxTouchPoints ×2       window.innerWidth ×1
+sessionStorage ×1         performance.now ×4      measureText ×1
+toDataURL ×2
+```
+
+`measureText` and `toDataURL` confirm the font measurement and canvas
+hashing described previously.
+
+`chunk-closure-entry-reuse.4y9Syu_n.js` (39128 bytes) contains exactly one
+`new Worker` — the CPU benchmark entry point, matching
+`optimized-chunk-device-score` spawning
+`/assets/benchmark.worker-BCVIEdOS.js`.
+
+---
 
 ## 2. ON68 (`oon6a1.ink`)
 
-Ứng dụng WPS/uni-app, khác hẳn nhóm Lobby.
+A WPS / uni-app application, structurally different from the Lobby group.
 
 ### 2.1 ThumbmarkJS
 
-```html
-<script src="https://cdn.jsdelivr.net/npm/@thumbmarkjs/thumbmarkjs/dist/thumbmark.umd.js"></script>
+✅ The CDN URL is confirmed, and it is loaded **at runtime**, not present in
+the HTML. The static HTML of `/home/register` is 9113 bytes and contains no
+ThumbmarkJS reference; the script is injected by the app bundle
+`chunk-web-view.310d3533.js`:
+
+```javascript
+L("https://cdn.jsdelivr.net/npm/@thumbmarkjs/thumbmarkjs/dist/thumbmark.umd.js", "ThumbmarkJS")
 ```
 
-Đây là thư viện fingerprint mã nguồn mở, và là nguồn nguy hiểm
-nhất trong sáu trang. Nó gom **16 nhóm**:
+The live DOM confirms the tag is present at runtime. The library resolves
+and is **version 1.13.0** (36240 bytes).
 
-| Nhóm | Nội dung |
-|---|---|
-| `canvas` | Vẽ gradient, chữ và đường, băm pixel (`commonPixelsHash`) |
-| `canvasReadbackDiffBytes` | Đọc cùng một canvas hai lần, so từng byte |
-| `webgl` | vendor, renderer, version, shading language |
-| `audio` | `sampleHash`, số kênh, chế độ kênh |
-| `fonts` | Khoảng 60 phông, đo trong iframe bằng `measureText("WwMmLli0Oo")` |
-| `hardware` | `deviceMemory`, `jsHeapSizeLimit`, kiến trúc, `videocard` |
-| `locales` | `navigator.language`, timezone qua `Intl` |
-| `math` | `Math.acos(0.5)`, `asin`, `sinh` — độ chính xác số thực |
-| `system` | `hardwareConcurrency`, `cookieEnabled`, `applePayVersion` |
-| `permissions` | Danh sách quyền đầy đủ |
-| `plugins` | Danh sách plugin |
-| `speech` | Giọng đọc của hệ thống |
-| `screen` | Kích thước, `avail`, `colorDepth`, `pixelRatio` |
-| `webrtc` | Địa chỉ qua ICE |
-| `mediaDecode` | Thử giải mã một số định dạng (`avc1.42E01E`, `vp09.00.10.08`) |
-| `adBaitBlocked` | Có bị chặn quảng cáo hay không |
+The app registers one extra component on top of the defaults:
 
-Ngoài ra nó còn thu:
+```javascript
+t.includeComponent("incognito", function () {
+  return detectIncognito().then(function (e) { return e.isPrivate })
+                              .catch(function () { return !1 });
+})
+```
 
-* `ja4` — dấu vân tay TLS JA4, và `ja4_source` nói dấu vân tay đó đến từ đâu.
-* `tls.extensions` — danh sách phần mở rộng TLS.
-* `header.acceptLanguage` — cả giá trị lẫn trọng số `q`.
-* `ip` — địa chỉ (bị loại khi dùng VPN).
+⚠️ Correction on the component list: the previous survey listed sixteen
+named groups (`canvasReadbackDiffBytes`, `webgl`, `audio`, `fonts`,
+`hardware`, `locales`, `math`, `system`, `permissions`, `plugins`,
+`speech`, `screen`, `webrtc`, `mediaDecode`, `adBaitBlocked`, and the
+`ja4` / `tls.extensions` extras). Those identifiers **do** all exist in the
+shipped library, but the library's own `components` object is built
+dynamically from the resolved component map, and the identifiers that are
+literally present as string literals in the UMD build are only
+`canvas`, `audio`, `webgl`, `fonts`, `plugins`, `permissions` and `speech`.
+The rest are reached through the component registry rather than as literals.
+The list is therefore accurate as a description of what ThumbmarkJS
+collects, but it is **not** a literal enumeration of the current build.
 
-Cách gửi: `navigator.sendBeacon` tới `collect.thumbmarkjs.com/beacon`,
-nếu không thì `fetch` với `mode: "no-cors"` và `keepalive: true`.
-Giá trị định danh được lưu ở `localStorage` với khoá dạng
-`<tên>_visitor_id`.
+Confirmed present in the shipped UMD build:
 
-### 2.2 Mã hoá
+```
+canvasReadbackDiffBytes   commonPixelsHash    sampleHash
+ja4   ja4_source   tls    adBaitBlocked        mediaDecode
+applePayVersion           jsHeapSizeLimit      videocard
+webrtc                    speech               math
+locales                   fonts                audio
+webgl                     hardware             system
+screen                    plugins              permissions
+```
+
+Sending path, quoted from the library:
+
+```javascript
+const ee = "visitor_id";
+function te(e) { return e.storage_property_name ? e.storage_property_name : e.property_name_factory(ee) }
+const ne = `${n}_${ee}`;   // localStorage key = "<name>_visitor_id"
+...
+if ("undefined" != typeof navigator && "function" == typeof navigator.sendBeacon) {
+  let e = !1;
+  try { e = navigator.sendBeacon(r, a) } catch (t) { e = !1 }
+  if (e) return void Z();
+}
+try {
+  const e = fetch(r, { method: "POST", mode: "no-cors", keepalive: !0,
+                       headers: { "Content-Type": "text/plain;charset=UTF-8" }, body: a });
+  Z(), e.catch(() => {});
+} catch (e) {}
+```
+
+with `r = "collect.thumbmarkjs.com/beacon"`. So the survey's description of
+the send mechanism and of the `<name>_visitor_id` key is ✅ correct.
+
+### 2.2 ClientJS is a second fingerprint library — the survey missed it
+
+❌ **Correction, and the most substantive change in the ON68 section.**
+ON68 does not use only ThumbmarkJS. It loads **two** fingerprint libraries
+and fails over between them. From `chunk-web-view.310d3533.js`:
+
+```javascript
+// ThumbmarkJS
+L("https://cdn.jsdelivr.net/npm/@thumbmarkjs/thumbmarkjs/dist/thumbmark.umd.js", "ThumbmarkJS")
+
+// ClientJS — two mirrors, tried in order
+L("https://cdnjs.cloudflare.com/ajax/libs/ClientJS/0.2.1/client.base.min.js", "ClientJS")
+L("https://cdn.jsdelivr.net/npm/clientjs@0.2.1/dist/client.base.min.js", "ClientJS")
+```
+
+and the selection logic:
+
+```javascript
+if (!window.ThumbmarkJS) { ...load thumbmark... }
+if (!window.ClientJS)   { ...load clientjs... }
+...
+throw new Error("Failed to load any fingerprinting library");
+```
+
+Both CDN mirrors were confirmed to resolve on the verification run:
+
+| Script | Status | Size |
+|---|---|---|
+| `cdn.jsdelivr.net/npm/@thumbmarkjs/thumbmarkjs/dist/thumbmark.umd.js` | 200 | 36240 |
+| `cdnjs.cloudflare.com/ajax/libs/ClientJS/0.2.1/client.base.min.js` | 200 | 29023 |
+| `cdn.jsdelivr.net/npm/clientjs@0.2.1/dist/client.base.min.js` | 200 | 29023 |
+
+**This matters for NOVA.** The two libraries read different surfaces.
+ThumbmarkJS is listed in §2.1. ClientJS 0.2.1 is a separate library with
+its own component set, and a profile that satisfies ThumbmarkJS's checks
+may still be inconsistent under ClientJS's. Both must be satisfied, because
+the code prefers whichever loads first and does not compare them.
+
+### 2.3 Encryption
+
+✅ Confirmed:
 
 ```html
 <script src="https://www.oon6a1.ink/js/encrypt.js?v=32440"></script>
 ```
 
-72 KB. Cùng với `fingerprintJS.publicKey` ở nhóm Lobby, đây là
-việc mã hoá kết quả fingerprint trước khi gửi: không ai đọc
-được nội dung nếu không có khóa.
+72394 bytes on the verification run (the survey said 72 KB — correct).
 
-### 2.3 Định danh
+### 2.4 Identification
+
+✅ Re-confirmed on **2026-11-22** from the live `localStorage` and
+`document.cookie` of `www.oon6a1.ink`:
 
 ```
-cookie:      SHELL_deviceId = 653599d5-3bd9-4d16-b75b-5d4a049324cc
-localStorage: SHELL_deviceId
+cookie:       SHELL_deviceId = 653599d5-3bd9-4d16-b75b-5d4a049324cc
+localStorage: SHELL_deviceId            = 653599d5-3bd9-4d16-b75b-5d4a049324cc
 localStorage: __p_preRegisterVisitorUuid = 92a2f928-796b-4c27-ba0f-a7579067acbb
 localStorage: merchantCode = op88vndkf2
 localStorage: MC_JS_CACHE_HASH = 1108103
+localStorage: MC_VERSION = 00577ec0
 ```
 
-`MC_JS_CACHE` giữ nguyên bản mã của ứng dụng, `MC_JS_CACHE_HASH`
-là băm của nó. `MC_VERSION` là `00577ec0`.
+✅ The full `localStorage` key list was captured (29 keys):
 
-### 2.4 Chống gian lận khác
-
-Trang dùng `html2canvas` (từ cdnjs) — có thể để đo mức trượt của
-trang, hoặc để chụp lại nội dung để đối chiếu.
-
-Có Cloudflare Web Analytics (`beacon.min.js`).
-
-Bản dựng được đánh dấu trong trang:
-
-```html
-<script>var brand="32440_2026-11-03 22:27:55";console.log("brand",brand)</script>
+```
+lang, MC_currencySymbol, MC_currencyPosition, currencySymbol,
+__p_preRegisterVisitorUuid, PWA_updateHash, merchant, MC_VERSION,
+currencyPosition, MC_currency, SHELL_imageDomain, SHELL_sdkCDN,
+SHELL_deviceId, SHELL_imageFormat, status, hisLang, __p_language,
+SHEEL_resources, MC_JS_CACHE_HASH, currency, firstOpen, MC_JS_CACHE,
+mc_lang, SHELL_favicon, SHELL_splash, language, merchantCode
 ```
 
-Và một mã băm cam kết của bản dựng:
+`SHELL_deviceId` is confirmed as the identifier read by the app: it appears
+once in `chunk-web-view.310d3533.js` and once in `m/app.280ba8dc.js`.
+
+`MC_JS_CACHE` holds the application's own source; `MC_JS_CACHE_HASH` is its
+hash; `MC_VERSION` is `00577ec0`. ✅ all confirmed.
+
+### 2.5 The registration payload
+
+✅ Re-confirmed on **2026-11-22**. The register component builds its payload
+in `dataParams(e)` in `m/app.280ba8dc.js`:
+
+```javascript
+dataParams(e) {
+  let t = /AppVer|AppShellVer/.test(navigator.userAgent) ? "APP" : "H5";
+  if ("standalone" in navigator && navigator.standalone &&
+      (t = window.localStorage.getItem("WEBCLIP") ? "WEBCLIP" : "PWA"))
+  return {
+    countryDialingCode: this.state.countryDialingCode,
+    registerUrl: window.location.hostname,
+    registerMethod: t,
+    username: e.username,
+    password: e.password,
+    confirmPassword: e.password,
+    affiliateCode: e.affiliateCode || this.state.urlParams.code,
+    paymentPassword: e.paymentPassword ? e.paymentPassword : "",
+    recommenderId: e.recommenderId ? e.recommenderId : "",
+    nickname: e.nickname ? e.nickname : "",
+    payeeName: e.payeeName ? e.payeeName : "",
+    email: e.email ? e.email : "",
+    mobileNum: e.mobileNum1 || e.mobileNum2 ? (e.mobileNum1 ? e.mobileNum1 : e.mobileNum2) : "",
+    idNumber: e.idNumber ? e.idNumber : "",
+    qqNum: e.qqNum ? e.qqNum : "",
+    facebook: e.facebook ? e.facebook : "",
+    wechat: e.wechat ? e.wechat : "",
+    line: e.line ? e.line : "",
+    whatsapp: e.whatsapp ? e.whatsapp : "",
+    zalo: e.zalo ? e.zalo : "",
+    birthday: e.birthday || "",
+    captcha: e.identifying ? e.identifying : "",
+    type: 0,
+    domain: this.state.urlParams.domain ? this.state.urlParams.domain : "",
+    verificationCode: e.messageCode1 || e.messageCode2
+      ? (e.messageCode1 ? e.messageCode1 : e.messageCode2) : ""
+  }
+}
+```
+
+This is the field list the previous survey did not record. Notes for NOVA:
+
+* `registerMethod` is derived from the **user agent** (`APP` / `H5` /
+  `PWA` / `WEBCLIP`). A desktop Chrome UA yields `H5`; an Android UA
+  containing `AppShellVer` yields `APP`.
+* `registerUrl` is `window.location.hostname` — the page's own host.
+* `confirmPassword` is a copy of `password`; it is not re-entered.
+* The captcha value rides in the `captcha` field, sourced from
+  `e.identifying` — the name used by the captcha widget.
+* There are nine optional social/contact fields (`facebook`, `wechat`,
+  `line`, `whatsapp`, `zalo`, `qqNum`, `idNumber`, `payeeName`,
+  `recommenderId`) alongside the mandatory `username` / `password`.
+
+The corresponding endpoints, from the same bundle:
+
+```
+member/register
+member/register/mobile
+member/register/autoUsername
+member/register/mail
+```
+
+### 2.6 Three captcha providers, all live in the same build
+
+✅ Re-confirmed on **2026-11-22**. The three bundles named in the previous
+survey still exist, with the same sizes, and still contain the same
+markers:
+
+| Bundle | Size | Markers found |
+|---|---|---|
+| `/m/vendor.encrypt.v2.dll.js` | 852953 | `encrypt` ×20 |
+| `/m/chunk-common.bc1682a7.js` | 195780 | `captcha` ×68 |
+| `/m/app.280ba8dc.js` | 1668863 | `initGeeGuard` ×1, `initBotion` ×1, `_recaptchaVerifier` ×6, `SHELL_deviceId` ×1, `captcha` ×63 |
+
+The same markers were found independently in the **live** bundles that the
+page actually loads today:
+
+| Bundle | Size | Markers found |
+|---|---|---|
+| `/js/index.65c4d8f0.js` | 1736230 | `geetest` ×5, `captcha` ×38 |
+| `/js/chunk-vendors.09a45178.js` | 1582955 | `recaptcha` ×49, `grecaptcha` ×7, `jsHeapSizeLimit` ×2, `indexedDB` ×10 |
+| `/js/chunk-web-view.310d3533.js` | 1022076 | `initGeeGuard` ×1, `initBotion` ×1, `_recaptchaVerifier` ×6, `thumbmark` ×5, `SHELL_deviceId` ×1, `geetest` ×66 |
+
+✅ The survey's conclusion — all three providers coexist in one build — is
+confirmed, and the surrounding code shows what each is for:
+
+**GeeTest** (`initGeeGuard`), with an app id and a 5-second timeout:
+
+```javascript
+let o = yield new Promise(function (e) {
+  window.initGeeGuard({
+    appId: r,
+    protocol: "".concat(location.protocol, "//"),
+    networkTimeout: 5e3
+  }, e)
+});
+```
+
+**Botion** (`initBotion`), with a captcha id and a 5-second timeout:
+
+```javascript
+window.initBotion({
+  method: window.initBotion,
+  parameters: { captchaId: e, product: "bind", language: t, hideSuccess: !0, timeout: 5e3 }
+})
+```
+
+**Firebase reCAPTCHA** (`_recaptchaVerifier`), used specifically for the
+Firebase SMS verification path:
+
+```javascript
+console.log("send sms firebase start"),
+t.smsResult = yield Object($.j)(Object($.f)(), o, window._recaptchaVerifier),
+console.log("send sms firebase success", o)
+```
+
+So the three are not three interchangeable choices: GeeTest and Botion are
+the visual captchas, and Firebase reCAPTCHA guards the SMS send.
+
+⚠️ The survey did not previously mention Botion at all in §2.1; it is now
+confirmed as the second provider.
+
+### 2.7 The `version-hash` commit element — not found
+
+❌ **Correction.** The previous survey quoted:
 
 ```html
 <div class="version-hash" style="display:none;" data-commit="abdb89c0d6e26bb47972d482b85f842102dccb20"></div>
 ```
 
-### 2.5 Ghi chú về biệt danh
+This element is **not present** in the current build. Every page was
+checked — `/`, `/home/register`, `/home/index`, `/home/login` — and all four
+return the same 9113-byte shell in which:
 
-Trang chào bằng "ON68" và `merchantCode` là `op88vndkf2`, nhưng tên
-miền là `oon6a1.ink`. Tên thương hiệu được đổi trong lúc chạy. Đây
-là điểm cần lưu ý: tên trang không phải thứ dùng để nhận dạng.
+* `data-commit` does not appear at all,
+* the string `version-hash` does not appear,
+* the string `abdb89c0d6e26bb47972d482b85f842102dccb20` does not appear,
+* and no element in the live DOM carries a `data-commit` attribute.
 
-### 2.6 Kiểm chứng lại: ba nhà cung cấp captcha cùng tồn tại
+✅ The build brand string **is** still present and unchanged:
 
-Đo lại ngày 2026-11-22 bằng cách tải các bundle của ứng dụng. Trang
-đăng ký là một ứng dụng một trang, nên phần lớn mã không nằm trong
-HTML. Ba bundle được tải về:
+```html
+<script>var brand="32440_2026-11-03 22:27:55";console.log("brand",brand)</script>
+```
 
-| Bundle | Kích thước | Dấu hiệu tìm thấy |
-|---|---|---|
-| `/m/vendor.encrypt.v2.dll.js` | 853 KB | — |
-| `/m/chunk-common.bc1682a7.js` | 196 KB | `captcha` |
-| `/m/app.280ba8dc.js` | 1,67 MB | `initGeeGuard`, `initBotion`, `_recaptchaVerifier`, `SHELL_deviceId`, `captcha` |
+### 2.8 Other anti-fraud measures
 
-Xác nhận cả ba nhà cung cấp captcha đều có trong cùng một bản dựng:
-GeeTest (`initGeeGuard`), Botion (`initBotion`), và Google reCAPTCHA
-(`_recaptchaVerifier`). Đây không phải ba lựa chọn thay thế nhau mà
-là ba đường dự phòng, hoặc ba phương thức cho các bước khác nhau.
+✅ Confirmed:
 
-Hệ quả cho NOVA: trang này có **nhiều tầng captcha hơn các trang
-khác**, và tầng captcha không phải là tầng duy nhất — `SHELL_deviceId`
-được đọc và gửi kèm. Tín hiệu thiết bị vẫn là phần cần làm đúng.
+* `html2canvas` from cdnjs — `https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js`,
+  197782 bytes, loads successfully.
+* Cloudflare Web Analytics — `https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092`.
+* `SHELL_sdkCDN` → `https://images.8846148.com/`,
+  `SHELL_imageDomain` → `https://images.7814157.com/`.
+* The `status` key carries the server's gate state. Live value:
+  `{"success":true,"value":{"maintenance":false,"regionRestriction":false,"whitelist":false,"test":false,...}}`.
 
-### 2.7 `vendor.encrypt.v2.dll.js`
+### 2.9 Brand aliasing
 
-Bundle 853 KB này được đặt tên như một DLL — đó là mã hoá. Cùng
-với `encrypt.js` ở mục 2.2, nó cho thấy kết quả fingerprint được
-mã hoá trước khi rời trình duyệt, và khoá mã hoá nằm ở phía máy
-chủ.
+✅ Confirmed. The page title is "ON68", `merchantCode` is `op88vndkf2`, and
+the canonical URL in the page's own `og:url` / `link rel=canonical` is
+**`https://www.on68688.com/`** — a third domain for the same application.
+The favicon and image paths are under
+`images.7814157.com/wsd-images-prod/op88vndkf2/`.
+
+So the brand name, the merchant code, the canonical domain and the serving
+domain are four different strings. The previous survey's warning holds and
+is now sharper.
+
+---
 
 ## 3. Jun88 (`8jjunsyj.cc`)
 
-Ứng dụng Vue tự dựng, khác cả hai nhóm trên.
+A Vue SPA, different from both other groups.
 
-### 3.1 Những gì đo được
+### 3.1 What was measured
+
+✅ The Cloudflare Web Analytics beacon is confirmed:
 
 ```html
 <script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092" integrity="sha512-..."></script>
 ```
 
-Đây là Cloudflare Web Analytics. Tệp có tên giống mã băm nhưng thực
-chất là beacon của Cloudflare, không phải thư viện fingerprint.
+The file is named like a hash but is Cloudflare's beacon, not a fingerprint
+library. ✅ confirmed.
 
-Trong mã, những thứ đáng chú ý:
+All scripts loaded by the page:
 
 ```
-user_agent ×5    user_agent_data ×1    screen_size ×4
-pixel_ratio ×2   inner_size ×5         to_data_url ×2
-session_storage ×1   performance_timing ×2   function_source ×21
+https://static.cloudflareinsights.com/beacon.min.js/vce701823e78c4301a35b7e07294d87301792088814092
+https://www.8jjunsyj.cc/webpush/webSdk.produce.min.3.3.5.js
+https://www.8jjunsyj.cc/static/js/runtimechunk~main.b1fcff08.js
+https://www.8jjunsyj.cc/static/js/vendor-moment.31f5b79e.js
+https://www.8jjunsyj.cc/static/js/r16-dom.9673ff4f.js
+https://www.8jjunsyj.cc/static/js/vendor.5882b22c.js
+https://www.8jjunsyj.cc/static/js/main.22489a53.js
 ```
 
-Có `toDataURL` (băm canvas) và `user_agent_data` (client hints).
+### 3.2 No captcha library, no fingerprint library
 
-### 3.2 Những gì không đo được
+✅ **Confirmed, and stronger than before.** Every one of the five
+first-party bundles was fetched and grepped for
+`turnstile`, `challenges.cloudflare.com`, `nrc-invisible`, `siteverify`,
+`geetest`, `initGeeGuard`, `botion`, `initBotion`, `recaptcha`,
+`_recaptchaVerifier`, `grecaptcha`, `fingerprintJS`, `thumbmark`:
 
-Không có `webgl_renderer`, không có `canvas_2d`, không có `audio`,
-không có `fonts`, không có `hardware_concurrency`. Không có
-`deviceMemory`. Trong `localStorage` chỉ có:
+| Bundle | Size | Matches |
+|---|---|---|
+| `main.22489a53.js` | 382269 | none |
+| `r16-dom.9673ff4f.js` | 198358 | none |
+| `vendor.5882b22c.js` | 204447 | none |
+| `vendor-moment.31f5b79e.js` | 65426 | none |
+| `runtimechunk~main.b1fcff08.js` | 27143 | none |
+
+The only markers present anywhere are `toDataURL` ×2 in `main.js` (canvas
+hashing) and `Function.prototype.toString` ×1.
+
+### 3.3 The surface counts are lower than previously recorded
+
+❌ **Correction.** The previous survey recorded
+`user_agent ×5, user_agent_data ×1, screen_size ×4, pixel_ratio ×2,
+inner_size ×5, to_data_url ×2, session_storage ×1, performance_timing ×2,
+function_source ×21`. Re-measured across **all five** bundles on
+**2026-11-22**:
+
+| Surface | Measured total | Previously recorded |
+|---|---|---|
+| `navigator.userAgent` | 7 | 5 |
+| `localStorage` | 5 | 5 |
+| `getTimezoneOffset` | 4 | — |
+| `getContext` | 3 | — |
+| `document.cookie` | 3 | 3 |
+| `toDataURL` | 2 | 2 |
+| `sessionStorage` | 2 | 1 |
+| `window.innerWidth` | 1 | 5 |
+| `performance.now` | 1 | 2 |
+| `screen.width` / `screen.height` | **0** | 4 |
+| `devicePixelRatio` | **0** | 2 |
+| `userAgentData` / `getHighEntropyValues` | **0** | 1 |
+| `navigator.hardwareConcurrency` | **0** | — |
+| `navigator.deviceMemory` | **0** | — |
+| `getParameter` (WebGL) | **0** | — |
+| `measureText` | **0** | — |
+
+✅ The substantive conclusion is unchanged and is if anything stronger:
+Jun88 reads **no** `screen.size`, **no** `devicePixelRatio`, **no**
+`userAgentData`, **no** `hardwareConcurrency`, **no** `deviceMemory`, **no**
+WebGL renderer, **no** font measurement. The `toDataURL` ×2 remains the one
+canvas hash.
+
+The previously recorded `function_source ×21` did not reproduce as
+`Function.prototype.toString` (measured ×1 in `main.js`). The generic
+`toString` token appears 45 / 38 / 49 times across the three bundles, but
+that is ordinary string handling, not function-source probing. ❌ the
+"21 calls" figure is not reproducible and should not be relied on.
+
+### 3.4 `localStorage`
+
+✅ Confirmed exactly — the same six keys, no more, no fewer:
 
 ```
 tiktok-ttp, mtWebPushRandomUid, imsPublic_numberFormatSeparators,
 lg, locale, mt_push_init_data
 ```
 
-Không có `fingerId`, không có điểm rủi ro thiết bị.
+There is no `fingerId` and no device-risk score. ✅ confirmed.
 
-Kết luận: ở tầng trình duyệt, Jun88 gọn hơn hẳn. Nhưng nó đứng
-sau Cloudflare, nên phần lớn việc chống bot nằm ở tầng mạng, ở
-trên Cloudflare Bot Management: dấu vân tay JA3/JA4 của TLS, và
-hành vi.
+### 3.5 Registration
 
-### 3.3 Đăng ký
+✅ `/home/register` serves the **home page**, not a registration form. The
+live accessibility tree of `https://www.8jjunsyj.cc/home/register` shows
+the game lobby (CASINO, NỔ HÙ, BẮN CÁ, THỂ THAO, GAME BÀI, E-SPORTS, VIP,
+floating action buttons), with **zero textboxes and zero input elements**.
+The page also carries `Chính Sách AML` and `CLB VIP Jun88`, and the
+footer states:
 
-`/home/register` chuyển hướng về trang chủ. Việc đăng ký đi qua
-ứng dụng, nên biểu mẫu nằm trong app chứ không phải trong trang
-web. Trang có `Chính Sách AML`, `CLB VIP`, và giấy phép từ
-`Curaçao Gaming Authority` với số `OGL/2024/1696/1055`.
+> "jun88.id được sở hữu và vận hành bởi Cyber Labs B.V., một công ty được
+> đăng ký tại Curaçao với Mã số doanh nghiệp 166785... Curaçao Gaming
+> Authority - CGA cấp phép và quản lý với Giấy phép số: OGL/2024/1696/1055,
+> được cấp vào ngày 13 tháng 3 năm 2025."
 
-### 3.4 Đặc tả đăng ký do máy chủ trả về
+✅ The licence number `OGL/2024/1696/1055` and the AML policy are confirmed.
 
-Đây là phần đo được vào ngày 2026-11-22, bổ sung cho 3.2. Ứng dụng
-gọi API công khai, không cần phiên:
+### 3.6 The registration spec returned by the server
+
+✅ Re-confirmed on **2026-11-22**. The application calls a public API that
+needs no session:
 
 ```
-GET https://api.8jjunsyj.cc/jun88-ecp/api/v1/register/setting
+GET https://api.8jjunsyj.cc/jun88-ecp/api/v1/register/setting   → 200, 31942 bytes
+GET https://api.jun8808.com/jun88-ecp/api/v1/register/setting    → 200, 31942 bytes (identical)
 ```
 
-Kết quả: mã `200`, và cấu hình trả về 18 trường, trong đó 5 trường
-bắt buộc:
+❌ **Correction: 17 fields, not 18.** `regsettingmap` contains exactly 17
+keys. The 5 required fields are confirmed unchanged:
 
-| Nhóm | Trường |
+| Group | Fields |
 |---|---|
-| Bắt buộc | `mobile`, `password`, `firstname`, `captcha`, `playerid` |
-| Tuỳ chọn | `email`, `confirmpassword`, `birthday`, `currency`, `pin`, `confirmpin`, `pic1`, `pic2`, `im1`, `im2`, `affiliateid`, `ulagentaccount` |
+| Required | `mobile`, `password`, `firstname`, `captcha`, `playerid` |
+| Optional | `currency`, `email`, `confirmpassword`, `birthday`, `pin`, `confirmpin`, `pic1`, `pic2`, `im1`, `im2`, `affiliateid`, `ulagentaccount` |
 
-Và các cờ kiểm soát:
+The flags are confirmed, with one addition:
 
 ```
 allowsameemail = false
 allowsamemobile = false
 allowsameip    = true
-captcha_type   = IMG_CAPTCHA
+allowsamename  = true      ← not previously recorded
 ```
 
-Ba điểm đáng chú ý:
+`captcha_type = IMG_CAPTCHA` — ✅ confirmed. `playerid` is required, has
+`minlength: "5"`, `maxlength: "12"`, `numeric: true` and `alphabet: true`,
+and is browser-generated. ✅ confirmed.
 
-* `captcha_type` là `IMG_CAPTCHA` — ảnh captcha 5 ký tự, không phải
-  Turnstile. Với loại captcha này, phần lớn tín hiệu bị đo là ở
-  tầng IP/TLS, vì captcha ảnh chỉ chống bot đơn giản.
-* `allowsameip = true` — nhiều tài khoản từ cùng một IP được phép.
-  Vậy giới hạn chống lạm dụng không nằm ở số tài khoản trên
-  một IP.
-* `playerid` là trường bắt buộc và do phía trình duyệt sinh ra.
+`captcha` itself carries only `{"required":true,"apirequired":true,"display":true}`
+— no provider hint.
+
+---
 
 ## 4. `linkantoan.vip`
 
-Trang này **không mở được** từ máy này:
+### 4.1 The page now opens — the previous "cannot be opened" is wrong
+
+❌ **Correction.** The previous survey recorded:
 
 ```
 https://linkantoan.vip/  →  SSL: UNEXPECTED_EOF_WHILE_READING
 http://linkantoan.vip/   →  Remote end closed connection without response
 ```
 
-DNS cho thấy nó dùng Cloudflare (`104.18.4.14`). Hành vi trên là
-kiểu chặn của Cloudflare khi IP của khách không thuộc vùng được
-phép, hoặc khi IP là của trung tâm dữ liệu. Trang nhóm Lobby hiển
-thị thông báo tương tự cho người dùng ngoài vùng:
+and concluded the site was unreachable from this machine.
 
-> "Địa chỉ IP của quý khách hiện không thuộc khu vực được hỗ trợ.
-> Vui lòng sử dụng IP hợp lệ thuộc khu vực được phép để tham gia."
+**In a real browser the site opens fine.** On **2026-11-22** the front page
+`https://www.linkantoan.vip/` loaded and rendered completely — 78win
+branding, the full game lobby (CASINO, JACKPOT, FISH SHOOTING, CARD GAMES,
+COCKFIGHTING, SPORTS, LOTTERY, E-SPORTS, PROMOTIONS, VIP, BRAND
+AMBASSADOR), and the navigation. `/home/register` also loads.
 
-Vậy chuỗi chặn của nhóm Lobby gồm ba tầng: kiểm tra vùng IP ở
-phía máy chủ, Geetest ở phía trình duyệt, và FingerprintJS cho
-định danh.
-
-Không có gì được đo ở đây. Đây là giới hạn của việc khảo sát, và
-nó được ghi lại thay vì đoán.
-
-### 4.1 Nhưng API phía sau vẫn mở được
-
-Đo lại ngày 2026-11-22: phần giao diện bị chặn, còn API thì không.
+The TLS failure is real but **client-specific**. A non-browser TLS client
+(OpenSSL via Python) still fails on every attempt:
 
 ```
-GET https://api.linkantoan.vip/vi5prod-ecp/api/v1/register/setting
-→ 200
+https://www.linkantoan.vip/  →  [SSL: UNEXPECTED_EOF_WHILE_READING]   (3/3 attempts)
+http://linkantoan.vip/       →  Remote end closed connection without response
+http://www.linkantoan.vip/    →  [SSL: UNEXPECTED_EOF_WHILE_READING]
 ```
 
-Kết quả **giống hệt** Jun88 ở mọi trường: cùng 18 trường, cùng 5
-trường bắt buộc (`mobile`, `password`, `firstname`, `captcha`,
-`playerid`), cùng `captcha_type = IMG_CAPTCHA`, cùng
-`allowsameip = true`, cùng `allowsameemail = false`,
-`allowsamemobile = false`.
+This is Cloudflare's TLS fingerprinting: the SNI is accepted and the
+connection is established, then closed during the handshake for a client
+whose ClientHello does not look like a browser. **It is not an IP-region
+block.** DNS resolves to Cloudflare addresses, as the survey said:
 
-Hai trang này chỉ khác nhau ở tên miền và ở tiền tố API
-(`jun88-ecp` so với `vi5prod-ecp`). Chúng chạy cùng một mã nền.
-Hệ quả: phần chống bot mà người dùng thấy ở `linkantoan.vip` là
-giống hệt Jun88, và khi trang bị chặn ở tầng Cloudflare thì máy
-chủ vẫn nhận đăng ký bình thường — chặn ở tầng biên, không phải
-tầng nghiệp vụ.
+```
+linkantoan.vip     -> 104.18.4.14, 104.18.5.14
+www.linkantoan.vip -> 104.18.4.14, 104.18.5.14
+api.linkantoan.vip -> 104.18.4.14, 104.18.5.14
+```
 
-### 4.2 Một điểm cần ghi lại: Turnstile
+and `api.linkantoan.vip` serves a plain API response over the same TLS
+stack:
 
-Điều tra của nhánh khảo sát cho thấy `vi5prod-ecp` dùng Cloudflare
-Turnstile với một input ẩn `nrc-invisible`. **Không xác nhận được**
-từ máy này: không có mã nguồn trang để đọc, và API trả về
-`captcha_type = IMG_CAPTCHA`, không phải Turnstile. Hai nguồn này
-mâu thuẫn nhau, nên phần Turnstile được ghi là *chưa xác nhận* thay
-vì khẳng định. Ưu tiên nằm ở `IMG_CAPTCHA` vì đó là thứ máy chủ
-thực sự dùng để kiểm tra.
+```
+GET https://api.linkantoan.vip/vi5prod-ecp/api/v1/register/setting  → 200, 32312 bytes
+```
+
+✅ The survey's API claim is correct. ⚠️ The survey's inference that this
+is a Cloudflare regional/IP block is wrong — the API host, on the same
+Cloudflare addresses, answers normally, and a browser answers normally.
+
+### 4.2 The site is a Jun88-family clone, branded 78win
+
+✅ Confirmed. `www.linkantoan.vip` uses the same Vue stack and the same
+`vi5prod-ecp` API as Jun88:
+
+| | Jun88 (`8jjunsyj.cc`) | linkantoan.vip |
+|---|---|---|
+| Page title | Jun88 Trang chủ chính thức Jun88.com | 78win - Trang chủ chính thức 78win |
+| Runtime chunk | `runtimechunk~main.b1fcff08.js` | `runtimechunk~main.a65f075f.js` |
+| `r16-dom` | `9673ff4f.js` | `9673ff4f.js` (identical) |
+| `vendor` | `5882b22c.js` | `5882b22c.js` (identical) |
+| `main` | `main.22489a53.js` | `main.f21ec10e.js` |
+| API prefix | `jun88-ecp` | `vi5prod-ecp` |
+| API host in page | `api.jun8808.com` | `api.78win2.cc` |
+| `localStorage` keys | the same 6 | the same 6 |
+| Static assets | `img.alltocon.com` | `img.alltocon.com` |
+| Brand asset path | — | `img/static/desktop/brand/vi5prod/logo.png` |
+
+The `vi5prod` string appears in linkantoan's own asset paths, confirming the
+API prefix and the brand family.
+
+⚠️ One difference worth recording: `api.78win2.cc` returns **403** with a
+Cloudflare challenge page, while `api.linkantoan.vip` returns **200** with
+the JSON. Both point at the same backend.
+
+### 4.3 The registration spec is identical to Jun88 — but with 17 fields
+
+✅ Re-confirmed on **2026-11-22**:
+
+```
+GET https://api.linkantoan.vip/vi5prod-ecp/api/v1/register/setting  → 200, 32312 bytes
+```
+
+❌ **Correction: 17 fields, not 18** — same as Jun88, with the same 5
+required fields and the same flags:
+
+```
+fields      = 17
+required    = playerid, password, captcha, mobile, firstname
+optional    = currency, email, affiliateid, confirmpassword, confirmpin,
+              im1, im2, pin, birthday, pic1, pic2, ulagentaccount
+captcha_type = IMG_CAPTCHA
+allowsameemail = false
+allowsamemobile = false
+allowsameip    = true
+allowsamename  = true
+```
+
+`playerid` differs from Jun88 in one field: `playerNoOn` is `true` here
+(Jun88 has `false`), meaning the player number cannot be reused.
+
+### 4.4 Turnstile — still not confirmed, and now less likely
+
+❌ **Correction to the framing.** The previous survey said the branch
+investigation "showed `vi5prod-ecp` uses Cloudflare Turnstile with a hidden
+`nrc-invisible` input", and that this could not be confirmed.
+
+On **2026-11-22** the search was run again, more broadly than before, over
+the full HTML of `/` and `/home/register` **and** every first-party
+bundle:
+
+| Bundle | Size | `turnstile` | `challenges.cloudflare.com` | `nrc-invisible` | `siteverify` |
+|---|---|---|---|---|---|
+| `main.f21ec10e.js` | 391120 | 0 | 0 | 0 | 0 |
+| `vendor.5882b22c.js` | 204447 | 0 | 0 | 0 | 0 |
+| `runtimechunk~main.a65f075f.js` | 27045 | 0 | 0 | 0 | 0 |
+| page HTML | 124970 | 0 | 0 | 0 | 0 |
+
+The same search on Jun88's bundles returns the same all-zero result.
+
+So the Turnstile claim is ❌ **not supported by any evidence in the current
+build**, and the server's own spec says `captcha_type = IMG_CAPTCHA`. The
+previous survey's "two sources contradict each other" framing was accurate
+as to the contradiction; the resolution is now clearer — there is no
+Turnstile marker anywhere in the shipped client. The Turnstile claim should
+be treated as **retracted**, not merely unconfirmed.
+
+### 4.5 No Cloudflare analytics beacon on linkantoan
+
+⚠️ Note a difference from Jun88: linkantoan's page loads **no**
+Cloudflare Web Analytics beacon (`cloudflareinsights` count 0), while
+Jun88's page does. The `vi5prod` brand ships analytics; the `78win` build
+of the same code does not.
+
+---
 
 ## 5. Cloudflare
 
-Bốn trong sáu trang đứng sau Cloudflare (`c168j.vip`,
-`8jjunsyj.cc`, `linkantoan.vip`, `oon6a1.ink`). Cloudflare Bot
-Management làm những việc mà mã trong trang không làm:
+Four of the six sites sit behind Cloudflare (`c168j.vip`, `8jjunsyj.cc`,
+`linkantoan.vip`, `oon6a1.ink`). DNS confirms:
 
-* Dấu vân tay JA3 và JA4 của bắt tay TLS, lấy từ đặc tính của
-  ClientHello. JA4 đã xuất hiện trong ThumbmarkJS, nghĩa là hai tầng
-  đang dùng chung một dấu vân tay.
-* Điểm danh của Cloudflare, đi kèm cookie `__cf_bm`.
-* Phân tích hành vi.
+```
+c168j.vip      -> 104.18.26.248, 104.18.27.248      (Cloudflare)
+8jjunsyj.cc    -> 104.21.15.157, 172.67.163.25      (Cloudflare)
+linkantoan.vip -> 104.18.4.14, 104.18.5.14          (Cloudflare)
+oon6a1.ink     -> 104.21.19.149, 172.67.186.133     (Cloudflare)
+m.ssc8111.vip  -> 3.162.58.21, 3.162.58.5, ...      (AWS CloudFront)
+yaccm8h.cc     -> 107.155.62.45 ... 107.155.62.52    (Alibaba CDN)
+```
 
-Điều này có một hệ quả cho NOVA: **thay đổi tầng TLS sẽ đổi
-JA3/JA4**, và hai tầng phải khớp với nhau. Một profile giả lập
-điện thoại Android nhưng nói chuyện TLS qua một máy tính Windows sẽ
-lộ ra ngay ở tầng này.
+Cloudflare Bot Management does things that the page code does not do:
 
-## 6. Đối chiếu với NOVA
+* JA3 and JA4 fingerprints of the TLS ClientHello.
+* Cloudflare's own challenge point, with the `__cf_bm` cookie.
+* Behavioural analysis.
 
-### 6.1 Những gì NOVA đã có
+⚠️ None of this is visible in the page. The only Cloudflare artefact
+measurable from the page is the Web Analytics beacon, which is a separate
+product from Bot Management.
 
-* 7.222 thiết bị thật, 4.788 mẫu, 230 GPU, 643 chipset, từ dữ liệu
-  GSMArena lọc theo thị trường Việt Nam. Kiểm tra tính nhất quán đã
-  chạy trên toàn bộ 7.222 thiết bị: **0 lỗi, 0 cảnh báo**.
-* 19 trục kiểm tra tính nhất quán, kiểm tra cả giới hạn texture so
-  với hạng GPU, họ nhà renderer so với nhà GPU, ABI so với renderer.
-* **Chromium 100 → 155**: 56 phiên bản trong sổ đăng ký, chia theo
-  băng của từng bản Android (13 → 100–113, 14 → 114–127,
-  15 → 128–155). Mỗi profile bốc một phiên bản từ seed, nên một
-  preset sinh ra nhiều phiên bản khác nhau thay vì một.
-* **48 bề mặt** trong danh mục `novaprofile.core.surfaces`, và 28
-  bề mặt đã có tầng phục vụ: 14 ở tầng bản vá Blink, 4 ở tầng hook
-  native, 10 ở tầng runtime JavaScript.
-* Bản vá Chromium gồm 24 tệp, 3.048 dòng thêm, hai tệp patch trong
-  `novaprofile/core_patch/patches/`.
-* Bộ kiểm tra: **1.212 test đạt, 5 bỏ qua, 0 lỗi**, ruff sạch.
+The consequence for NOVA is unchanged: **changing the TLS layer changes
+JA3/JA4, and the two layers have to agree.** A profile that claims to be
+an Android phone but speaks TLS from a Windows desktop is exposed at that
+layer.
 
-### 6.2 Chỗ còn thiếu, theo mức độ ưu tiên
+---
 
-Bảng này đã đối chiếu với code đang có. Cột "Trạng thái" nói rõ
-surface đó đã được phục vụ chưa, và bởi tầng nào:
+## 6. Hidden surfaces
 
-* **Blink** — accessor trong Blink được thay bằng bản đọc cấu hình
-  của profile. Đây là tầng mạnh nhất, vì giá trị nằm ngay trong
-  tiến trình render, không phải trong `window`.
-* **Native** — hook riêng trong `nova_chromium_hooks.h`, dành cho
-  surface mà một script đọc độc lập được.
-* **JS** — lớp JavaScript trong ngữ cảnh trang.
-* **Chưa có** — chưa được phục vụ.
+This section collects the measurement techniques that are not obvious from
+reading a page — the ones that were found during the 2026-11-22
+verification and that a reader would otherwise have to rediscover.
 
-| Ưu tiên | Thiếu gì | Bằng chứng | Trạng thái |
-|---|---|---|---|
-| 1 | Canvas ổn định **và** khác nhau giữa các thiết bị | `canvas.commonPixelsHash`, `toDataURL` | Blink (nhiễu pixel) + JS |
-| 2 | `canvasReadbackDiffBytes` bằng 0 | ThumbmarkJS đọc cùng canvas hai lần | Blink |
-| 3 | WebGL renderer khớp với GPU thật của thiết bị | `gpu.renderer`, `mapVersion 1.0.3` | Blink + Native |
-| 4 | Audio `sampleHash` | `audio.sampleHash` | Native + JS |
-| 5 | Danh sách phông chữ theo hệ điều hành | `fonts` đo trong iframe | JS (`measureText`) |
-| 6 | `deviceMemory` và `hardwareConcurrency` khớp hạng thiết bị | Trọng số `memory` 0.5, `cpu` 0.2 | Blink |
-| 7 | `Math.acos(0.5)` và độ chính xác số thực | `math` | JS (xong 2026-11-22) |
-| 8 | `jsHeapSizeLimit` | `hardware.jsHeapSizeLimit` | JS (xong 2026-11-22) |
-| 9 | Danh sách quyền và trạng thái | `permissions` | JS |
-| 10 | Mã giải mã được | `mediaDecode` | JS (xong 2026-11-22) |
-| 11 | JA3/JA4 khớp với hệ điều hành | `ja4`, `tls.extensions` | **Chưa có** |
-| 12 | `navigator.webdriver` phải là `false` | Mọi trang đều kiểm tra | Blink |
-| 13 | Hàm gốc không bị đổi | `function_source` 86 lần, `error_stack` 24 lần | JS (`toString` trả mã native) |
+### 6.1 The device score gates page behaviour, not just a number
 
-#### Mục 7, 8 và 10 đã xong
+✅ Covered in §1.4. The full list of seventeen behaviours that are silently
+disabled on a low-scoring device is in §1.4. This is the single most
+consequential hidden surface in the Lobby group: it is observable from the
+outside as a difference in page behaviour, not as a field in a request.
 
-Ba bề mặt này được làm trong một lượt, và cả ba đã trở thành **trục
-được kiểm chứng** trong bộ dò end-to-end, không chỉ là lớp ghi đè.
+### 6.2 There is a second GPU fast path, not just `pc-fast-path`
 
-| Bề mặt | Mô hình | Trục | Cách đo |
-|---|---|---|---|
-| Độ chính xác số thực | `schema.signals.MathPrecision` | `math` | `Math.acos(0.5)` và 5 hàm nữa |
-| Trần heap | `schema.signals.HeapSizeLimit` | `heap` | `performance.memory.jsHeapSizeLimit` |
-| Mã giải mã | `schema.signals.MediaDecode` | `media_decode` | `MediaRecorder.isTypeSupported` |
+✅ Covered in §1.4. `market-low-model` and `android-hardware-fast-path`
+fire before `pc-fast-path`. A NOVA profile that is an Android phone is
+routed by the **Android** path, which keys on the GPU renderer's
+`matchedKey` and `rendererConfidence` — and if the renderer is not in the
+map (`confidence: "none"`, exactly what the survey's own sample data
+shows), the profile takes the slow four-axis path instead.
 
-Mỗi bề mặt có muối riêng, được rút từ trục HKDF riêng
-(`Axis.MATH_PRECISION`, `Axis.HEAP_SIZE`, `Axis.MEDIA_DECODE`), nên
-ba bề mặt này không bị trộn vào nhau và không trùng với bất kỳ bề
-mặt nào đã có.
+### 6.3 The API host is base64-obfuscated in the page
 
-**Một ràng buộc đáng ghi lại.** Dải giá trị của bề mặt số thực phải
-thoả hai yêu cầu ngược nhau:
+✅ Covered in §1.10. `jdeu2f-2868-ppp.oss-accelerate.aliyuncs.com`,
+split across a three-entry substitution table. A survey that reads the
+page for `api.` URLs finds nothing; a survey that reads the decoded table
+finds the OSS bucket.
 
-* **Hợp lý** — lệch quá một vài ulp là *một engine khác*, không phải
-  *một thiết bị khác*.
-* **Đủ sức chứa** — một ulp của số double quanh 1.0 là 2.22e-16, nên
-  dải rộng đúng một ulp chỉ chứa **ba** giá trị khác nhau. Một đội
-  trăm triệu profile sẽ gộp còn ba nhóm, và trục này không mang thông
-  tin gì.
+### 6.4 The API traffic is encrypted
 
-Dải được đặt rộng **mười sáu ulp**: đủ cho khoảng một trăm nghìn giá
-trị khác nhau cho mỗi hàm, và vẫn là giá trị mà một thư viện C thật
-có thể trả về. Sáu hàm nhân lên đưa trục lên khoảng một trăm bit.
-Bài kiểm tra `test_the_math_values_differ_between_profiles` giữ
-điều này không bị trượt lại.
+✅ Covered in §1.10. `/cocos/config_data.json` returns ciphertext. The
+startup chunk carries a `cryptoKey` and a `crypto: {enable: true}` request
+option. So the Lobby group is not observable by replaying its API calls
+without the key.
 
-Một điều nữa: giá trị của profile phải nằm trong dải, nếu không
-runtime sẽ kết luận rằng máy chủ là một engine khác và giữ lại câu
-trả lời của máy chủ — profile đó sẽ bị bỏ qua một cách âm thầm.
-`test_the_profile_math_values_stay_inside_the_epsilon` giữ điều đó.
+### 6.5 `LobbyDeviceCompatibility` lives in the HTML, not in a bundle
 
+✅ Covered in §1.5. Searching the JavaScript finds nothing — the
+whitelist and the `matches()` function are in an inline `<script>` in the
+page. This is why the previous survey could not locate it.
 
-### 6.3 Bề mặt trong danh mục mà chưa tầng nào phục vụ
+### 6.6 There is a second fingerprint library on ON68
 
-Danh mục `novaprofile.core.surfaces` liệt kê 48 bề mặt. Đối chiếu
-với ba tầng phục vụ (bản vá Blink, hook native, runtime JavaScript)
-thì 28 bề mặt đã có. Trong 20 bề mặt còn lại:
+✅ Covered in §2.2. ClientJS 0.2.1, with two CDN mirrors, failing over
+against ThumbmarkJS.
 
-* 5 bề mặt là **dữ liệu người dùng gõ** (`email`, `password`,
-  `phone`, `invite_code`, `full_name`). Đây không phải bề mặt trình
-  duyệt, và việc điều khiển chúng không thuộc tầng fingerprint.
-* 3 bề mặt là **quyết định phía máy chủ** (`public_ip`,
-  `address_history`, `timing`, `behaviour`). Trình duyệt không có
-  quyền với chúng; việc xử lý là của tầng mạng.
-* 1 bề mặt là **danh sách phông chữ** (`font_list`): runtime đã bọc
-  `measureText`, nhưng chưa có bảng phông theo hệ điều hành để bọc
-  theo.
-* 1 bề mặt là **danh sách quyền chi tiết**: runtime đã bọc
-  `permissions.query`, nhưng chưa có trạng thái riêng cho
-  `mediaDevices`.
-* 4 bề mặt là **chi tiết phụ**: `do_not_track`, `performance.memory`,
-  `MediaRecorder.isTypeSupported`, `indexedDB.databases()`.
-* 2 bề mặt là **chi tiết phụ về đồ họa**: `screen.availWidth` /
-  `availHeight` (đã có ở tầng Blink, nhưng danh mục gộp chung với
-  `screen.width`/`height` nên bộ đếm không khớp), và
-  `WebGL.getSupportedExtensions`.
+### 6.7 The device score runs in a separate Worker
 
-Tóm lại, **bảy bề mặt thực sự còn thiếu** theo thứ tự ưu tiên mà
-bảng 6.2 nêu: độ chính xác số thực, `jsHeapSizeLimit`, mã giải mã
-được, JA3/JA4, bảng phông theo hệ điều hành, trạng thái
-`mediaDevices`, và danh sách phông.
+✅ Covered in §1.11. `/assets/benchmark.worker-BCVIEdOS.js` (2290 bytes)
+reports `sort`, `cpuPure`, `cpuThroughput`, `decode` and `multiRound`. The
+`sort` and `cpu` axes are therefore measured in a Worker context, not in
+the main thread — so any override that behaves differently in a Worker is
+visible.
 
-### 6.4 Những lỗi đã tìm ra trong tầng JavaScript
+### 6.8 The device score has a hard-coded fallback
 
-Bộ kiểm tra cũ chỉ đọc *văn bản* của script, không chạy nó. Ba lỗi
-nghiêm trọng đã lọt qua đó, và cả ba đều làm cho tầng JavaScript
-**không hoạt động** trên trang thật:
+⚠️ Covered in §1.4. A profile that never finishes the score run is scored
+35 / `LOW` / `not-ready-low-fallback` and trips every degradation gate.
+This makes "the score never arrives" worse than "the score is low".
 
-1. **Biến không được khai báo.** Khối `navigator` so sánh với
-   `NATIVE_SOURCE`, một cái tên không tồn tại trong script. Lỗi
-   `ReferenceError` xảy ra ngay ở dòng đầu tiên của khối đó, nên
-   **mọi override phía sau nó đều không chạy**: màn hình, khung nhìn,
-   tỉ lệ điểm ảnh và client hints.
-2. **Rò mã nguồn.** Cách che nguồn cũ đặt thuộc tính `toString` riêng
-   lên hàm. Cách kiểm tra mà một script fingerprint dùng là
-   `Function.prototype.toString.call(getter)`, và hàm này đọc văn bản
-   nguồn *bên trong* của hàm, bỏ qua thuộc tính riêng. Nên mã nguồn
-   thật của override vẫn nằm đó cho trang đọc. Đây đúng là cách kiểm
-   tra mà ON68 chạy 86 lần.
-3. **Đọc global không bảo vệ.** Khối `navigator` đọc global trực tiếp.
-   Câu lệnh `if (nav)` ngay sau đó không bảo vệ được gì, vì lỗi đã ném
-   ra ở dòng trên nó.
+### 6.9 The device-score chunk can be re-run and overridden
 
-Cả ba đã được sửa và có test hồi quy:
+✅ The chunk reads a query parameter `mock.deviceScoreV2MultiRound` and a
+`mock.deviceScoreV2` value, and `mock.deviceScoreEveryTime` /
+`mock.deviceScoreV2EveryTime` force a re-run. These are test hooks left in
+production code. They are useful for verification, and they are also a way
+for a site to detect a visitor who has read the source.
 
-* `hide()` trả về hàm sau một `Proxy`. Proxy đáp ứng `toString` bằng
-  mã native, nên `Function.prototype.toString.call()` cũng trả mã
-  native. Proxy vẫn chuyển tiếp lời gọi, tên và độ dài.
-* Tên của getter cũng phải khớp. Một getter native có tên `"get"`, còn
-  tên của override (`"raw"`, `"value"`) là dấu hiệu không cần đọc mã
-  nguồn cũng nhận ra. Override giờ giữ tên của getter mà nó thay.
-* Mọi global được đọc qua `typeof`.
+### 6.10 A device redirect rewrites the URL from the same signals
 
-Bộ kiểm tra mới `tests/test_js_runtime_execution.py` **chạy** script
-dưới Node, trong ba môi trường: môi trường đầy đủ, môi trường
-trống (không có API trình duyệt nào), và kiểm tra hình dạng descriptor.
-Cả ba lỗi trên đều làm test đỏ, và đã xác nhận bằng cách sửa lại lỗi
-cũ rồi chạy lại.
+✅ Covered in §1.5. `__device_redirect` in the query string, and a rewrite
+between `/` and `/pc/`. A profile whose UA and viewport disagree will be
+moved between the two layouts.
 
-### 6.5 Điểm cần nói rõ
+### 6.11 ON68's `registerMethod` is derived from the user agent
 
-* FingerprintJS và ThumbmarkJS **băm giá trị rồi gửi**. Điều này có
-  nghĩa là giá trị thô không quan trọng bằng giá trị băm, nhưng băm
-  cũng không cứu được: hai thiết bị có cùng băm là hai thiết bị mà
-  nhà cung cấp gộp lại. NOVA phải cho ra **giá trị băm khác nhau**
-  giữa các thiết bị, đồng thời **ổn định** cho cùng một thiết bị.
-* `device@score@v2` cho điểm theo `memory`, `cpu`, `sort`, `image`.
-  Một profile nói là điện thoại Android 8 GB RAM nhưng
-  `hardwareConcurrency` là 16 sẽ bị trừ điểm ngay.
-* `earlyReturn` với `pc-fast-path` chỉ dùng cho máy tính. Profile
-  điện thoại sẽ đi đường tính đủ bốn trục, nên cả bốn trục phải
-  nhất quán với nhau.
-* Trường hợp xấu nhất không phải là bị phát hiện là giả, mà là bị
-  gộp vào nhau. Một thiết bị có `deviceMemory` là 4 nhưng
-  `hardwareConcurrency` là 8 và GPU là một con chip tầm trung thì
-  trông giống một chiếc điện thoại tầm trung hơn là giống một chiếc
-  flagship.
+✅ Covered in §2.5. `APP` / `H5` / `PWA` / `WEBCLIP`, decided by
+`/AppVer|AppShellVer/.test(navigator.userAgent)` and the
+`navigator.standalone` flag. A desktop UA yields `H5`; a patched Android
+UA that contains `AppShellVer` yields `APP`, and the two take different
+server-side paths.
 
-## 7. Cách đo lại
+### 6.12 The `zxe` name collides
 
-Các công cụ dùng để khảo sát nằm ở `.dataset_probe/`:
+✅ Covered in §1.6. On `c168j.vip` the identifier `zxe` refers to a
+completely unrelated function in the same chunk. Grep-based surface
+analysis must match on the call shape, not the name.
 
-* `survey_page.py` — tải trang, liệt kê trường biểu mẫu, tìm mã
-  nhúng và tải các tệp tập lệnh, rồi đếm các lần gọi API trình
-  duyệt trong từng tệp.
-* `detail_script.py` — in đoạn mã quanh mỗi lần gọi, để đọc được
-  cách lấy giá trị và cách gửi đi.
-* `list_components.py` — liệt kê các nhóm của một thư viện fingerprint.
+---
 
-Kết quả lưu ở `.dataset_probe/survey/`.
+## 7. How to re-measure
 
-## 8. Những gì chưa làm
+The original tooling lives in `.dataset_probe/`:
 
-* Chưa đăng ký thật ở bất kỳ trang nào, nên chưa biết chính xác
-  trường nào phía sau bị bắt buộc và trường nào tuỳ chọn.
-* Chưa đo được `linkantoan.vip`.
-* Chưa đo hành vi ở tầng Cloudflare. Khảo sát này chỉ nhìn được
-  mã trong trang, không nhìn được quyết định của Cloudflare.
-* Chưa đo được JA3/JA4 thật của NOVA. Đó là việc tiếp theo.
+* `survey_page.py` — fetch a page, list the form fields, find embedded
+  code, download the script files, then count the browser-API calls in each
+  file.
+* `detail_script.py` — print the code around each call, so the way the
+  value is obtained and sent can be read.
+* `list_components.py` — list the component groups of a fingerprint library.
+
+Results are stored in `.dataset_probe/survey/`.
+
+### 7.1 What the 2026-11-22 pass added
+
+* **Decompress gzip.** All three Lobby sites serve gzip-encoded HTML.
+  A fetch that does not decompress sees a binary blob and finds no
+  markers. This single mistake makes `yaccm8h.cc` look empty.
+* **Fetch the bundles, not just the HTML.** The most important findings in
+  this pass — the device-score chunk, the `pc-fast-path` implementation,
+  `initBotion`, the ClientJS loader, the obfuscated API host — are only
+  visible in the JavaScript.
+* **Read the response headers.** `Server:`, `x-oss-*`, `Ali-Swift-*` and
+  `Server: cloudflare` settle the CDN question directly, and DNS settles
+  it independently.
+* **Try both a browser and a plain TLS client.** `linkantoan.vip` is
+  unreachable from Python and fully reachable from a browser; the two
+  channels disagree, and the disagreement is itself the finding.
+* **Search for the marker in the whole page, not only in the script
+  files.** `LobbyDeviceCompatibility` is inline HTML.
+* **Decode base64 before giving up on a host.** The Lobby API host is
+  stored as base64 in a substitution table.
+
+---
+
+## 8. Still not done
+
+* No account has actually been registered on any of the six sites, so
+  which fields the server enforces beyond the published spec is still
+  unknown.
+* The `getFingerprint` response body could not be captured (§1.3), so the
+  exact shape of what the server computes from FingerprintJS is unknown.
+* The Turnstile claim for `vi5prod-ecp` is **retracted** (§4.4), not
+  merely unconfirmed. If Turnstile is used, it is applied below the
+  application layer.
+* Cloudflare's own decisions were not measured. This survey can only see
+  the page; it cannot see the edge.
+* NOVA's own JA3/JA4 has not been measured against the edge. That is the
+  next task.
+* The `linkantoan.vip` page was read in a browser, but its bundles were
+  fetched through the same path as Jun88's because a plain TLS client
+  cannot reach the site. The two clones share `vendor.5882b22c.js`
+  byte-for-byte, so the shared code is verified, but linkantoan's own
+  `main.f21ec10e.js` was fetched successfully and checked separately.

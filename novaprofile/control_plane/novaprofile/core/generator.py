@@ -10,6 +10,7 @@ profile, and two different seeds never produce the same fingerprint.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -76,7 +77,12 @@ from ..schema.signals import (
 )
 from ..schema.version import BrowserVersion
 from .devices import get_preset
-from .font_catalog import fonts_for_device
+from .font_catalog import (
+    MANDATORY_FONTS,
+    SCRIPT_FONTS,
+    device_tier,
+    fonts_for_device,
+)
 from .geo_catalog import GEO_CATALOGUE
 from .hardware_approximation import (
     approximate_device_memory,
@@ -151,6 +157,404 @@ ANDROID_FONT_PRESET: tuple[str, ...] = (
     "Sourc Code Pro",
     "Ubuntu Medium",
 )
+
+# --------------------------------------------------------------------------
+# The speech synthesis voice catalogue
+# --------------------------------------------------------------------------
+#
+# ``speechSynthesis.getVoices()`` is a fingerprinting surface, and a site
+# that reads it learns three things at once: which languages the handset
+# can *speak*, which locale the handset is *set* to, and how much room the
+# device has for the optional TTS language packs.  Getting any one of the
+# three wrong is enough to separate the profile from a real device.
+#
+# The rules below are taken from the Chromium source, not guessed:
+#
+# * ``content/public/android/java/src/org/chromium/content/browser/
+#   TtsPlatformImpl.java`` builds the Android voice list by walking
+#   ``Locale.getAvailableLocales()`` and keeping every locale that the
+#   platform TTS engine reports as available.  The *name* of such a voice
+#   is ``locale.getDisplayLanguage()`` plus, when the locale has a
+#   country, ``" " + locale.getDisplayCountry()``; the *lang* is
+#   ``locale.toString()``.  A Vietnamese handset therefore exposes a voice
+#   named "Vietnamese Vietnam" and no Japanese voice at all, because the
+#   Japanese TTS pack is not installed.
+#
+# * ``content/browser/speech/speech_synthesis_impl.cc`` copies that list
+#   into the Blink binding.  It sets ``voice_uri`` to the *same string* as
+#   ``name``, ``is_local_service`` to ``!voice.remote`` and ``is_default``
+#   to ``(index == 0)`` -- the first voice of the list is the default one.
+#
+# * ``content/browser/speech/tts_win.cc`` shows the desktop rule for
+#   comparison: the voice name is the SAPI token description ("Microsoft
+#   David Desktop - English (United States)") and the lang is the LCID
+#   resolved to a BCP-47 locale name.
+#
+# This project builds Android profiles, so the Android rule is the one
+# that applies: a voice is a *locale*, named after the locale's display
+# name in the device language.
+
+#: The display name of every locale the catalogue can produce a voice for.
+#:
+#: The key is the locale as it appears in the geo catalogue (``vi-VN``),
+#: the value is the pair Chromium would report for it: the display
+#: language, and the display country when the locale names one.
+#:
+#: The names follow ``java.util.Locale.getDisplayLanguage()`` and
+#: ``getDisplayCountry()`` with an English display locale, because that is
+#: what an Android handset with the English system language reports.
+#: Locales whose language is not in this table fall back to the bare
+#: language subtag, which is what ``getDisplayLanguage()`` returns for a
+#: language the platform has no translation for.
+VOICE_DISPLAY_NAMES: dict[str, tuple[str, str]] = {
+    # -- the languages a Vietnamese handset usually carries ---------------
+    "vi-VN": ("Vietnamese", "Vietnam"),
+    "vi": ("Vietnamese", ""),
+    "en-US": ("English", "United States"),
+    "en-GB": ("English", "United Kingdom"),
+    "en-AU": ("English", "Australia"),
+    "en-CA": ("English", "Canada"),
+    "en-IN": ("English", "India"),
+    "en-SG": ("English", "Singapore"),
+    "en-NZ": ("English", "New Zealand"),
+    "en-ZA": ("English", "South Africa"),
+    "en-IE": ("English", "Ireland"),
+    "en": ("English", ""),
+    "fr-FR": ("French", "France"),
+    "fr-CA": ("French", "Canada"),
+    "fr-BE": ("French", "Belgium"),
+    "fr-CH": ("French", "Switzerland"),
+    "fr-DZ": ("French", "Algeria"),
+    "fr-MA": ("French", "Morocco"),
+    "fr-SN": ("French", "Senegal"),
+    "fr-CI": ("French", "Cote d'Ivoire"),
+    "fr": ("French", ""),
+    "zh-CN": ("Chinese", "China"),
+    "zh-TW": ("Chinese", "Taiwan"),
+    "zh-HK": ("Chinese", "Hong Kong"),
+    "zh": ("Chinese", ""),
+    "ja-JP": ("Japanese", "Japan"),
+    "ja": ("Japanese", ""),
+    "ko-KR": ("Korean", "South Korea"),
+    "ko-KP": ("Korea", "North Korea"),
+    "ko": ("Korean", ""),
+    "th-TH": ("Thai", "Thailand"),
+    "th": ("Thai", ""),
+    "km-KH": ("Khmer", "Cambodia"),
+    "km": ("Khmer", ""),
+    "lo-LA": ("Lao", "Laos"),
+    "lo": ("Lao", ""),
+    "my-MM": ("Burmese", "Myanmar"),
+    "my": ("Burmese", ""),
+    "id-ID": ("Indonesian", "Indonesia"),
+    "id": ("Indonesian", ""),
+    "ms-MY": ("Malay", "Malaysia"),
+    "ms": ("Malay", ""),
+    "de-DE": ("German", "Germany"),
+    "de-CH": ("German", "Switzerland"),
+    "de-AT": ("German", "Austria"),
+    "de": ("German", ""),
+    "ru-RU": ("Russian", "Russia"),
+    "ru": ("Russian", ""),
+    "es-ES": ("Spanish", "Spain"),
+    "es-MX": ("Spanish", "Mexico"),
+    "es-AR": ("Spanish", "Argentina"),
+    "es-CL": ("Spanish", "Chile"),
+    "es-PE": ("Spanish", "Peru"),
+    "es-PR": ("Spanish", "Puerto Rico"),
+    "es-US": ("Spanish", "United States"),
+    "es": ("Spanish", ""),
+    "it-IT": ("Italian", "Italy"),
+    "it": ("Italian", ""),
+    "pt-BR": ("Portuguese", "Brazil"),
+    "pt-PT": ("Portuguese", "Portugal"),
+    "pt": ("Portuguese", ""),
+    "nl-NL": ("Dutch", "Netherlands"),
+    "nl-BE": ("Dutch", "Belgium"),
+    "nl": ("Dutch", ""),
+    "pl-PL": ("Polish", "Poland"),
+    "pl": ("Polish", ""),
+    "cs-CZ": ("Czech", "Czechia"),
+    "cs": ("Czech", ""),
+    "sk-SK": ("Slovak", "Slovakia"),
+    "sk": ("Slovak", ""),
+    "hu-HU": ("Hungarian", "Hungary"),
+    "hu": ("Hungarian", ""),
+    "ro-RO": ("Romanian", "Romania"),
+    "ro": ("Romanian", ""),
+    "bg-BG": ("Bulgarian", "Bulgaria"),
+    "bg": ("Bulgarian", ""),
+    "el-GR": ("Greek", "Greece"),
+    "el": ("Greek", ""),
+    "tr-TR": ("Turkish", "Turkey"),
+    "tr": ("Turkish", ""),
+    "uk-UA": ("Ukrainian", "Ukraine"),
+    "uk": ("Ukrainian", ""),
+    "da-DK": ("Danish", "Denmark"),
+    "da": ("Danish", ""),
+    "sv-SE": ("Swedish", "Sweden"),
+    "sv": ("Swedish", ""),
+    "nb-NO": ("Norwegian Bokmal", "Norway"),
+    "nb": ("Norwegian Bokmal", ""),
+    "fi-FI": ("Finnish", "Finland"),
+    "fi": ("Finnish", ""),
+    "is-IS": ("Icelandic", "Iceland"),
+    "is": ("Icelandic", ""),
+    "ar-EG": ("Arabic", "Egypt"),
+    "ar-SA": ("Arabic", "Saudi Arabia"),
+    "ar-AE": ("Arabic", "United Arab Emirates"),
+    "ar-IL": ("Arabic", "Israel"),
+    "ar": ("Arabic", ""),
+    "he-IL": ("Hebrew", "Israel"),
+    "he": ("Hebrew", ""),
+    "fa-IR": ("Persian", "Iran"),
+    "fa": ("Persian", ""),
+    "hi-IN": ("Hindi", "India"),
+    "hi": ("Hindi", ""),
+    "bn-IN": ("Bengali", "India"),
+    "bn-BD": ("Bengali", "Bangladesh"),
+    "bn": ("Bengali", ""),
+    "ta-IN": ("Tamil", "India"),
+    "ta": ("Tamil", ""),
+    "te-IN": ("Telugu", "India"),
+    "te": ("Telugu", ""),
+    "mr-IN": ("Marathi", "India"),
+    "mr": ("Marathi", ""),
+    "gu-IN": ("Gujarati", "India"),
+    "gu": ("Gujarati", ""),
+    "ur-PK": ("Urdu", "Pakistan"),
+    "ur": ("Urdu", ""),
+    "ne-NP": ("Nepali", "Nepal"),
+    "ne": ("Nepali", ""),
+    "si-LK": ("Sinhala", "Sri Lanka"),
+    "si": ("Sinhala", ""),
+    "sw-KE": ("Swahili", "Kenya"),
+    "sw": ("Swahili", ""),
+    "am-ET": ("Amharic", "Ethiopia"),
+    "am": ("Amharic", ""),
+}
+
+#: The number of TTS language packs a device of each tier carries.
+#:
+#: The tier is the same one the font catalogue uses (see
+#: :func:`novaprofile.core.font_catalog.device_tier`): the RAM and the
+#: model year decide how much room the system partition has, and the
+#: optional TTS language packs are the first thing a manufacturer drops
+#: when the partition is tight.  A budget handset ships with the system
+#: language and English; a flagship carries a noticeably longer list.
+#:
+#: The number is a *cap*, not a constant.  The device's own locale always
+#: gets a voice, and the remaining slots are filled from the locales the
+#: device carries.
+VOICE_TIER_BUDGET: int = 3
+VOICE_TIER_MID: int = 5
+VOICE_TIER_FLAGSHIP: int = 8
+
+#: The locales that a device always carries a voice for, whatever its tier.
+#:
+#: The system language and English are the two that are never absent: the
+#: system language because the TTS engine always ships it, and English
+#: because the Google TTS engine bundles it on every device.
+VOICE_ALWAYS_LOCALES: tuple[str, ...] = ("en",)
+
+#: The TTS language packs that a device is likely to carry *in addition*
+#: to its own system language, grouped by the region of the world the
+#: handset lives in.
+#:
+#: Android installs the optional TTS language packs on demand, from the
+#: Play Store or from the "Text-to-speech output" settings screen, and
+#: the packs that get downloaded follow the region: a Vietnamese handset
+#: that carries a second language carries Chinese or Japanese, because
+#: that is the language of the trade it is in, while a Brazilian handset
+#: carries Spanish or English.  A French handset carrying a Vietnamese
+#: voice would be a device nobody owns.
+#:
+#: The value is the *pool* the extra voices are drawn from.  The tier
+#: decides how many of them the device carries, so two devices of
+#: different tiers draw from the same shelf and end up with different
+#: lists.
+#:
+#: The pack locales are the regional forms, because that is the form the
+#: engine reports when the regional pack is installed.
+VOICE_PACK_POOL_BY_REGION: dict[str, tuple[str, ...]] = {
+    # -- Vietnam and the rest of mainland South-East Asia ------------------
+    "vn": (
+        "vi-VN",
+        "zh-CN",
+        "zh-TW",
+        "ja-JP",
+        "ko-KR",
+        "km-KH",
+        "th-TH",
+        "my-MM",
+        "en-US",
+    ),
+    # -- the rest of South-East Asia --------------------------------------
+    "sea": ("en-US", "en-GB", "zh-CN", "zh-TW", "ja-JP", "ko-KR", "th-TH", "vi-VN", "ms-MY"),
+    # -- East Asia --------------------------------------------------------
+    "ea": ("en-US", "zh-CN", "zh-TW", "ja-JP", "ko-KR", "en-GB"),
+    # -- South Asia -------------------------------------------------------
+    "sa": (
+        "en-US",
+        "en-GB",
+        "hi-IN",
+        "bn-IN",
+        "ta-IN",
+        "te-IN",
+        "mr-IN",
+        "ur-PK",
+        "ne-NP",
+        "si-LK",
+    ),
+    # -- the Middle East and Central Asia ---------------------------------
+    "me": ("en-US", "ar-EG", "ar-SA", "ar-AE", "he-IL", "fa-IR", "tr-TR", "ru-RU"),
+    # -- Africa -----------------------------------------------------------
+    "af": ("en-US", "en-GB", "en-ZA", "fr-FR", "ar-EG", "sw-KE", "am-ET"),
+    # -- Western Europe ---------------------------------------------------
+    "we": ("en-US", "en-GB", "fr-FR", "de-DE", "es-ES", "it-IT", "pt-PT", "nl-NL", "pl-PL"),
+    # -- Eastern and Central Europe ---------------------------------------
+    "ee": (
+        "en-US",
+        "en-GB",
+        "ru-RU",
+        "uk-UA",
+        "pl-PL",
+        "cs-CZ",
+        "sk-SK",
+        "hu-HU",
+        "ro-RO",
+        "bg-BG",
+    ),
+    # -- North America ----------------------------------------------------
+    "na": ("en-US", "en-CA", "es-US", "es-MX", "fr-CA", "en-GB"),
+    # -- Latin America ----------------------------------------------------
+    "la": ("es-ES", "es-MX", "es-AR", "es-CL", "es-PE", "es-PR", "pt-BR", "en-US", "fr-FR"),
+    # -- the English-speaking world ---------------------------------------
+    "en": ("en-US", "en-GB", "en-AU", "en-CA", "en-IN", "en-SG", "en-NZ", "en-ZA", "en-IE"),
+}
+
+#: The region each country of the geo catalogue belongs to.
+#:
+#: The country code is the anchor: it is what the geo catalogue already
+#: knows for every entry, and it is stable across the whole catalogue.
+VOICE_REGION_BY_COUNTRY: dict[str, str] = {
+    # -- Vietnam and the rest of mainland South-East Asia ------------------
+    "VN": "vn",
+    "KH": "sea",
+    "LA": "sea",
+    "MM": "sea",
+    "TH": "sea",
+    "ID": "sea",
+    "MY": "sea",
+    "PH": "sea",
+    "SG": "sea",
+    # -- East Asia --------------------------------------------------------
+    "CN": "ea",
+    "TW": "ea",
+    "HK": "ea",
+    "JP": "ea",
+    "KR": "ea",
+    "KP": "ea",
+    "MN": "ea",
+    # -- South Asia -------------------------------------------------------
+    "IN": "sa",
+    "BD": "sa",
+    "PK": "sa",
+    "NP": "sa",
+    "LK": "sa",
+    # -- the Middle East and Central Asia ---------------------------------
+    "AE": "me",
+    "SA": "me",
+    "IL": "me",
+    "IR": "me",
+    "IQ": "me",
+    "JO": "me",
+    "LB": "me",
+    "TR": "me",
+    "QA": "me",
+    "KZ": "me",
+    "UZ": "me",
+    # -- Africa -----------------------------------------------------------
+    "ZA": "af",
+    "EG": "af",
+    "MA": "af",
+    "DZ": "af",
+    "SN": "af",
+    "CI": "af",
+    "NG": "af",
+    "KE": "af",
+    "ET": "af",
+    # -- Western Europe ---------------------------------------------------
+    "GB": "we",
+    "IE": "we",
+    "FR": "we",
+    "DE": "we",
+    "AT": "we",
+    "CH": "we",
+    "ES": "we",
+    "PT": "we",
+    "IT": "we",
+    "NL": "we",
+    "BE": "we",
+    "LU": "we",
+    "DK": "we",
+    "SE": "we",
+    "NO": "we",
+    "FI": "we",
+    "IS": "we",
+    # -- Eastern and Central Europe ---------------------------------------
+    "RU": "ee",
+    "UA": "ee",
+    "BY": "ee",
+    "PL": "ee",
+    "CZ": "ee",
+    "SK": "ee",
+    "HU": "ee",
+    "RO": "ee",
+    "BG": "ee",
+    "GR": "ee",
+    "HR": "ee",
+    "RS": "ee",
+    "LT": "ee",
+    "LV": "ee",
+    "EE": "ee",
+    # -- North America ----------------------------------------------------
+    "US": "na",
+    "CA": "na",
+    "MX": "la",
+    # -- Latin America ----------------------------------------------------
+    "BR": "la",
+    "AR": "la",
+    "CL": "la",
+    "PE": "la",
+    "PR": "la",
+    "CO": "la",
+    "VE": "la",
+    "EC": "la",
+    "BO": "la",
+    "PY": "la",
+    "UY": "la",
+    "CR": "la",
+    "PA": "la",
+    "DO": "la",
+    "GT": "la",
+    "HN": "la",
+    "SV": "la",
+    "NI": "la",
+    "CU": "la",
+    "JM": "la",
+    # -- the English-speaking world ---------------------------------------
+    "AU": "en",
+    "NZ": "en",
+    "IE2": "en",
+    "IN2": "en",
+}
+
+#: The region used when the country of the geo target is not in
+#: :data:`VOICE_REGION_BY_COUNTRY`.  The Western European pool is the
+#: safest fallback: it is the one whose packs are installed on the
+#: largest number of devices.
+VOICE_REGION_FALLBACK: str = "we"
 
 #: The WebGL extension sets that the catalog GPUs actually expose.
 _WEBGL1_EXTENSIONS: tuple[str, ...] = (
@@ -291,6 +695,198 @@ def _geo_target(
     )
 
 
+def _voice_budget(tier: str) -> int:
+    """Return the number of TTS language packs a device of ``tier`` carries."""
+
+    return {
+        "budget": VOICE_TIER_BUDGET,
+        "mid": VOICE_TIER_MID,
+        "flagship": VOICE_TIER_FLAGSHIP,
+    }[tier]
+
+
+def _voice(locale: str, index: int) -> SpeechVoice:
+    """Return the voice of ``locale`` at position ``index`` of the list.
+
+    Chromium sets ``voice_uri`` to the same string as ``name``
+    (``speech_synthesis_impl.cc``) and marks the first voice of the
+    list as the default one.
+    """
+
+    name = _voice_display_name(locale)
+    return SpeechVoice(
+        name=name,
+        lang=locale,
+        default=index == 0,
+        local_service=True,
+        voice_uri=name,
+    )
+
+
+def _voice_mandatory_locales(geo: GeoTarget) -> list[str]:
+    """Return the locales a device carries whatever its tier.
+
+    These are the packs the TTS engine is guaranteed to have: the system
+    locale, the bare language of that locale, the locales the user has
+    downloaded as the secondary ones of the geo target, and English.
+    """
+
+    selected: list[str] = [geo.locale]
+
+    primary = geo.locale.split("-")[0]
+    if primary != geo.locale:
+        selected.append(primary)
+
+    for secondary in geo.languages:
+        if secondary != geo.locale and secondary != primary:
+            selected.append(secondary)
+
+    for always in VOICE_ALWAYS_LOCALES:
+        if always not in selected:
+            selected.append(always)
+
+    return selected
+
+
+def _select_voice_locales(
+    geo: GeoTarget,
+    tier: str,
+    extra: Sequence[str] = (),
+) -> list[str]:
+    """Return the locales of the voice list, in the order of the engine.
+
+    This is the single implementation of the selection rules; the
+    generator and :func:`voices_for_device` both call it, so a test of
+    the catalogue tests the list the generator really produces.
+
+    The rules are:
+
+    * the device's own locale comes first -- it is the pack the engine
+      ships with and the voice it picks for the system language,
+    * the bare language of that locale follows, because the engine
+      reports the language-only variant when the language is installed
+      but the regional pack is not,
+    * the secondary locales of the geo target follow, because they are
+      the packs the user has actually downloaded,
+    * English follows, because the Google TTS engine bundles it on every
+      device,
+    * the extra slots are filled from the region pool, whose size the
+      tier decides.
+
+    ``extra`` names the packs the device carries beyond the ones the
+    locale and the geo target imply.  The generator draws them from the
+    seed; the catalogue seam passes them in.
+    """
+
+    budget = _voice_budget(tier)
+
+    selected = _voice_mandatory_locales(geo)
+
+    for pack in extra:
+        if pack not in selected:
+            selected.append(pack)
+
+    # Trim to the tier's budget, but never drop the device's own
+    # language: a handset that cannot speak its system language is not
+    # a handset.
+    selected = selected[: max(2, budget)]
+    if geo.locale not in selected:
+        selected[0] = geo.locale
+
+    # The order of the list decides which voice is the default one, and
+    # the default voice is the one the engine picks for the system
+    # language.  The device's own locale therefore comes first, and the
+    # rest keeps the catalogue order.
+    return [geo.locale] + [loc for loc in selected if loc != geo.locale]
+
+
+def voices_for_device(
+    locale: str,
+    *,
+    country_code: str,
+    ram_gb: int,
+    year: int,
+    languages: tuple[str, ...] = (),
+) -> list[SpeechVoice]:
+    """Return the voice list of a device with these properties.
+
+    This is the deterministic seam of the voice catalogue: it takes the
+    physical properties of the handset and returns exactly the list its
+    TTS engine would expose.  The generator calls the same rules, so a
+    test can check the tier rules without having to draw a seed.
+
+    The parameters are the same ones the generator uses:
+
+    * ``locale`` is the system locale of the device,
+    * ``country_code`` decides the region the device lives in, and so
+      the pool of the extra language packs,
+    * ``ram_gb`` and ``year`` decide the tier, and so the number of the
+      language packs,
+    * ``languages`` are the secondary locales the user has downloaded.
+    """
+
+    tier = device_tier(ram_gb, year)
+    budget = _voice_budget(tier)
+
+    geo = GeoTarget(
+        locale=locale,
+        timezone="UTC",
+        country_code=country_code,
+        currency="USD",
+        hour_cycle="h23",
+        languages=tuple(languages) or (locale,),
+    )
+
+    # The extra slots are filled from the region pool.  The generator
+    # draws them from the seed; the order here is the catalogue order,
+    # which is enough to check the shape of the list.
+    extra: list[str] = []
+    for pack in _voice_pack_pool(geo):
+        if len(extra) >= budget:
+            break
+        extra.append(pack)
+
+    selected = _select_voice_locales(geo, tier, extra)
+    return [_voice(loc, index) for index, loc in enumerate(selected)]
+
+
+def _voice_pack_pool(geo: GeoTarget) -> tuple[str, ...]:
+    """Return the TTS language packs a device in ``geo`` could carry.
+
+    The pool is the one of the device's region, so the extra voices are
+    the languages that are actually spoken around it.  The device's own
+    locale is put first, because the pack of the system language is the
+    one that is certainly installed.
+    """
+
+    region = VOICE_REGION_BY_COUNTRY.get(geo.country_code, VOICE_REGION_FALLBACK)
+    pool = VOICE_PACK_POOL_BY_REGION.get(region, VOICE_PACK_POOL_BY_REGION["we"])
+
+    ordered = [geo.locale] + [pack for pack in pool if pack != geo.locale]
+    return tuple(ordered)
+
+
+def _voice_display_name(locale: str) -> str:
+    """Return the name Chromium gives the TTS voice of ``locale``.
+
+    ``TtsPlatformImpl.java`` builds the name from
+    ``locale.getDisplayLanguage()`` and, when the locale names a
+    country, ``" " + locale.getDisplayCountry()``.  A locale that is not
+    in :data:`VOICE_DISPLAY_NAMES` falls back to its language subtag,
+    which is what ``getDisplayLanguage()`` returns for a language the
+    platform has no translation for.
+    """
+
+    display = VOICE_DISPLAY_NAMES.get(locale)
+    if display is not None:
+        language, country = display
+    else:
+        language, country = locale.split("-")[0], ""
+    if not country:
+        return language
+    return f"{language} {country}"
+
+
 # --------------------------------------------------------------------------
 # The generator
 # --------------------------------------------------------------------------
@@ -310,6 +906,7 @@ class ProfileGenerator:
         self._device_ram_gb = 4
         self._device_year = 2024
         self._device_release = "14"
+        self._device_locale_primary = ""
 
     # ------------------------------------------------------------------
     # Public API
@@ -386,6 +983,7 @@ class ProfileGenerator:
         self._device_ram_gb = physical_ram_gb
         self._device_year = preset.year
         self._device_release = preset.release
+        self._device_locale_primary = geo_target.locale.split("-")[0].lower()
 
         # The browser version is chosen by the caller (or derived from the
         # device's own Android release); the capability entry decides the
@@ -453,7 +1051,7 @@ class ProfileGenerator:
             fonts=self._build_fonts(deriver, geo_target.locale),
             media_devices=self._build_media_devices(deriver),
             storage_network=self._build_storage(deriver),
-            battery_speech_gamepad=self._build_battery(deriver),
+            battery_speech_gamepad=self._build_battery(deriver, geo_target),
             sensors=self._build_sensors(deriver),
             math_precision=self._build_math_precision(deriver),
             heap_size_limit=self._build_heap_size_limit(deriver),
@@ -652,10 +1250,15 @@ class ProfileGenerator:
         # notifications is the shape of a fresh disposable browser, and a
         # fleet of those is trivially groupable.  The notifications state
         # therefore follows the location one.
+        #
+        # The branch for a denied location keeps the notifications
+        # granted or pending, and never denied: the two denials
+        # together are the shape of a disposable browser, and the
+        # consistency resolver reads such a profile as atypical.
         if policies["geolocation"] == "denied":
             policies["notifications"] = deriver.derive_weighted_choice(
                 Axis.NAVIGATOR,
-                [("granted", 0.5), ("prompt", 0.4), ("denied", 0.1)],
+                [("granted", 0.55), ("prompt", 0.45)],
                 context="perm.notifications.denied-geo",
             )
         else:
@@ -756,9 +1359,7 @@ class ProfileGenerator:
         # cutout take.  A phone with a punch hole reports a taller inset
         # than one without, and a flat panel reports none at all, so the
         # inset is drawn per unit rather than fixed.
-        inset_top = deriver.derive_choice(
-            Axis.SCREEN_VIEWPORT, (0, 24, 36, 48), context="safe-top"
-        )
+        inset_top = deriver.derive_choice(Axis.SCREEN_VIEWPORT, (0, 24, 36, 48), context="safe-top")
         inset_bottom = deriver.derive_choice(
             Axis.SCREEN_VIEWPORT, (0, 16, 24, 48), context="safe-bottom"
         )
@@ -1009,9 +1610,7 @@ class ProfileGenerator:
         salt = deriver.derive_bytes(Axis.WEBGPU, 16, context="salt").hex()
 
         if not enabled:
-            return WebGPUConfig(
-                enabled=False, adapter=adapter, features=[], limits={}, salt=salt
-            )
+            return WebGPUConfig(enabled=False, adapter=adapter, features=[], limits={}, salt=salt)
 
         # An adapter that reports no limits and no features is not something
         # a real GPU produces: every WebGPU implementation exposes a limit
@@ -1129,9 +1728,7 @@ class ProfileGenerator:
             index = 0
             while all(delta == 0 for delta in deltas):
                 index += 1
-                deltas[index % 4] = deriver.derive_int(
-                    Axis.RECTS, -1, 1, context=f"retry-{index}"
-                )
+                deltas[index % 4] = deriver.derive_int(Axis.RECTS, -1, 1, context=f"retry-{index}")
 
         return Rects(
             mode="noise",
@@ -1164,6 +1761,18 @@ class ProfileGenerator:
             year=self._device_year,
             release=self._device_release,
         )
+
+        # A manufacturer's system image does not carry every optional
+        # family the platform ships.  The vendor picks the subset that
+        # fits the partition it ships, and a Google system update
+        # prunes a family here and there.  Two handsets of the same
+        # model bought from the same shop can therefore report
+        # different font lists, and a fleet where the whole model
+        # reports one list hands a site a grouping key for free.
+        pruned = self._pruned_fonts(deriver, available)
+        if pruned is not available:
+            available = pruned
+
         count = deriver.derive_int(Axis.FONTS, min(8, len(available)), len(available), "count")
         installed = list(deriver.derive_shuffled(Axis.FONTS, available, context="shuffle"))[:count]
         # Roboto and Noto Color Emoji are always present on Android.
@@ -1177,6 +1786,37 @@ class ProfileGenerator:
             preserve_metric_clusters=True,
         )
 
+    def _pruned_fonts(self, deriver: SeedDeriver, available: list[str]) -> list[str]:
+        """Drop the optional families this unit's system image does not ship.
+
+        Only the families the *mandatory* set does not protect may go,
+        and only a few of them, and only on a minority of the units.
+        The shape of the result is the shape of a real handset: the
+        system's own families and the user's script are always there,
+        while the decorative extras come and go with the vendor's
+        partition budget and with the age of the system image.
+        """
+
+        optional = [
+            name
+            for name in available
+            if name not in MANDATORY_FONTS
+            and name not in SCRIPT_FONTS.get(self._device_locale_primary, ())
+        ]
+        if len(optional) < 3:
+            return available
+
+        # Most units ship the full set; a minority has had a family or
+        # two pruned from it.
+        if not deriver.derive_bool(Axis.FONTS, 0.55, context="font.pruned"):
+            return available
+
+        drop_count = deriver.derive_int(Axis.FONTS, 1, min(4, len(optional) - 1), "font.drop_count")
+        dropped = set(
+            deriver.derive_shuffled(Axis.FONTS, optional, context="font.drop_pick")[:drop_count]
+        )
+        return [name for name in available if name not in dropped]
+
     def _build_media_devices(self, deriver: SeedDeriver) -> MediaDevices:
         salt = deriver.derive_bytes(Axis.MEDIA_DEVICES, 16, context="salt").hex()
 
@@ -1189,6 +1829,17 @@ class ProfileGenerator:
         has_audio_in = deriver.derive_bool(Axis.MEDIA_DEVICES, 0.97, "audio-in")
         has_audio_out = deriver.derive_bool(Axis.MEDIA_DEVICES, 0.98, "audio-out")
         has_video = deriver.derive_bool(Axis.MEDIA_DEVICES, 0.92, "video-in")
+
+        # The three draws are independent, and their combination would
+        # produce a handset with neither a microphone nor a camera: a
+        # device that no shop sells.  The independent draw is kept for
+        # the three cases that *are* real -- a tablet without a camera,
+        # a handset without a front camera -- but the combination that
+        # leaves the profile with no capture device at all is repaired
+        # here, because the consistency resolver reads such a profile as
+        # a contradiction and a site can group on it.
+        if not has_audio_in and not has_video:
+            has_audio_in = True
 
         # The device identifier is not a readable name.  Chromium salts
         # the origin and the device's own information and hashes the
@@ -1219,9 +1870,7 @@ class ProfileGenerator:
             microphone and the speaker of one handset share a group,
             because they are one unit.
             """
-            digest = deriver.derive_bytes(
-                Axis.MEDIA_DEVICES, 32, context=f"group-id:{kind}"
-            )
+            digest = deriver.derive_bytes(Axis.MEDIA_DEVICES, 32, context=f"group-id:{kind}")
             return digest.hex()
 
         audio_inputs: list[AudioInputDevice] = []
@@ -1323,7 +1972,7 @@ class ProfileGenerator:
                 3_221_225_472,
                 6_442_450_944,
                 12_884_901_888,
-            25_769_803_776,
+                25_769_803_776,
             ),
             context="quota",
         )
@@ -1369,9 +2018,7 @@ class ProfileGenerator:
                 rtt_low, rtt_high = 30, 120
 
         downlink = round(
-            deriver.derive_float(
-                Axis.BATTERY_NETWORK, downlink_low, downlink_high, "downlink"
-            ),
+            deriver.derive_float(Axis.BATTERY_NETWORK, downlink_low, downlink_high, "downlink"),
             2,
         )
         rtt = deriver.derive_int(Axis.BATTERY_NETWORK, rtt_low, rtt_high, "rtt")
@@ -1388,7 +2035,7 @@ class ProfileGenerator:
             salt=salt,
         )
 
-    def _build_battery(self, deriver: SeedDeriver) -> BatterySpeechGamepad:
+    def _build_battery(self, deriver: SeedDeriver, geo: GeoTarget) -> BatterySpeechGamepad:
         charging = deriver.derive_bool(Axis.BATTERY_NETWORK, 0.25, "charging")
         level = round(
             deriver.derive_float(
@@ -1410,17 +2057,78 @@ class ProfileGenerator:
                 0 if charging else deriver.derive_int(Axis.BATTERY_NETWORK, 3600, 28800, "dt")
             ),
         )
-        voices = [
-            SpeechVoice(
-                name="Google US English",
-                lang="en-US",
-                default=True,
-                local_service=True,
-                voice_uri="urn:google:voice:en-us",
-            )
-        ]
+        voices = self._build_speech_voices(deriver, geo)
         gamepad = Gamepad(enabled=False, devices=[])
         return BatterySpeechGamepad(battery=battery, speech_voices=voices, gamepad=gamepad)
+
+    def _build_speech_voices(self, deriver: SeedDeriver, geo: GeoTarget) -> list[SpeechVoice]:
+        """Build the voice list the device's TTS engine would expose.
+
+        Three rules drive the list, and all three come from the Chromium
+        source:
+
+        * A voice is a *locale*.  ``TtsPlatformImpl.java`` walks the
+          locales the platform TTS engine reports as available, so a
+          handset that only has the Vietnamese and the English packs
+          exposes exactly those two and nothing else.  The voice name is
+          the locale's display name -- "Vietnamese Vietnam" -- and the
+          ``lang`` is the locale itself.
+
+        * ``speech_synthesis_impl.cc`` copies ``voice_uri`` from the voice
+          *name*, so the two are the same string, and it marks the first
+          voice of the list as the default one.
+
+        * The *number* of voices follows the device tier.  The optional TTS
+          language packs live in the system partition, so a budget
+          handset carries a couple of them and a flagship carries a
+          noticeably longer list.  Two devices of the same country and
+          different tiers therefore expose different voice lists, and
+          that difference is what a fingerprinting script compares when it
+          asks whether this is the device that registered an account
+          yesterday.
+        """
+
+        tier = device_tier(self._device_ram_gb, self._device_year)
+        budget = _voice_budget(tier)
+
+        # The locales the handset carries, in the order the engine reports
+        # them.
+        #
+        # The device's own locale always comes first: the system language
+        # is the pack the TTS engine ships with, and it is the voice the
+        # engine picks for the system language.  The bare language of
+        # that locale follows, because the engine reports the
+        # language-only variant when the language is installed but the
+        # regional pack is not.
+        #
+        # The secondary locales of the geo target are the packs a user in
+        # that country has actually downloaded -- a Vietnamese handset
+        # with a Chinese secondary locale really does carry the Chinese
+        # TTS pack.  English is the one pack the Google TTS engine
+        # bundles on every device, so it is present whatever the locale
+        # and whatever the tier.
+        #
+        # The remaining slots are filled from the pool of the language
+        # packs the device carries.  The pool is the one of the device's
+        # own region, so the extra voices are the languages that are
+        # actually spoken around it -- a Vietnamese handset gets Chinese
+        # and Japanese, not Swedish.  Which ones it carries is drawn from
+        # the seed, but the *number* of them is fixed by the tier, so the
+        # count is the part a script can compare between two devices of
+        # the same country.
+        extra_slots = budget - len(_voice_mandatory_locales(geo))
+        extra: list[str] = []
+        if extra_slots > 0:
+            pool = [
+                pack for pack in _voice_pack_pool(geo) if pack not in _voice_mandatory_locales(geo)
+            ]
+            if pool:
+                extra = deriver.derive_shuffled(Axis.BATTERY_NETWORK, pool, context="voice-packs")[
+                    :extra_slots
+                ]
+
+        selected = _select_voice_locales(geo, tier, extra)
+        return [_voice(loc, index) for index, loc in enumerate(selected)]
 
     def _build_sensors(self, deriver: SeedDeriver) -> Sensors:
         profile = deriver.derive_choice(
@@ -1736,12 +2444,7 @@ def _chromium_band_for_android_release(release: str) -> tuple[int, int]:
     # The release the registry would attribute a Chromium major to.  The
     # registry maps a major onto the *newest* Android release that shipped
     # with it, so the release of a known major is a good anchor.
-    known = sorted(
-        {
-            _android_for_major(major)[0]
-            for major in sorted(VERSION_TABLE)
-        }
-    )
+    known = sorted({_android_for_major(major)[0] for major in sorted(VERSION_TABLE)})
 
     # The release this device claims: the newest known release that is not
     # newer than the claimed one.

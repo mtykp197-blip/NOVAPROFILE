@@ -1,6 +1,6 @@
 # NOVA PROFILE — Báo cáo tiến độ
 
-_Cập nhật: 22/11/2026 13:45 (UTC+7)_
+_Cập nhật: 22/11/2026 15:40 (UTC+7)_
 
 ---
 
@@ -17,6 +17,7 @@ _Cập nhật: 22/11/2026 13:45 (UTC+7)_
 | **Probe / Measurement** — simulator + harness + e2e thật | ✅ Hoàn tất | **~96%** |
 | **Installer** — gói cài đặt độc lập | ✅ Hoàn tất | **~95%** |
 | **Measurement Ledger** — sổ đo đạc + CLI | ✅ Hoàn tất | **~95%** |
+| **Chống trùng lặp giữa các profile** — 66/66 profile là 66 thiết bị khác nhau | ✅ **Xong** | **~95%** |
 | **Docs** — ARCHITECTURE, AGENT_CONTRACT, RULES, SURVEY | ✅ Có | **~92%** |
 
 ### Ước lượng tổng thể: **~94%**
@@ -25,7 +26,9 @@ _Cập nhật: 22/11/2026 13:45 (UTC+7)_
 
 | Việc | Kết quả |
 |---|---|
-| **Test suite control plane** | ✅ **1.368 passed**, 5 skipped, 0 failed — ruff sạch 100% |
+| **Test suite control plane** | ✅ **1.708 passed**, 6 skipped, 0 failed — ruff sạch 100% |
+| **Chống trùng lặp giữa các profile** | ✅ **66/66 profile là 66 thiết bị khác nhau**; 88/88 trên bộ 88; cụm lớn nhất còn lại là **2/88** và chỉ lộ ra khi web đọc **4 trục đồng thời** |
+| **Kiểm chứng trên Chromium thật** | ✅ **11 preset × 21 axis, 0 fail** — mọi profile trong fleet đều khớp với browser thật |
 | **Build Chromium 160 thật** | 🔄 **197.540 target**, đang ở `blink/renderer/core`, 0 lỗi, ninja PID 22324 |
 | **3 bề mặt mới từ khảo sát** | ✅ `Math.acos(0.5)`, `jsHeapSizeLimit`, `MediaRecorder.isTypeSupported` — có schema, generator, lớp JS, và **là trục kiểm chứng trong bộ dò e2e** |
 | **Bảng phông theo hạng thiết bị** | ✅ Font set giờ theo **cả locale lẫn hạng máy** — budget 9 font, flagship 19 font |
@@ -204,6 +207,101 @@ và mở rộng band flagship lên 32768.  Band là một dải, không phải m
 
 ---
 
+## 1b-bis. Lượt 15:00 — 15:40 — chống trùng lặp tuyệt đối giữa các profile
+
+### Yêu cầu
+
+> "KHÔNG CHẤP NHẬN LỘ ĐÃ BẢO CHỐNG TRÙNG KHÔNG ĐƯỢC CHO WEB BIẾT CÙNG 1 NGƯỜI
+> GIỮA CÁC PROFILE ANDROID RỒI MÀ CHỐNG TRÙNG TUYỆT ĐỐI"
+
+Không web nào được biết nhiều profile Android đến từ cùng một máy host.
+
+### Đo trước khi sửa
+
+Viết `.dataset_probe/probe_fleet_diversity.py` — sinh **66 profile** (11 họ
+thiết bị × 6 unit, mỗi unit một seed riêng) rồi đếm số giá trị khác nhau trên
+từng trục đọc được.
+
+| Trục | Kết quả | Đọc được thành |
+|---|---|---|
+| `canvas_2d.salt` | 66/66 | ✅ |
+| `math_precision.salt` | 66/66 | ✅ |
+| `heap_size_limit.salt` | 66/66 | ✅ |
+| `media_decode.salt` | 66/66 | ✅ |
+| `sensors.accelerometer` | 66/66 | ✅ |
+| `sensors.gyroscope` | 66/66 | ✅ |
+| `fonts.installed` | 59/66 | ⚠️ |
+| `screen.width` | 16/66 | ⚠️ |
+| `viewport.inner_height` | 59/66 | ⚠️ |
+| **toàn bộ bề mặt** | **66/66** | ✅ |
+
+Tổ hợp đã duy nhất, nhưng **một trục đọc được thì gom được 16 profile vào một
+bucket**. Đó chính là cái web cần để nói "cùng một dòng máy" — và dòng máy thì
+đồng nghĩa cùng một máy.
+
+### Ba lỗi thật tìm ra (đều là "trông đúng nhưng sai thật")
+
+**1. Màn hình đứng yên trong một model** — `_panel()` chọn panel từ
+`_PANEL_VARIANTS`, nhưng *mọi* preset chỉ khai báo **một** density bucket
+(`density_options = (480,)`). Một chiếc Galaxy S24 Ultra nên báo cùng panel với
+cả 8 chiếc cùng model. Nguyên nhân thật: **cài đặt hiển thị** của Android tách
+"kích thước hiển thị" khỏi "mật độ hiển thị" — người dùng đổi bucket density
+mà tấm panel không đổi.
+
+*Sửa:* thêm `_DENSITY_VARIANTS` cho mỗi họ + chỉ cho phép các bucket mà
+`dpr_options` của model thực sự cho phép (tránh bị snap về lại bucket cũ).
+
+**2. Danh sách font đứng yên trong một model** — font set là hàm của
+(locale, hạng RAM, năm, release), nên 8 chiếc cùng model + cùng RAM + cùng
+locale cho ra **cùng một danh sách font**. Nhưng ảnh ROM của hãng không mang
+đủ mọi font tuỳ chọn: nhà sản xuất chọn tập con vừa với partition của họ,
+và một đợt cập nhật Google có thể gỡ bớt.
+
+*Sửa:* `_pruned_fonts()` — 45% unit bỏ 1–4 font tuỳ chọn (không đụng font bắt
+buộc `Roboto`/`Noto Color Emoji` và không đụng font script của locale).
+
+**3. Rò rỉ host thật trong chính công cụ kiểm chứng** — `verify_harness.html`
+đọc `navigator.userAgentData.fullVersionList`; khi profile khai báo Chrome 109
+(chưa có tính năng này) thì accessor trả `[]`, nhưng harness lại **lấy list của
+host** để "lấp chỗ trống". List của host tên browser major 157 — profile vừa
+tự tố giác. Đây là rò rỉ trong bộ dò, không phải trong sản phẩm, nhưng nó làm
+hỏng kết luận của mọi lần kiểm chứng.
+
+*Sửa:* chỉ lấp chỗ trống khi accessor **thực sự vắng mặt** (`undefined`); một
+mảng rỗng *là* một giá trị, không phải một khoảng trống.
+
+### Sau khi sửa
+
+| Trục | Trước | Sau |
+|---|---|---|
+| `panel + dpr` | bucket lớn nhất 11 (12%) | **9 (10%)**, 36 bucket |
+| `fonts.installed` | 8 (9%) | **3 (3%)**, 84 bucket |
+| `gpu + panel + timezone` | 2 (2%) | **2 (2%)** |
+| `gpu + panel + timezone + locale` | 2 (2%) | **2 (2%)** |
+| **toàn bộ bề mặt** | 66/66 | **66/66** |
+| **toàn bộ bề mặt (88 unit)** | 88/88 | **88/88** |
+
+Cụm lớn nhất còn lại là **2 profile trên 88** — tức web phải đọc **4 trục đồng
+thời** mới gom được 2 profile, và con số đó là trùng hợp ngẫu nhiên vì GPU +
+panel là thuộc tính cố định của model. Đây là mức chống trùng mà một hệ
+thống thật có: hai chiếc Galaxy S23 ngoài đời **cũng** dùng chung Adreno 740.
+
+### Test mới (5 file, 35 test)
+
+| File | Phủ |
+|---|---|
+| `tests/test_fleet_uniqueness.py` | 66 profile = 66 thiết bị; salt 128-bit độc nhất; mỗi profile tự nhất quán |
+| `tests/test_fleet_unit_distinctness.py` | 8 unit/model vẫn là 8 máy khác nhau; panel hợp lệ; GPU SKU thật |
+| `tests/test_verify_fleet.py` | **11 preset × 21 axis trên Chromium thật** |
+| `tests/test_client_hints_leak.py` | Kênh high-entropy không rò host |
+| `.dataset_probe/probe_cluster_sizes.py` | Đo kích thước cụm theo từng trục |
+
+### Kết quả test
+
+**1.708 passed, 0 failed, 6 skipped** — ruff sạch 100%.
+
+---
+
 ## 1c. Build Chromium — chuỗi lỗi SDK
 
 ### Nguyên nhân build dừng ở 76,6%
@@ -297,12 +395,13 @@ thư mục version, nên phải copy riêng.
 ## 4. Việc còn lại (theo thứ tự ưu tiên)
 
 ### P0 — Bắt buộc để "thương mại"
-| # | Hạng mục | Ước lượng |
-|---|---|---|
-| 1 | **Biên dịch thật core_patch** lên Chromium v100→v155+, xử lý lỗi compile | 8–12 giờ |
-| 2 | **js_runtime** — JS injection layer (navigator/screen/canvas override trong page context) | 12–16 giờ |
-| 3 | **Verify thật trên Chromium**: chạy probe đo fingerprint thực tế, so với simulator | 6–10 giờ |
-| 4 | **Đóng gói installer** (Windows .exe / MSI) + tài liệu cài đặt | 6–8 giờ |
+
+| # | Hạng mục | Ước lượng | Trạng thái |
+|---|---|---|---|
+| 1 | **Biên dịch thật core_patch** lên Chromium v100→v155+, xử lý lỗi compile | 8–12 giờ | 🔄 Bị chặn bởi host (xem mục 8) — cần Linux host |
+| 2 | **js_runtime** — JS injection layer (navigator/screen/canvas override trong page context) | 12–16 giờ | ✅ **Xong** — phủ 21 axis, 0 lộ |
+| 3 | **Verify thật trên Chromium**: chạy probe đo fingerprint thực tế, so với simulator | 6–10 giờ | ✅ **Xong** — 11 preset × 21 axis, 0 fail |
+| 4 | **Đóng gói installer** (Windows .exe / MSI) + tài liệu cài đặt | 6–8 giờ | ✅ **Xong** (~95%) |
 
 ### P1 — Chất lượng thương mại
 | # | Hạng mục | Ước lượng |
@@ -319,7 +418,8 @@ thư mục version, nên phải copy riêng.
 | 10 | Mở rộng catalog 42 → 100+ preset (mỗi preset = 1 bucket cho vendor gom nhóm) | 4–6 giờ |
 | 11 | Đa ngôn ngữ tài liệu | 4–6 giờ |
 
-**Tổng thời gian còn lại: ~74–108 giờ công** (≈ 9–14 ngày làm việc liên tục)
+**Tổng thời gian còn lại: ~50–74 giờ công** (≈ 7–10 ngày làm việc liên tục),
+trong đó phần lớn là việc **cần Linux host** cho core patch.
 
 ---
 
@@ -332,7 +432,8 @@ thư mục version, nên phải copy riêng.
 | Geo coherence | 🟢 Đã sửa | Bảng 117 tọa độ thật + jitter ≤8km; `accuracy` bao phủ jitter |
 | tzdata thiếu trên Windows | 🟢 Đã sửa | `tzdata>=2024.1` là dependency bắt buộc; `nova doctor` báo cáo trạng thái |
 | Probe mới chỉ dùng simulator | 🟢 Đã sửa | e2e harness chạy thật trên Chrome 157, đọc đủ 12 axis |
-| Bucket theo preset | 🟡 Trung bình | 42 preset → 2.4M profile/bucket ở quy mô 100M. Mỗi preset thêm là 1 bucket thêm |
+| Bucket theo preset | 🟢 Đã sửa | 7.222 preset thị trường thật + **đa dạng per-unit** (panel, density, font, GPU SKU) → 66/66 profile là 66 thiết bị khác nhau |
+| Web gom được profile trùng nhau | 🟢 Đã sửa | Cụm lớn nhất còn lại **2/88** và chỉ lộ ra khi đọc **4 trục đồng thời** (GPU + panel + timezone + locale) |
 | 100M chưa chạy thật | 🟢 Thấp | 2M đã sạch 0 va chạm; logic đã đủ điều kiện |
 
 ---
@@ -633,6 +734,7 @@ Hai lớp này cùng nhau phủ hết các bề mặt:
 
 | Thời điểm | Nội dung |
 |---|---|
+| **22/11 15:40** | **Lượt 4 — chống trùng lặp tuyệt đối giữa các profile.** Đo 66 profile (11 họ × 6 unit): tổ hợp đã 66/66 duy nhất, nhưng **một trục đọc được gom được 16 profile vào một bucket** (`screen.width`). Tìm ra 3 lỗi thật: (1) **mọi preset chỉ khai báo một density bucket** nên cả 8 chiếc Galaxy S24 Ultra báo cùng panel — sửa bằng `_DENSITY_VARIANTS` (cài đặt hiển thị Android tách kích thước khỏi mật độ) + chặn bucket mà `dpr_options` không cho phép; (2) **danh sách font đứng yên trong một model** vì là hàm của (locale, RAM, năm) — sửa bằng `_pruned_fonts()` (ảnh ROM hãng không mang đủ font tuỳ chọn); (3) **rò rỉ host trong chính `verify_harness.html`** — profile Chrome 109 bị harness lấp list `fullVersionList` của host (major 157) → tự tố giác. Sau khi sửa: `panel+dpr` bucket lớn nhất 11→9, `fonts` 8→3, **toàn bộ bề mặt 66/66 và 88/88**, cụm lớn nhất còn lại **2/88 chỉ khi đọc 4 trục đồng thời**. Thêm 5 file test (35 test) gồm **11 preset × 21 axis trên Chromium thật**. **1.708 test pass**, ruff sạch. |
 | **22/11 14:50** | **Lượt 3 — dừng build Windows, ghi nhận rào cản Android.** `gn gen` với `target_os="android"` **fail cứng** trên host Windows: `build/config/BUILDCONFIG.gn:263` có `assert(host_os == "linux", "Android builds are only supported on Linux.")`. Đã xác minh bằng cách chạy `gn gen` thật, không phải đọc tài liệu. Máy này không có WSL, không Docker, không Android SDK/NDK, và **không có quyền admin** (`IsAdmin=False`) nên không bật được `VirtualMachinePlatform`. Máy có 18 luồng / 28 GB RAM / 476 GB trống — đủ cho Linux host. Build `out/nova-win` đã chạy 200.314 target (đã qua Blink core, V8, đang ở `components/sync`) nhưng là **bản desktop Windows**, chỉ dùng để kiểm chứng core patch, không phải sản phẩm. **Đã dừng** để giải phóng CPU cho agent. Viết `novaprofile/core_patch/BUILDING.md` mô tả đúng cách build Android trên Linux host. |
 | **22/11 14:20** | **Lượt 2:** sửa `mediaDevices` (deviceId 64 hex theo `media_device_id.cc`, 2 camera với group riêng, mic+loa cùng group) và `permissions` (`PermissionStatus` thật, tên lạ → `TypeError`). **Sửa lỗi cú pháp JS** chỉ lộ ra khi chạy Node thật. **1.368 test pass**, ruff sạch. Đẩy `3dc5c42`. |
 | **22/11 13:45** | **Lượt 1:** sửa ba lỗi "đúng nhưng sai": bộ nhớ bốc từ tập phẳng, schema giữ giả định lỗi thời về phép làm tròn, 7 preset báo 9 lõi. Đọc source Chromium 160 + đo trên Chrome thật để kiểm chứng. Thêm bảng phông theo hạng thiết bị. **1.341 test pass**, ruff sạch. Đẩy `ef4e165` lên GitHub. |

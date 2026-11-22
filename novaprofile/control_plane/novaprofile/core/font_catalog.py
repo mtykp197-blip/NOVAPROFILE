@@ -263,7 +263,6 @@ def fonts_for_device(
     its own script family — a Japanese user's phone always has a CJK
     font, even if it is a budget phone.
     """
-
     primary = locale.split("-")[0].lower()
     tier = device_tier(ram_gb, year)
     dropped: frozenset[str] = frozenset()

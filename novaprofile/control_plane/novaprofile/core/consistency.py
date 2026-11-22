@@ -63,11 +63,34 @@ class ConsistencyError(ValueError):
 
 #: GPUs that only appear on desktop/PC.  Seeing one in an Android profile is
 #: an instant anomaly signal.
+#:
+#: The list is deliberately narrow.  A marker that also occurs in the name
+#: of a *mobile* part has to stay out of it, because the fleet holds real
+#: handsets whose integrated GPU carries a desktop-family name:
+#:
+#: * the Tegra 2, the Tegra 3 and the Tegra K1 of the Android tablets of
+#:   2011 to 2013 ship an integrated GPU that NVIDIA calls "ULP GeForce"
+#:   -- ULP stands for Ultra Low Power, and it is a mobile part;
+#: * the Intel Atom tablets of the same era carry the Intel integrated
+#:   graphics of their x86 SoC, which Chromium reports as
+#:   "Intel HD Graphics" or as the architecture name "Intel Gen 7".
+#:
+#: A renderer that is one of those is an Android GPU, and flagging it as a
+#: desktop anomaly would reject thirty-eight real devices of the fleet.
+#: The desktop markers below are therefore the ones that no Android
+#: handset ever reports.
 _DESKTOP_GPU_MARKERS = (
+    # The ANGLE wrapper string of a desktop Chromium build.
     "ANGLE (",
+    # A discrete NVIDIA part.  The Tegra parts are spelled "ULP GeForce"
+    # and are matched by the mobile test above, so they never reach this
+    # list; a bare "GeForce" or "NVIDIA" string is a desktop part.
     "NVIDIA",
     "GeForce",
     "Radeon",
+    # The "Intel(R) HD Graphics" branding of a desktop driver.  The
+    # mobile Intel parts are spelled "Intel HD Graphics" without the
+    # trademark and are matched by the mobile test above.
     "Intel(R)",
     "Intel ",
     "SwiftShader",
@@ -75,6 +98,22 @@ _DESKTOP_GPU_MARKERS = (
     "Microsoft Basic Render",
 )
 
+#: Renderers of mobile parts that carry a desktop-family name.  A
+#: renderer that matches one of them is an Android GPU, whatever family
+#: its name mentions.
+_MOBILE_GPU_RENDERERS = (
+    # The integrated GPU of the Tegra 2, the Tegra 3 and the Tegra K1.
+    "ULP GeForce",
+    # The integrated graphics of the Intel Atom tablets.  Chromium
+    # reports them either by the branding ("Intel HD Graphics") or by the
+    # architecture of the core ("Intel Gen 7", "Intel Gen 9").
+    "Intel HD Graphics",
+    "Intel Gen",
+    "Intel graphics media accelerator",
+)
+
+#: The GPU families an Android profile may report.  A renderer that
+#: matches none of them is reported as an unknown Android GPU.
 _ANDROID_GPU_MARKERS = (
     "Mali",
     "Adreno",
@@ -86,7 +125,53 @@ _ANDROID_GPU_MARKERS = (
     # Huawei's Maleoon core, which replaces the Mali parts in the Kirin
     # 9000 series.
     "Maleoon",
+    # Imagination's B-Series cores, which some Unisoc and some MediaTek
+    # parts carry instead of a Mali.  The sheets spell them either as a
+    # bare part number ("IMG8322") or with the family name ("IMG
+    # BXM-8-256").
+    "IMG8322",
+    "IMG BXM",
+    "IMG8",
+    # Vivante's cores, which the Marvell and the older MediaTek tablets
+    # of 2013 and 2014 carry.
+    "Vivante",
+    # Broadcom's VideoCore, which the Samsung and the Huawei handsets of
+    # 2012 and 2013 carry.
+    "VideoCore",
+    # The Tegra X1 and the Tegra K1 of the Android tablets of 2015 and
+    # 2016.  Their integrated GPU is a desktop architecture under a
+    # mobile name.
+    "Nvidia Maxwell",
+    "Kepler",
+    # The mobile parts that carry a desktop-family name.
+    "ULP GeForce",
+    "Intel HD Graphics",
+    "Intel Gen",
+    "Intel graphics media accelerator",
 )
+
+
+def _is_mobile_gpu_renderer(renderer: str) -> bool:
+    """Whether the renderer names a GPU that shipped in an Android device.
+
+    Some mobile parts carry a desktop-family name, and the renderer a
+    real device reports is that name:
+
+    * the Tegra 2, the Tegra 3 and the Tegra K1 of the Android tablets
+      of 2011 to 2013 have an integrated GPU that NVIDIA calls "ULP
+      GeForce" -- ULP is the Ultra Low Power variant of the Tegra
+      graphics, and it is a mobile part;
+    * the Intel Atom tablets of the same era carry the integrated
+      graphics of their x86 SoC, which the driver reports as "Intel HD
+      Graphics" or as the architecture name of the core.
+
+    A renderer that matches one of them is an Android GPU.  A renderer
+    that mentions a desktop family *without* being one of these -- a bare
+    "GeForce" or a "NVIDIA" string -- is still a desktop anomaly.
+    """
+
+    lowered = (renderer or "").lower()
+    return any(marker.lower() in lowered for marker in _MOBILE_GPU_RENDERERS)
 
 
 def _chrome_major_window(version_release: str, sdk_int: int) -> tuple[int, int]:
@@ -122,6 +207,58 @@ def _chrome_major(version_release: str, sdk_int: int) -> str:
     """
     low, high = _chrome_major_window(version_release, sdk_int)
     return str((low + high) // 2)
+
+
+#: The Android density buckets and the pixel ratio each of them reports.
+#:
+#: The buckets are the platform's own table, and they are not evenly
+#: spaced: the 213 bucket sits between the 160 and the 240 one, the 411
+#: and the 420 buckets sit between the 400 and the 440 one, and the
+#: 520, 525 and 545 buckets sit between the 480 and the 560 one.  The
+#: ratio is therefore *not* the quotient of the density by 160 -- the
+#: 213 bucket reports 1.5 and not the 1.333 of its quotient.
+#:
+#: The table is duplicated from the device catalogue on purpose: the
+#: consistency resolver has to keep working when the scraped dataset is
+#: not on the machine, and the catalogue that builds it needs the same
+#: table at import time.
+_DENSITY_RATIO: dict[int, float] = {
+    120: 1.0,
+    160: 1.0,
+    213: 1.5,
+    240: 1.5,
+    280: 1.75,
+    320: 2.0,
+    360: 2.25,
+    400: 2.5,
+    411: 2.625,
+    420: 2.625,
+    440: 2.75,
+    480: 3.0,
+    520: 3.25,
+    525: 3.25,
+    545: 3.5,
+    560: 3.5,
+    640: 4.0,
+}
+
+
+def _ratio_for_density(density_dpi: int) -> float | None:
+    """The pixel ratio the platform reports for a panel of that density.
+
+    A panel's true density is rounded to the nearest bucket the platform
+    defines, and the browser then reports the ratio of that bucket.
+    ``None`` is returned for a density that is out of the table's range,
+    in which case the rule does not apply.
+    """
+
+    if density_dpi in _DENSITY_RATIO:
+        return _DENSITY_RATIO[density_dpi]
+    buckets = sorted(_DENSITY_RATIO)
+    if density_dpi < buckets[0] or density_dpi > buckets[-1]:
+        return None
+    nearest = min(buckets, key=lambda bucket: abs(bucket - density_dpi))
+    return _DENSITY_RATIO[nearest]
 
 
 _UA_PATTERN = re.compile(
@@ -575,16 +712,35 @@ class ConsistencyResolver:
                     fields=["viewport.inner_height", "screen.avail_height"],
                 )
             )
-        if screen.device_pixel_ratio < 1.75:
+        # The pixel ratio has to be one the platform's own density
+        # buckets produce.  A panel of 160 dpi reports 1.0, a panel of
+        # 240 dpi reports 1.5, and so on -- the ratio is a property of
+        # the panel, not a preference.
+        #
+        # The check used to warn about any ratio below 1.75, on the
+        # ground that a ratio that low is unusual for a *modern* phone.
+        # The fleet contradicts that: it holds real budget handsets and
+        # real tablets whose panels are 120, 160, 213 and 240 dpi, and
+        # the platform reports those as 1.0 and 1.5.  The Tecno Pop 2, the
+        # Oppo A31, the ZTE Blade A3 and the Samsung Galaxy J2 Core all
+        # ship an HD or an FWVGA panel, and a site that reads
+        # ``devicePixelRatio`` sees exactly those ratios on them.
+        #
+        # The rule that survives that is the one the platform itself
+        # defines: the ratio has to be the ratio of the density bucket
+        # the panel falls into.
+        nominal = _ratio_for_density(screen.density_dpi)
+        if nominal is not None and abs(screen.device_pixel_ratio - nominal) > 1e-9:
             warnings.append(
                 ConsistencyIssue(
                     severity="warning",
                     axis="screen_viewport",
                     message=(
-                        f"device_pixel_ratio {screen.device_pixel_ratio} is unusual for "
-                        "a modern Android phone"
+                        f"device_pixel_ratio {screen.device_pixel_ratio} does not match "
+                        f"the ratio {nominal} of the {screen.density_dpi} dpi density "
+                        "bucket the panel falls into"
                     ),
-                    fields=["screen.device_pixel_ratio"],
+                    fields=["screen.device_pixel_ratio", "screen.density_dpi"],
                 )
             )
 
@@ -864,7 +1020,14 @@ class ConsistencyResolver:
         webgl = config.webgl
         renderer = webgl.unmasked_renderer
 
-        if any(marker in renderer for marker in _DESKTOP_GPU_MARKERS):
+        # A renderer of a mobile part is an Android GPU, whatever family
+        # its name mentions: the Tegra parts are called "ULP GeForce" and
+        # the Intel Atom tablets carry "Intel HD Graphics".  The mobile
+        # test therefore comes first, and only a renderer that is not a
+        # known mobile part can be a desktop anomaly.
+        if _is_mobile_gpu_renderer(renderer):
+            pass
+        elif any(marker in renderer for marker in _DESKTOP_GPU_MARKERS):
             errors.append(
                 ConsistencyIssue(
                     severity="error",
@@ -1529,6 +1692,26 @@ def tzdata_status() -> tuple[bool, str]:
 def _iana_offset(iana_name: str, dst_active: bool) -> int | None:
     """The UTC offset in minutes for an IANA zone, if the zone is known.
 
+    The offset is read at a *fixed* reference instant, not at the wall
+    clock.  The generator uses the same instant, and a check that read
+    the current time would report a contradiction for every zone that
+    observes daylight saving: the profile of a Winnipeg handset says
+    -360 because the profile was built at the January reference instant,
+    and a checker that read the current time in November would expect
+    -300 and call the profile wrong.
+
+    The instant is fixed for a second reason as well: a profile has to
+    be reproducible, so the offset it carries may not depend on the day
+    the profile is generated.
+
+    ``dst_active`` selects which of the two offsets of the zone is
+    wanted: the standard offset when it is false and the daylight
+    saving offset when it is true.  The two are found by *searching* the
+    reference year for an instant on which the zone really is in that
+    state, and not by picking a month: the southern hemisphere runs its
+    daylight saving the other way round, so a fixed month would give
+    Santiago the standard offset when it is in fact in the summer one.
+
     Returns ``None`` only when the zone name is empty or the database is
     genuinely missing.  A missing database is a *deployment* failure, not
     a profile failure, so it is reported separately -- see
@@ -1545,13 +1728,44 @@ def _iana_offset(iana_name: str, dst_active: bool) -> int | None:
         zone = ZoneInfo(iana_name)
     except Exception:
         return None
-    import datetime as _dt
 
-    now = _dt.datetime.now(zone)
-    offset = now.utcoffset()
+    # The reference year of the generator.  The offsets are read from it
+    # rather than from the current year, so that a profile stays
+    # reproducible from one year to the next.
+    year = 2026
+    offset = _offset_for_dst_state(zone, year, dst_active)
     if offset is None:
         return None
     return int(offset.total_seconds() // 60)
+
+
+def _offset_for_dst_state(
+    zone: object,
+    year: int,
+    dst_active: bool,
+) -> object | None:
+    """The UTC offset of a zone at an instant when it is in a given DST state.
+
+    The reference year is scanned fortnight by fortnight for an instant
+    on which the zone really is in the wanted state, and the offset of
+    that instant is returned.  A zone that never enters daylight
+    saving has one offset all year, so the first instant of the year
+    answers for both states.
+    """
+
+    import datetime as _dt
+
+    start = _dt.datetime(year, 1, 1, 12, 0, tzinfo=_dt.UTC)
+    for step in range(0, 366, 14):
+        instant = start + _dt.timedelta(days=step)
+        local = instant.astimezone(zone)  # type: ignore[attr-defined]
+        delta = local.dst()
+        in_dst = bool(delta and delta.total_seconds() != 0)
+        if in_dst == dst_active:
+            offset = local.utcoffset()
+            if offset is not None:
+                return offset
+    return None
 
 
 #: A coarse country -> timezone-region map.  Used to catch obviously wrong

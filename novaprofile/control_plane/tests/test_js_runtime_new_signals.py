@@ -70,12 +70,34 @@ HARNESS = textwrap.dedent(
     const profile = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
 
     // -- performance.memory ------------------------------------------------
+    // In Blink the heap limit is an accessor on the prototype of the
+    // memory object, not a plain property on the object, and the
+    // accessor is named "get jsHeapSizeLimit".  The harness copies
+    // that shape, because the runtime has to find the accessor where
+    // a browser puts it.
+    const memoryProto = {};
+    Object.defineProperty(memoryProto, 'jsHeapSizeLimit', {
+      get: (function () {
+        var accessor = function () { return 1073741824; };
+        Object.defineProperty(accessor, 'name', {
+          value: 'get jsHeapSizeLimit', writable: false,
+          enumerable: false, configurable: true
+        });
+        return accessor;
+      })(),
+      set: undefined,
+      enumerable: true,
+      configurable: true
+    });
+    Object.defineProperty(memoryProto, 'totalJSHeapSize', {
+      value: 10000000, writable: true, enumerable: true, configurable: true
+    });
+    Object.defineProperty(memoryProto, 'usedJSHeapSize', {
+      value: 5000000, writable: true, enumerable: true, configurable: true
+    });
+
     const performance = {
-      memory: {
-        jsHeapSizeLimit: 1073741824,
-        totalJSHeapSize: 10000000,
-        usedJSHeapSize: 5000000
-      },
+      memory: Object.create(memoryProto),
       now: function () { return 1234.5; },
       timing: {}
     };
@@ -135,8 +157,10 @@ HARNESS = textwrap.dedent(
       try { return fn(); } catch (e) { return 'THREW: ' + e.message; }
     }
 
+    // The accessor is on the prototype, so that is where it is read
+    // from -- the same way a browser puts it.
     const memoryDescriptor = Object.getOwnPropertyDescriptor(
-      performance.memory, 'jsHeapSizeLimit');
+      Object.getPrototypeOf(performance.memory), 'jsHeapSizeLimit');
 
     console.log(JSON.stringify({
       thrown: thrown,
@@ -298,14 +322,19 @@ def test_the_math_functions_keep_the_host_answer_elsewhere(profile, tmp_path) ->
 def test_the_math_override_looks_native(profile, tmp_path) -> None:
     """A source check must not tell the override apart.
 
-    The same rule applies here as for the navigator getters: the
-    replacement has to be returned behind a proxy, because
-    ``Function.prototype.toString`` reads the internal source of the
-    function and ignores its own properties.
+    A stock Blink method names itself in the text it reports:
+
+        Function.prototype.toString.call(Math.acos)
+          -> "function acos() { [native code] }"
+
+    so the replacement reports the same text.  The replacement is a
+    proxy, and V8 reports a proxy as native, but V8 reports it
+    without a name -- so the text comes from the one function that
+    reads it, and the replacement is registered there.
     """
 
     report = _run(profile, tmp_path)
-    assert report["acosSource"] == "function () { [native code] }"
+    assert report["acosSource"] == "function acos() { [native code] }"
     assert report["acosName"] == "acos"
 
 
@@ -385,11 +414,18 @@ def test_the_heap_limit_reports_the_profile_value(profile, tmp_path) -> None:
 
 
 def test_the_heap_override_looks_native(profile, tmp_path) -> None:
-    """The getter must survive a source check and keep its name."""
+    """The getter must survive a source check and keep its name.
+
+    In Blink the heap limit lives on the prototype of the memory
+    object, and the accessor there is named "get jsHeapSizeLimit".
+    The replacement reports the same name and the same source text, so
+    a page that reads the descriptor cannot tell it from the stock
+    one.
+    """
 
     report = _run(profile, tmp_path)
-    assert report["heapSource"] == "function () { [native code] }"
-    assert report["heapName"] == "get"
+    assert report["heapSource"] == "function get jsHeapSizeLimit() { [native code] }"
+    assert report["heapName"] == "get jsHeapSizeLimit"
 
 
 # --------------------------------------------------------------------------
@@ -424,10 +460,14 @@ def test_the_unknown_codec_keeps_the_host_answer(profile, tmp_path) -> None:
 
 
 def test_the_media_override_looks_native(profile, tmp_path) -> None:
-    """The replacement must survive a source check and keep its name."""
+    """The replacement must survive a source check and keep its name.
+
+    A stock Blink method names itself in the text it reports, so the
+    replacement reports the same text.
+    """
 
     report = _run(profile, tmp_path)
-    assert report["mediaSource"] == "function () { [native code] }"
+    assert report["mediaSource"] == "function isTypeSupported() { [native code] }"
     assert report["mediaName"] == "isTypeSupported"
 
 

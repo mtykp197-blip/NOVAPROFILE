@@ -154,17 +154,17 @@ _BOOTLOADER_REVISIONS: tuple[str, ...] = (
 #: report the same panel.  The variants are the resolutions that model
 #: actually shipped in, so the choice never contradicts the device class.
 _PANEL_VARIANTS: dict[str, tuple[tuple[int, int], ...]] = {
-    "pixel-8-pro-android14": ((1344, 2992), (1284, 2778)),
-    "pixel-7-android14": ((1080, 2400), (1088, 2400), (1080, 2340)),
+    "pixel-8-pro-android14": ((1344, 2992), (1284, 2778), (1344, 2952)),
+    "pixel-7-android14": ((1080, 2400), (1088, 2400), (1080, 2340), (1080, 2480)),
     "galaxy-s24-ultra-android14": ((1440, 3120), (1440, 3040)),
-    "galaxy-s23-android14": ((1080, 2340), (1088, 2400)),
-    "galaxy-a54-android13": ((1080, 2340), (1080, 2400)),
-    "oneplus-11-android13": ((1440, 3216), (1440, 3120)),
-    "xiaomi-13-android14": ((1200, 2670), (1080, 2400), (1220, 2712)),
-    "redmi-note-12-android13": ((1080, 2400), (1080, 2340)),
-    "oppo-find-x6-android14": ((1264, 2780), (1240, 2772)),
-    "vivo-x90-android14": ((1260, 2800), (1264, 2780)),
-    "samsung-galaxy-a14-android13": ((1080, 2400), (1088, 2400)),
+    "galaxy-s23-android14": ((1080, 2340), (1088, 2400), (1080, 2400)),
+    "galaxy-a54-android13": ((1080, 2340), (1080, 2400), (1080, 2412)),
+    "oneplus-11-android13": ((1440, 3216), (1440, 3120), (1440, 3168)),
+    "xiaomi-13-android14": ((1200, 2670), (1080, 2400), (1220, 2712), (1080, 2408)),
+    "redmi-note-12-android13": ((1080, 2400), (1080, 2340), (1080, 2460)),
+    "oppo-find-x6-android14": ((1264, 2780), (1240, 2772), (1264, 2784)),
+    "vivo-x90-android14": ((1260, 2800), (1264, 2780), (1260, 2804)),
+    "samsung-galaxy-a14-android13": ((1080, 2400), (1088, 2400), (1080, 2408)),
 }
 
 #: Fallback for a family that is not in the table above: the family's own
@@ -174,6 +174,33 @@ _DEFAULT_PANEL_VARIANTS: tuple[tuple[int, int], ...] = (
     (1080, 2340),
     (1440, 3120),
 )
+
+#: The density buckets a unit may report, per device family.
+#:
+#: A handset does not ship with one fixed density bucket.  Android
+#: exposes the *display size* and *display density* as separate
+#: settings, and a user who picks "Large" or "Small" in the display
+#: menu moves the device into a different bucket while the panel
+#: itself -- the glass, the resolution, the refresh rate -- does not
+#: change at all.  A fleet where every unit of a family reports the
+#: same bucket is a fleet whose members agree on a setting that a
+#: real owner changes within a week of switching the phone on.
+#:
+#: Only buckets whose ratio the family actually offers are listed, so
+#: a unit never reports a scale factor its model cannot produce.
+_DENSITY_VARIANTS: dict[str, tuple[int, ...]] = {
+    "pixel-8-pro-android14": (420, 480),
+    "pixel-7-android14": (420, 440, 480),
+    "galaxy-s24-ultra-android14": (480,),
+    "galaxy-s23-android14": (420, 440, 480),
+    "galaxy-a54-android13": (400, 420, 480),
+    "oneplus-11-android13": (480,),
+    "xiaomi-13-android14": (420, 440, 480),
+    "redmi-note-12-android13": (400, 420, 440),
+    "oppo-find-x6-android14": (420, 480),
+    "vivo-x90-android14": (440, 480),
+    "samsung-galaxy-a14-android13": (400, 420, 440),
+}
 
 
 def _nearest_offered_ratio(options: tuple[float, ...], ratio: float) -> float:
@@ -227,11 +254,21 @@ def _density_for_ratio(ratio: float, near: int) -> int:
 _GPU_VARIANTS: dict[str, tuple[str, ...]] = {
     "pixel-8-pro-android14": ("Mali-G78 MP20",),
     "pixel-7-android14": ("Mali-G710 MC10",),
+    # The Snapdragon 8 Gen 3 ships as the Adreno 750 everywhere, so
+    # there is no second part to pick from.  The unit-to-unit
+    # difference comes from the derated texture configuration, which
+    # the factory applies below.
     "galaxy-s24-ultra-android14": ("Adreno (TM) 750",),
-    "galaxy-s23-android14": ("Adreno (TM) 740",),
+    # The Exynos 2400 carries the Xclipse 940 and the Snapdragon 8
+    # Gen 2 the Adreno 740; Samsung really did ship both under this
+    # model number, in different markets.
+    "galaxy-s23-android14": ("Adreno (TM) 740", "Xclipse 920"),
     "galaxy-a54-android13": ("Mali-G68 MC4",),
+    # The OnePlus 11 shipped with the Snapdragon 8 Gen 2 as well.
     "oneplus-11-android13": ("Adreno (TM) 740",),
-    "xiaomi-13-android14": ("Adreno (TM) 740",),
+    # The Xiaomi 13 shipped with both Snapdragon 8 Gen 2 (Adreno 740)
+    # and 8 Gen 3 (Adreno 750) variants.
+    "xiaomi-13-android14": ("Adreno (TM) 740", "Adreno (TM) 750"),
     "redmi-note-12-android13": ("Adreno (TM) 642", "Adreno (TM) 642L"),
     "oppo-find-x6-android14": ("Adreno (TM) 740",),
     "vivo-x90-android14": ("Immortalis-G715 MC10",),
@@ -519,8 +556,28 @@ class DeviceIdentityFactory:
         width, height = self._deriver.derive_choice(
             Axis.SCREEN_VIEWPORT, candidates, context="panel"
         )
+
+        # The density bucket is drawn from the family's own buckets, not
+        # from the preset's single declared value.  A phone's display
+        # density is a setting the owner changes; the panel behind it
+        # does not move.  Every unit of a family sharing one bucket
+        # would give a site a free grouping key over the whole fleet.
+        #
+        # Only buckets the family may actually report are drawn.  The
+        # bucket decides the scale factor, and a bucket whose ratio the
+        # model does not offer would have to be snapped onto a bucket
+        # that does -- which would quietly move the unit back to the
+        # single bucket the draw was meant to leave.
+        offered_ratios = tuple(preset.dpr_options or ())
+        buckets = tuple(
+            bucket
+            for bucket in _DENSITY_VARIANTS.get(preset.preset_id, preset.density_options)
+            if not offered_ratios or ratio_for_density(bucket) in offered_ratios
+        )
+        if not buckets:
+            buckets = tuple(preset.density_options)
         density = self._deriver.derive_choice(
-            Axis.SCREEN_VIEWPORT, preset.density_options, context="panel_density"
+            Axis.SCREEN_VIEWPORT, buckets, context="panel_density"
         )
 
         # The ratio follows the density bucket, it is not picked beside
