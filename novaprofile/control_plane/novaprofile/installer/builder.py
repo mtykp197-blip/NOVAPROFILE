@@ -418,12 +418,17 @@ def _run() -> None:
     app()
 
 
-def main() -> int:
+def launch() -> int:
     """Start the control plane.
 
     The embedded interpreter is preferred over the system one: it is the
     version the product was built against, and it carries the pinned
     dependencies.
+
+    The name is ``launch`` rather than ``main`` because the installation
+    ships this file as ``nova.py`` -- its launcher -- next to the
+    builder that produced it, and two functions of the same name in one
+    module means the second one silently replaces the first.
     """
 
     interpreter = _interpreter()
@@ -442,6 +447,19 @@ def main() -> int:
         print("reinstall the product", file=sys.stderr)
         return 1
     return 0
+
+
+def main() -> int:
+    """The command line entry point of the generated launcher.
+
+    ``launch`` is kept as an alias because older build scripts and the
+    installed shortcut call it.  Two names for one behaviour is
+    deliberate: the entry point has to be callable as ``main`` because
+    that is what ``python launch.py`` expects, and it has to be callable
+    as ``launch`` because that is what the installed shortcut calls.
+    """
+
+    return launch()
 
 
 if __name__ == "__main__":
@@ -466,8 +484,14 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 
 
-def main() -> int:
-    """Remove the installation."""
+def uninstall() -> int:
+    """Remove the installation.
+
+    The name is ``uninstall`` rather than ``main`` for the same reason
+    the launcher is called ``launch``: three functions called ``main`` in
+    one module means only the last one is reachable, and the other two
+    are dead code that still looks alive.
+    """
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -513,6 +537,18 @@ def main() -> int:
     print()
     print("the installation was removed")
     return 0
+
+
+def main() -> int:
+    """The command line entry point of the generated uninstaller.
+
+    ``uninstall`` is the behaviour; ``main`` is the name the interpreter
+    looks for.  Both exist for the same reason the launcher has both:
+    one name per behaviour is easier to read, and the fixed entry point
+    name is what ``python uninstall.py`` requires.
+    """
+
+    return uninstall()
 
 
 if __name__ == "__main__":

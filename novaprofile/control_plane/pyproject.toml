@@ -34,6 +34,10 @@ dev = ["ruff>=0.5", "mypy>=1.10", "pytest-cov>=5.0"]
 
 [project.scripts]
 nova = "novaprofile.cli.main:app"
+# The installer is a separate entry point rather than a subcommand of
+# ``nova``: it is run once, on the machine that unpacks the product, and
+# it needs to work before the control plane is installed.
+nova-install = "novaprofile.installer.builder:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
