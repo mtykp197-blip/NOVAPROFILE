@@ -163,7 +163,12 @@ RUNTIME_JS = r"""
   }
 
   // -- the navigator surface --------------------------------------------
-  var nav = navigator;
+  //
+  // The global is read through ``typeof`` rather than directly: a
+  // direct read of a name that does not exist throws, and a throw
+  // here stops every override after it.  The guard below is only
+  // useful if the read above it cannot throw.
+  var nav = (typeof navigator !== 'undefined') ? navigator : null;
   if (nav) {
     var navValues = P.navigator || {};
     var navKeys = Object.keys(navValues);

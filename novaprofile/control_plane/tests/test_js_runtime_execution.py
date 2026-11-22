@@ -11,13 +11,17 @@ runtime needs nothing but the browser API surface, and the harness
 below provides that surface.  The tests are skipped when Node is not
 installed, so the suite still runs everywhere.
 
-Two defects motivated this module, and both are now guarded against:
+Three defects motivated this module, and all three are now guarded
+against:
 
 * the navigator block referred to a name that was never declared, so
   the whole runtime threw on its first line of work;
 * the source hiding set an own ``toString`` property on the override,
   which does not survive ``Function.prototype.toString.call`` -- the
-  check a fingerprinting script actually runs.
+  check a fingerprinting script actually runs;
+* the navigator global was read directly, so the guard that was meant
+  to protect the block could not run: the throw happened on the line
+  before it.
 """
 
 from __future__ import annotations
@@ -397,3 +401,108 @@ def test_the_override_still_behaves_like_a_function(profile, tmp_path) -> None:
     report = _run(profile, tmp_path)
     assert not str(report["userAgent"]).startswith("THREW")
     assert report["userAgent"] == profile.navigator.user_agent
+
+
+# --------------------------------------------------------------------------
+# The runtime survives a page that offers nothing
+# --------------------------------------------------------------------------
+
+
+#: A harness with no browser API at all.  A page does not have to offer
+#: the WebGL API, and a runtime that throws on a missing API never
+#: reaches the override after it.
+BARE_HARNESS = textwrap.dedent(
+    """
+    const fs = require('fs');
+    const vm = require('node:vm');
+
+    const runtime = fs.readFileSync(process.argv[2], 'utf8');
+
+    const sandbox = Object.create(null);
+    sandbox.globalThis = sandbox;
+    sandbox.window = sandbox;
+    sandbox.Object = Object;
+    sandbox.Array = Array;
+    sandbox.String = String;
+    sandbox.Number = Number;
+    sandbox.Boolean = Boolean;
+    sandbox.Function = Function;
+    sandbox.Math = Math;
+    sandbox.JSON = JSON;
+    sandbox.Date = Date;
+    sandbox.RegExp = RegExp;
+    sandbox.Error = Error;
+    sandbox.TypeError = TypeError;
+    sandbox.RangeError = RangeError;
+    sandbox.Promise = Promise;
+    sandbox.Map = Map;
+    sandbox.Set = Set;
+    sandbox.Symbol = Symbol;
+    sandbox.Proxy = Proxy;
+    sandbox.Reflect = Reflect;
+    sandbox.Intl = Intl;
+    sandbox.parseInt = parseInt;
+    sandbox.parseFloat = parseFloat;
+    sandbox.isNaN = isNaN;
+    sandbox.setTimeout = setTimeout;
+    sandbox.clearTimeout = clearTimeout;
+
+    // Deliberately absent: navigator, Screen, document, performance,
+    // localStorage, WebGLRenderingContext, CanvasRenderingContext2D,
+    // HTMLCanvasElement, Element, Range, AudioContext, matchMedia.
+
+    sandbox.__NOVA_PROFILE__ = {
+      navigator: { userAgent: 'nova-ua', platform: 'Linux armv8l' },
+      screen: { width: 1344, height: 2992, colorDepth: 24, pixelDepth: 24 },
+      viewport: { inner_width: 412, inner_height: 915 },
+      user_agent_data: { brands: [], mobile: true, platform: 'Android' }
+    };
+
+    const context = vm.createContext(sandbox);
+    const thrown = [];
+
+    try {
+      new vm.Script(runtime, { filename: 'runtime.js' }).runInContext(context);
+    } catch (e) {
+      thrown.push(String(e && e.stack || e));
+    }
+
+    console.log(JSON.stringify({ thrown: thrown }));
+    """
+).strip()
+
+
+def test_the_runtime_survives_a_page_with_no_browser_api(tmp_path) -> None:
+    """The runtime must not assume the browser offers an API.
+
+    Every block that touches a browser object has to check that the
+    object exists first.  The navigator global was read directly once,
+    so the guard that was meant to protect the block could not run: the
+    throw happened on the line before the guard.
+    """
+
+    builder = JSRuntimeBuilder()
+    script = builder.build(
+        ProfileGenerator().generate(
+            "pixel-8-pro-android14",
+            master_seed=new_master_seed(),
+        )
+    )
+    runtime = script.split(";\n", 1)[1]
+
+    runtime_path = tmp_path / "runtime.js"
+    runtime_path.write_text(runtime, encoding="utf-8")
+    harness_path = tmp_path / "bare.js"
+    harness_path.write_text(BARE_HARNESS, encoding="utf-8")
+
+    result = subprocess.run(
+        [NODE, str(harness_path), str(runtime_path)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    assert result.returncode == 0, f"node failed:\n{result.stderr}"
+    report = json.loads(result.stdout)
+    assert report["thrown"] == [], f"the runtime threw:\n{report['thrown']}"
