@@ -47,3 +47,22 @@
 *.db    binary
 *.sqlite binary
 *.wasm  binary
+
+# The built browser.
+#
+# A Chromium build is far too large for an ordinary git object: the
+# executable alone is over a hundred megabytes, and GitHub refuses any
+# object above one hundred.  The bundle therefore travels through Git
+# LFS, which stores the bytes outside the tree and keeps a pointer in
+# it.
+#
+# The patterns are narrow on purpose.  The Chromium source tree holds
+# a great many executables -- the test binaries, the build tools -- and
+# tracking all of them would fill the LFS quota with things nobody
+# installs.  Only the shipped browser is tracked.
+dist/chromium-bundle/** filter=lfs diff=lfs merge=lfs -text
+dist/chromium-bundle/*.exe filter=lfs diff=lfs merge=lfs -text
+dist/chromium-bundle/*.pak filter=lfs diff=lfs merge=lfs -text
+dist/chromium-bundle/*.dat filter=lfs diff=lfs merge=lfs -text
+dist/chromium-bundle/*.bin filter=lfs diff=lfs merge=lfs -text
+dist/chromium-bundle/*.dll filter=lfs diff=lfs merge=lfs -text
