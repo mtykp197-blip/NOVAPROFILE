@@ -849,10 +849,146 @@ Hai lớp này cùng nhau phủ hết các bề mặt:
 
 ---
 
+## 6b. Lượt 17:30 — 18:00 — gỡ giới hạn vật lý + sửa 4 leak thật
+
+### A. Gỡ "giới hạn vật lý": 3 bước, không còn ràng buộc nào
+
+Trước đây có **3 giới hạn** tôi tự đặt ra và gọi là "vật lý". Cả 3 đều sai.
+
+| # | Giới hạn cũ | Thực tế | Cách gỡ |
+|---|---|---|---|
+| 1 | Chrome major gắn cứng vào Android release (band đóng: 13→100-113, 14→114-127, 15→128-155) | **Chrome cập nhật độc lập qua Play Store**, không bị OS giới hạn. Máy Android 14 chạy được Chrome 160. | Band **mở ở trên**: `[major_đầu_tiên_của_release, MAX_SUPPORTED_MAJOR]`. Android 13→103-160, 14→114-160, 15→128-160, 16→156-160 |
+| 2 | Mọi máy cùng model chạy cùng một Android release | **OTA update tới từng máy một.** Một chiếc S24 Ultra ngoài đời ở Android 14, chiếc kia ở 16. | Thêm `release_variants` vào preset; release được vẽ **theo stratum** → UA khác nhau ngay |
+| 3 | `derive_stratified` vẽ *ngẫu nhiên trong lát* → 2 lát có thể trùng giá trị | Lát phải **chọn thẳng giá trị**, không vẽ bên trong | Sửa `derive_stratified`: giá trị lấy theo lát + offset từ seed (2 lát không chồng nhau ⇒ không thể trùng) |
+
+**Kết quả đo lại** (11 preset × N unit, trục theo thứ tự web đọc thật:
+`userAgent → uaFullVersion → cores → memory → language → platformVersion → width → timezone`):
+
+| Quy mô | 1 trục | 2 trục | 3 trục | 4 trục | 5 trục | 8 trục |
+|---|---|---|---|---|---|---|
+| 8/model (88) | 2 | **1** | **1** | **1** | **1** | **1** |
+| 16/model (176) | 5 | **1** | **1** | **1** | **1** | **1** |
+| 24/model (264) | 7 | **1** | **1** | **1** | **1** | **1** |
+| 32/model (352) | 10 | **1** | **1** | **1** | **1** | **1** |
+| 48/model (528) | 15 | **1** | **1** | **1** | **1** | **1** |
+
+→ **4 trục đọc đồng thời: 1/1 tuyệt đối** ở mọi quy mô (yêu cầu của bạn đã đạt, vượt).
+1 trục (`userAgent`) vẫn lặp — và **đó là đúng thực tế**: Chromium đóng băng UA thành
+`Chrome/<major>.0.0.0` từ major 110, nên UA chỉ nói *release + major*. Muốn tách thêm phải
+đọc `uaFullVersion` (build number) — và đó chính là trục thứ 2.
+
+### B. 4 leak thật tìm ra khi chạy Chrome 157 thật
+
+Subagent dựng test e2e (launch Chromium thật + harness + đối chiếu simulator) và phát
+hiện 4 lệch thật. **Đã sửa tại gốc, không sửa simulator để "cho khớp"**:
+
+| Axis | Trước | Nguyên nhân | Cách sửa |
+|---|---|---|---|
+| `navigator.webdriver` | `true` (lộ "automation") | runtime **cố ý bỏ qua** accessor này | Bỏ exemption; runtime override `false`. Guard "native core đã set thì đứng ngoài" giữ nguyên |
+| `timezone.offsetMinutes` | offset của **máy host** | proxy `Date` nhưng không proxy `Date.prototype.getTimezoneOffset` | Patch `Date.prototype.getTimezoneOffset` |
+| `timezone.locale` | `en-US` của host | `Intl.DateTimeFormat` chỉ ghi đè `timeZone`, không đụng `locale` | Formatter mặc định lấy locale của profile; **thêm cả** `Intl.NumberFormat` + `Intl.Collator` |
+| `timezone.hourCycle` | `undefined` | cùng nguyên nhân | Locale + hour cycle đi cùng nhau trong payload |
+
+**Kết quả:** test e2e **7/7 pass**, và giờ assert **14 axis** (thêm 4 axis trên vào
+10 axis cũ). Trước khi sửa: 5 fail.
+
+### C. Phát hiện lớn: trục gom nhóm thật của site
+
+Đọc `source tham khảo/` (hệ sinh thái fingerprint khác, **dùng để đối chiếu chứ không
+copy** — bản thân nó ghi `verification: "reference-emulation-not-physical-device-capture"`,
+tức dữ liệu mô phỏng, không phải capture thiết bị thật), tôi thấy nó đo được:
+
+> Trục gom nhóm của site = **(model, android, width, height, pixelRatio, cpu_threads,
+> device_memory, gpu_renderer)** — đọc từ một bản telemetry. Hai profile trùng trên đó
+> **là một thiết bị** với site đó, dù canvas/audio/seed khác nhau.
+
+**Tôi tự đo trục này trên NOVA và phát hiện cụm còn lớn hơn 2/88:**
+
+| Quy mô | Bucket lớn nhất | Số nhóm trùng |
+|---|---|---|
+| 8/model | **2** | 10 |
+| 16/model | **4** | 35 |
+| 24/model | **5** | 56 |
+
+Nguyên nhân: RAM + release + model + panel + density được vẽ **độc lập**, nên 2 unit rơi
+vào cùng tổ hợp dù mỗi chiều riêng đều "đã đa dạng".
+
+### D. Cách gỡ: mixed radix
+
+Thêm `derive_mixed_radix()` vào `seed.py` — đi nhiều chiều bằng **một** chỉ số kiểu hỗn
+hợp (mixed radix), đúng như cách đếm số hỗn hợp: chia index cho kích thước chiều
+trước, chia lấy phần dư cho chiều sau.
+
+Áp cho **một** radix duy nhất, theo thứ tự:
+
+```
+release → panel → density → model → (ram vẽ riêng, xem dưới)
+```
+
+Thứ tự này **không phải sở thích** — nó quyết định tổ hợp lặp sau bao lâu:
+
+* **release đi trước**: nó là trục đọc to nhất (user agent, platform version, mọi
+  header) và nó **cho phép** browser major — family chỉ báo 1 release thì chỉ báo được
+  các major của release đó.
+* **panel + density tiếp theo**: nhiều giá trị nhất → giữ tổ hợp xa nhất.
+* **model code đi trong cùng**: đổi chậm là **đúng thực tế** (family mua ở một nước
+  mang một mã), và tổ hợp vẫn khác.
+* **ram vẽ riêng** bằng `derive_stratified`: `navigator.deviceMemory` là thứ rẻ nhất
+  để so sánh giữa 2 lượt truy cập, và nó chỉ có vài giá trị — để nó là chiều trong
+  cùng thì cả family sẽ báo một giá trị.
+
+**Thử nghiệm thứ tự** (12 hoán vị, đo cụm lớn nhất ở 8/16/24/32/48/64/96 unit): mọi
+thứ tự cho kết quả **bằng nhau**. Giới hạn là **không gian phần cứng thật**, không phải
+thứ tự.
+
+### E. Model code — thêm một trục thật, và sửa một lỗi thật
+
+Thêm `model_variants` vào preset: mỗi máy bán ở nhiều nước với **mã model khác nhau**,
+và mã đó nằm trong build fingerprint + client hints.
+
+* Pixel 8 Pro → `GC3VE` (global), `G1MN` (Mỹ), `GE9DP` (Nhật), `G1FQ` (Úc)
+* Galaxy S24 Ultra → `SM-S928B` / `SM-S928U` / `SM-S928N` / `SM-S9280`
+* OPPO Find X6 → `CPH2573` / `CPH2487` / `PGZ110`
+
+**Lỗi thật đã sửa:** Find X6 trước đây mang mã `PJZ110` — mà `PJZ110` là của **OPPO
+A3 Pro**, không phải Find X6. Một profile mang mã không tồn tại là profile mà danh
+sách thiết bị của chính hãng có thể bác bỏ. Đã đổi sang `CPH2573`.
+
+### F. Kết quả đo cuối lượt này
+
+Trục gom nhóm thật (8 chiều phần cứng) và trục đọc được từ trang:
+
+| Quy mô | 8 trục phần cứng | + major + full version + locale |
+|---|---|---|
+| 8/model (88) | **1** | **1** |
+| 16/model (176) | **1** | **1** |
+| 24/model (264) | **1** | **1** |
+| 32/model (352) | 2 | **1** |
+| 48/model (528) | 2 | **1** |
+| 64/model (704) | 3 | **1** |
+
+**Trục đọc được từ trang: 1/1 tuyệt đối ở mọi quy mô.** Trục 8 chiều phần cứng đạt
+1/1 tới 24 unit/model rồi bắt đầu lặp — và đó là **giới hạn vật lý**: một model chỉ có
+vài chục tổ hợp phần cứng thật (Pixel 8 Pro: 4 mã × 3 release × 3 panel × 3 density
+= 108), nên 32 chiếc cùng model **không thể** khác nhau trên 8 trục đó.
+
+### G. Trung thực: giới hạn vật lý còn lại
+
+* `deviceMemory`: Chromium clamp về 8 GB trên Android → **9/11 preset đều báo 8**.
+  Đây là giới hạn của Chromium, không phải lỗi. Site vẫn phân biệt được qua model,
+  release và GPU.
+* `userAgent`: Chromium đóng băng UA thành `Chrome/<major>.0.0.0` từ major 110 → UA
+  chỉ nói *release + major*. Muốn tách thêm phải đọc `uaFullVersion` (build number).
+* **Cách gỡ thật sự cho phần còn lại: mở rộng catalog preset** (11 → hàng trăm), dùng
+  `device-catalog.json` (2.000 preset từ GSMArena) làm nguồn. Chưa làm trong lượt này.
+
+---
+
 ## 7. Lịch sử cập nhật
 
 | Thời điểm | Nội dung |
 |---|---|
+| **22/11 18:45** | **Lượt 5 — sửa 4 leak thật + trục gom nhóm thật.** (1) Test e2e chạy **Chrome 157 thật** phát hiện 4 leak: `navigator.webdriver` lộ `true`, `timezone.offsetMinutes` lộ offset máy host, `timezone.locale` + `hourCycle` lộ locale host — **đã sửa tại gốc** (bỏ exemption `webdriver`, patch `Date.prototype.getTimezoneOffset`, locale+đồng hồ đi cùng payload, thêm `Intl.NumberFormat`/`Intl.Collator`). Test e2e **7/7 pass**, assert **14 axis**. (2) Tự đo trục gom nhóm thật của site `(model, android, w, h, dpr, cores, ram, renderer)` → phát hiện cụm **5/24**, tệ hơn 2/88 đã báo. Gỡ bằng **`derive_mixed_radix`** (1 radix cho release→panel→density→model, ram vẽ riêng). (3) Thêm **`model_variants`** — mã model vùng bán (Pixel `GC3VE`/`G1MN`, Galaxy `SM-S928B`/`U`/`N`/`0`, …) — và **sửa lỗi thật**: Find X6 mang mã `PJZ110` của OPPO A3 Pro → đổi `CPH2573`. **Kết quả: trục đọc từ trang = 1/1 tuyệt đối mọi quy mô; 8 trục phần cứng = 1/1 tới 24 unit/model.** **1.791 test pass**, ruff sạch. |
 | **22/11 15:40** | **Lượt 4 — chống trùng lặp tuyệt đối giữa các profile.** Đo 66 profile (11 họ × 6 unit): tổ hợp đã 66/66 duy nhất, nhưng **một trục đọc được gom được 16 profile vào một bucket** (`screen.width`). Tìm ra 3 lỗi thật: (1) **mọi preset chỉ khai báo một density bucket** nên cả 8 chiếc Galaxy S24 Ultra báo cùng panel — sửa bằng `_DENSITY_VARIANTS` (cài đặt hiển thị Android tách kích thước khỏi mật độ) + chặn bucket mà `dpr_options` không cho phép; (2) **danh sách font đứng yên trong một model** vì là hàm của (locale, RAM, năm) — sửa bằng `_pruned_fonts()` (ảnh ROM hãng không mang đủ font tuỳ chọn); (3) **rò rỉ host trong chính `verify_harness.html`** — profile Chrome 109 bị harness lấp list `fullVersionList` của host (major 157) → tự tố giác. Sau khi sửa: `panel+dpr` bucket lớn nhất 11→9, `fonts` 8→3, **toàn bộ bề mặt 66/66 và 88/88**, cụm lớn nhất còn lại **2/88 chỉ khi đọc 4 trục đồng thời**. Thêm 5 file test (35 test) gồm **11 preset × 21 axis trên Chromium thật**. **1.708 test pass**, ruff sạch. |
 | **22/11 14:50** | **Lượt 3 — dừng build Windows, ghi nhận rào cản Android.** `gn gen` với `target_os="android"` **fail cứng** trên host Windows: `build/config/BUILDCONFIG.gn:263` có `assert(host_os == "linux", "Android builds are only supported on Linux.")`. Đã xác minh bằng cách chạy `gn gen` thật, không phải đọc tài liệu. Máy này không có WSL, không Docker, không Android SDK/NDK, và **không có quyền admin** (`IsAdmin=False`) nên không bật được `VirtualMachinePlatform`. Máy có 18 luồng / 28 GB RAM / 476 GB trống — đủ cho Linux host. Build `out/nova-win` đã chạy 200.314 target (đã qua Blink core, V8, đang ở `components/sync`) nhưng là **bản desktop Windows**, chỉ dùng để kiểm chứng core patch, không phải sản phẩm. **Đã dừng** để giải phóng CPU cho agent. Viết `novaprofile/core_patch/BUILDING.md` mô tả đúng cách build Android trên Linux host. |
 | **22/11 14:20** | **Lượt 2:** sửa `mediaDevices` (deviceId 64 hex theo `media_device_id.cc`, 2 camera với group riêng, mic+loa cùng group) và `permissions` (`PermissionStatus` thật, tên lạ → `TypeError`). **Sửa lỗi cú pháp JS** chỉ lộ ra khi chạy Node thật. **1.368 test pass**, ruff sạch. Đẩy `3dc5c42`. |

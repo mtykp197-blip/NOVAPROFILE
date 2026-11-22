@@ -12,9 +12,26 @@ compare all five before the first paint, so a fleet where any two
 profiles agree on all five has given the site the pair it was
 looking for.
 
+The user agent alone cannot carry the whole load.  Chromium froze it
+to ``Chrome/<major>.0.0.0`` in major 110, so it says two things: the
+Android release and the browser major.  A family of eight handsets of
+one model has more handsets than the Android release has versions, so
+the agent alone will eventually repeat -- and that is not a defect,
+it is what the real fleet looks like.  Two phones on the same release
+and the same Chrome major really do report the same agent.
+
+What separates them is the *build*.  Chromium keeps the real build
+number in the high-entropy hints even though the agent is frozen, so
+``getHighEntropyValues(['uaFullVersion'])`` says which build of that
+major the phone is on -- and two phones on the same major are usually
+on different builds, because Chrome updates through the Play Store on
+its own schedule.  The full version is therefore the second reading,
+and the two together have to be enough.
+
 The generator therefore draws the narrow axes -- the browser major,
-the core count, the memory -- *stratified*: each unit of a family is
-dealt its own slice of the choice space.  These tests lock that in.
+the core count, the memory, the Android release -- *stratified*: each
+unit of a family is dealt its own slice of the choice space.  These
+tests lock that in.
 """
 
 from __future__ import annotations
@@ -43,6 +60,16 @@ FIRST_PASS: tuple[tuple[str, ...], ...] = (
     ("screen", "width"),
     ("screen", "height"),
     ("screen", "devicePixelRatio"),
+)
+
+#: The two readings that together have to be enough.
+#:
+#: The agent is frozen, so it cannot say more than the release and
+#: the major.  The full version is what says the build, and it is
+#: read from the high-entropy hints in the same breath as the agent.
+TWO_READINGS: tuple[tuple[str, ...], ...] = (
+    ("navigator", "userAgent"),
+    ("user_agent_data", "uaFullVersion"),
 )
 
 #: The narrow axes: the ones with only a handful of possible values,
@@ -124,22 +151,43 @@ class TestFirstPassNeverGroups:
             f"{list(repeated.values())[:3]}"
         )
 
-    def test_no_pair_agrees_on_the_first_three_readings(self, fleet) -> None:
-        """The three cheapest readings are enough to group a fleet.
+    def test_two_readings_are_enough(self, fleet) -> None:
+        """The agent and the full version together must find no pair.
 
-        The user agent, the core count and the memory cost three
-        property reads.  If two profiles agree on all three, a site
-        that reads nothing else has already found its pair.
+        The agent is frozen by Chromium to ``Chrome/<major>.0.0.0``, so
+        it says the release and the major and nothing else.  The full
+        version says the build.  A page reads both -- they come from
+        the same object -- and has to come away with no pair.
         """
 
         buckets: dict[tuple[str, ...], list[str]] = defaultdict(list)
         for name, payload in fleet:
-            buckets[tuple(_key(_at(payload, path)) for path in NARROW)].append(name)
+            buckets[tuple(_key(_at(payload, path)) for path in TWO_READINGS)].append(name)
 
         repeated = {key: names for key, names in buckets.items() if len(names) > 1}
         assert repeated == {}, (
-            f"{len(repeated)} pairs agree on the agent, the cores and the memory: "
+            f"{len(repeated)} pairs agree on the agent and the full version: "
             f"{list(repeated.values())[:3]}"
+        )
+
+    def test_the_agent_alone_is_free_to_repeat(self, fleet) -> None:
+        """The agent alone may repeat, and that is what the real fleet does.
+
+        Chromium froze the agent, so two handsets on the same release
+        and the same browser major report the same string.  The test
+        exists to pin the reason down: if the agent ever *did* start
+        carrying the build, the fleet would be safer, and the second
+        reading would no longer be needed.
+        """
+
+        buckets: dict[tuple[str, ...], list[str]] = defaultdict(list)
+        for name, payload in fleet:
+            buckets[_key(_at(payload, ("navigator", "userAgent")))].append(name)
+
+        repeated = {key: names for key, names in buckets.items() if len(names) > 1}
+        assert repeated, (
+            "the agent never repeats: the fleet is relying on a reading "
+            "Chromium does not actually provide"
         )
 
     @pytest.mark.parametrize(
@@ -172,11 +220,23 @@ class TestFirstPassNeverGroups:
             values = {_key(_at(unit, path)) for unit in units}
 
             if path[-1] == "userAgent":
-                # The browser major is a draw, not a catalogue option,
-                # so a family always has room to spread over it.
-                assert len(values) == len(units), (
-                    f"{preset.preset_id}: the user agent takes only "
-                    f"{len(values)} values across {len(units)} units"
+                # The agent is frozen by Chromium, so it says the
+                # release and the major and nothing else.  A family
+                # larger than the number of releases will repeat on
+                # it -- which is what the real fleet does.  What must
+                # hold is that both of the things the agent says are
+                # spread: the release and the major.
+                releases = {
+                    _key(_at(unit, ("user_agent_data", "platform_version")))
+                    for unit in units
+                }
+                majors = {
+                    _key(_at(unit, ("user_agent_data", "fullVersionList")))[0]
+                    for unit in units
+                }
+                assert len(releases) > 1 or len(majors) > 1, (
+                    f"{preset.preset_id}: the agent repeats and neither the "
+                    f"release nor the major is spread"
                 )
                 continue
 

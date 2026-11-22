@@ -170,14 +170,23 @@ def test_the_reference_catalogue_is_kept_separate(catalogue: list) -> None:
 
 
 def test_a_generated_profile_agrees_with_its_preset() -> None:
-    """The generated profile must report the hardware of its own preset."""
+    """The generated profile must report the hardware of its own preset.
+
+    The model code is the one reading that the preset offers a *set*
+    of, because a handset is sold under several codes and the code is
+    in the build fingerprint and in the client hints.  A profile that
+    carried one code for every unit of the family would hand a site a
+    grouping key for free, so the profile has to carry one of the
+    codes the preset declares -- and never a code the preset does not
+    declare.
+    """
 
     generator = ProfileGenerator()
     presets = list_presets()
     for index, preset in enumerate(presets):
         profile = generator.generate(preset.preset_id, master_seed=f"{index:064x}")
         assert profile.webgl.unmasked_renderer == preset.gpu.unmasked_renderer
-        assert profile.android_build.model == preset.model
+        assert profile.android_build.model in (preset.model_variants or (preset.model,))
         assert profile.android_abi_soc.soc_model == preset.abi.soc_model
 
 

@@ -19,6 +19,8 @@ from ..schema.hardware import (
     AndroidAbiSoc,
     AndroidBuild,
     Canvas2DConfig,
+    CanvasReadbackTiming,
+    GpuParameterSet,
     MediaQueries,
     Orientation,
     Screen,
@@ -62,6 +64,7 @@ from ..schema.signals import (
     Battery,
     BatterySpeechGamepad,
     Fonts,
+    FontTimingShield,
     Gamepad,
     HeapSizeLimit,
     MathPrecision,
@@ -84,11 +87,12 @@ from .font_catalog import (
     fonts_for_device,
 )
 from .geo_catalog import GEO_CATALOGUE
+from .gpu_params import tier_for
 from .hardware_approximation import (
     approximate_device_memory,
     approximate_hardware_concurrency,
 )
-from .identity import DeviceIdentity, DeviceIdentityFactory
+from .identity import DeviceIdentity, DeviceIdentityFactory, panel_space
 from .seed import Axis, SeedDeriver, new_master_seed
 from .versions import (
     DEFAULT_REGISTRY,
@@ -97,6 +101,8 @@ from .versions import (
     VERSION_TABLE,
     VersionCapabilities,
     _android_for_major,
+    build_range_for,
+    full_version_for_build,
 )
 
 #: The Chromium major this build falls back to when no version can be
@@ -978,37 +984,145 @@ class ProfileGenerator:
         # physical unit: its own serial, firmware build, bootloader, panel
         # and GPU.  Two profiles of the same model are therefore two
         # different devices as far as any observer can tell.
-        device = DeviceIdentityFactory(deriver).build(preset)
-        build = device.build
-        abi = preset.abi
-
-        # The RAM of this physical unit.  A phone does not report a random
-        # amount of memory: it reports the amount the model was sold with,
-        # and the model's list of options is what the catalogue knows.
-        # Drawing from a flat set instead would let a 4 GB Redmi Note
-        # report 16 GB, and ``navigator.deviceMemory`` is one of the
-        # cheapest things for a script to compare between two visits.
+        # The RAM, the Android release and the model code of this
+        # physical unit are drawn **first**, and together.
+        #
+        # A phone does not report a random amount of memory: it reports
+        # the amount the model was sold with, and the model's list of
+        # options is what the catalogue knows.  Drawing from a flat set
+        # instead would let a 4 GB Redmi Note report 16 GB, and
+        # `navigator.deviceMemory` is one of the cheapest things for a
+        # script to compare between two visits.
         #
         # The value that reaches the page is *not* the physical memory.
         # Chromium rounds it to the nearest power of two and clamps it to
         # eight gigabytes on Android, so a 6 GB handset reports four and
         # a 12 GB handset reports eight.
         #
-        # The draw is stratified so that two units of the same model do
-        # not both report the same memory.  The memory is one of only
-        # four values Chromium can report, so an independent draw puts
-        # two handsets on the same one often enough to group them.
+        # The three are walked through one mixed radix -- and so are the
+        # panel and the density, because a site groups on the
+        # *combination*: the resolution, the density, the system
+        # version, the core count, the memory and the model, read out
+        # of one telemetry record.  A memory drawn on its own, a
+        # release drawn on its own and a model code drawn on its own
+        # each land on their own slice while two units still land on
+        # the same combination of slices; and two radices -- one for
+        # the memory and the release, another for the panel -- fold
+        # onto each other and put two units back on the same
+        # combination.  One index over the whole space of the device
+        # makes the combination repeat only when it is genuinely
+        # exhausted.
+        release_options = tuple(
+            variant[0]
+            for variant in (preset.release_variants or ((preset.release, preset.sdk_int),))
+        )
+        model_options = tuple(preset.model_variants or (preset.model,))
+        panel_options, density_options = panel_space(preset)
         if self._stratum is not None:
+            # The order of the dimensions decides how fast each one
+            # changes.  The mixed radix folds the index through the
+            # dimensions from the outside in, so the outermost
+            # dimension changes with every unit and the innermost one
+            # changes last.
+            #
+            # The release comes first.  It is the loudest reading on
+            # the device -- it is in the user agent, in the platform
+            # version of the client hints and in every header -- and it
+            # is also the reading that *permits* the browser major, so
+            # a family that only ever reports one release also only
+            # ever reports the majors of that release.
+            #
+            # The panel and the density come next: they are the
+            # readings with the most values, so they are the ones
+            # that keep the *combination* apart for the longest.  The
+            # order is not a matter of taste -- the mixed radix repeats
+            # a combination only when the space in front of it is
+            # exhausted, so the dimensions with the most values have
+            # to come first or the combination repeats long before the
+            # space is.
+            #
+            # The model code is drawn **inside** the same radix, as the
+            # dimension nearest the core.  It changes slowly, and that
+            # is right: a family bought in one country does carry one
+            # code for a long time.  What has to differ between two
+            # units is the *combination* -- and the combination is kept
+            # apart by the release, the panel and the density.
+            # The memory is drawn on its own, outside the radix.
+            #
+            # ``navigator.deviceMemory`` is one of the cheapest things
+            # for a script to compare between two visits, and it has
+            # only a handful of possible values -- so a family that
+            # reports one memory for every unit hands a site a
+            # grouping key over the whole fleet.  It cannot be a
+            # dimension of the radix: the radix reaches its last
+            # dimension only after the space in front of it is
+            # exhausted, and the memory would sit behind the release,
+            # the panel and the density.
+            #
+            # It is drawn by the stratified draw instead, which gives
+            # each unit its own slice of the memory space.
             physical_ram_gb = int(
                 deriver.derive_stratified(
-                    Axis.NAVIGATOR, preset.ram_options, "ram", self._stratum
+                    Axis.NAVIGATOR,
+                    preset.ram_options,
+                    "ram",
+                    self._stratum,
                 )
+            )
+            (
+                release_name,
+                chosen_panel,
+                chosen_density,
+                model_code,
+            ) = deriver.derive_mixed_radix(
+                Axis.NAVIGATOR,
+                (
+                    release_options,
+                    panel_options,
+                    density_options,
+                    model_options,
+                ),
+                "device",
+                self._stratum,
             )
         else:
             physical_ram_gb = int(
                 deriver.derive_choice(Axis.NAVIGATOR, preset.ram_options, context="ram")
             )
+            release_name = release_options[
+                deriver.derive_int(
+                    Axis.CLIENT_HINTS, 0, len(release_options) - 1, context="android-release"
+                )
+            ]
+            model_code = model_options[
+                deriver.derive_int(
+                    Axis.NAVIGATOR, 0, len(model_options) - 1, context="model-code"
+                )
+            ]
+            chosen_panel = panel_options[
+                deriver.derive_int(
+                    Axis.SCREEN_VIEWPORT, 0, len(panel_options) - 1, context="panel"
+                )
+            ]
+            chosen_density = density_options[
+                deriver.derive_int(
+                    Axis.SCREEN_VIEWPORT,
+                    0,
+                    len(density_options) - 1,
+                    context="panel_density",
+                )
+            ]
         ram_gb = approximate_device_memory(physical_ram_gb)
+        device = DeviceIdentityFactory(
+            deriver,
+            self._stratum,
+            chosen_release=release_name,
+            chosen_model=model_code,
+            chosen_panel=chosen_panel,
+            chosen_density=chosen_density,
+        ).build(preset)
+        build = device.build
+        abi = preset.abi
 
         # The font tier follows the RAM and the model year, because those
         # two are what decide how much room the system partition leaves
@@ -1044,10 +1158,26 @@ class ProfileGenerator:
 
         caps = DEFAULT_REGISTRY.capabilities(major)
 
+        # The full version carries the *build* number, and the build
+        # number is what separates two handsets on the same major.
+        #
+        # Chrome updates through the Play Store on its own schedule and
+        # ships a new build of a major every six weeks or so, so two
+        # phones on the same major are very often on different builds.
+        # A profile that reports the registry's representative build
+        # therefore tells a site that every profile of that major runs
+        # the same build -- which no real fleet of phones does.
+        #
+        # The build number is drawn from the range the major actually
+        # spans, so the version stays one a real device could be
+        # running, and it is a function of the seed, so the profile
+        # keeps the same one across restarts.
+        profile_full = self._pick_full_version(deriver, caps)
+
         if browser_version is None:
-            version = BrowserVersion(major=caps.major, full_version=caps.full_version)
+            version = BrowserVersion(major=caps.major, full_version=profile_full)
         elif not browser_version.full_version:
-            version = browser_version.model_copy(update={"full_version": caps.full_version})
+            version = browser_version.model_copy(update={"full_version": profile_full})
         else:
             if browser_version.full_version.split(".")[0] != str(browser_version.major):
                 raise ValueError(
@@ -1210,6 +1340,37 @@ class ProfileGenerator:
             on_line=True,
             java_enabled=False,
         )
+
+    def _pick_full_version(self, deriver: SeedDeriver, caps: VersionCapabilities) -> str:
+        """Draw the full version -- the build number -- of this profile.
+
+        The major is the loud reading; the build number is the quiet
+        one.  It is what ``navigator.userAgentData``'s full version
+        list carries and what the ``Sec-CH-UA-Full-Version-List``
+        header carries, and it is what separates two handsets that run
+        the same major.
+
+        The draw is stratified for the same reason the browser major
+        is: the build number of a major spans only a few dozen values
+        -- a major lives about six months -- and an independent draw
+        lets two handsets of one model land on the same build often
+        enough to group them.
+        """
+
+        low, high = build_range_for(caps.major)
+        # The patch level is the fourth field.  It changes with every
+        # build of a branch, but it carries very little information:
+        # a handful of values per build number.
+        if self._stratum is not None:
+            build = deriver.derive_stratified(
+                Axis.CLIENT_HINTS, list(range(low, high + 1)), "chrome-build", self._stratum
+            )
+        else:
+            build = deriver.derive_int(
+                Axis.CLIENT_HINTS, low, high, context="chrome-build"
+            )
+        patch = deriver.derive_int(Axis.CLIENT_HINTS, 0, 220, context="chrome-patch")
+        return full_version_for_build(caps.major, build, patch)
 
     def _build_user_agent_data(
         self,
@@ -1563,12 +1724,37 @@ class ProfileGenerator:
         raw = deriver.derive_float(Axis.CANVAS_2D, 0.0, 1.0, context="strength")
         strength = round(min(max(raw, CANVAS_NOISE_FLOOR), 1.0), 6)
 
+        # The readback timing.  The delay is drawn from its own axis so
+        # that it is independent of the canvas noise: two profiles that
+        # happen to draw the same noise strength still report different
+        # readback times.
+        #
+        # The delay is *fixed* for the profile -- it is a constant of
+        # the unit, not of the call -- so two reads of the same canvas
+        # take the same time.  A defence that jittered per call would
+        # be worse than no defence at all: a site that reads the canvas
+        # twice and compares the two timings would find them unequal,
+        # and that is a signal no real device gives.
+        delay_ms = round(
+            deriver.derive_float(Axis.CANVAS_TIMING, 0.5, 3.0, context="canvas_delay"),
+            3,
+        )
+        read_pixels_delay_ms = round(
+            deriver.derive_float(Axis.CANVAS_TIMING, 0.5, 3.0, context="read_pixels_delay"),
+            3,
+        )
+
         return Canvas2DConfig(
             mode="noise",
             salt=salt,
             noise_strength=strength,
             persist_across_restarts=True,
             targets=["toDataURL", "toBlob", "getImageData"],
+            timing=CanvasReadbackTiming(
+                enabled=True,
+                delay_ms=delay_ms,
+                read_pixels_delay_ms=read_pixels_delay_ms,
+            ),
         )
 
     def _build_webgl(self, deriver: SeedDeriver, identity: DeviceIdentity) -> WebGLConfig:
@@ -1579,6 +1765,28 @@ class ProfileGenerator:
         # The draw surface therefore gets its own 128-bit per-unit salt,
         # which is what the native core keys the readback on.
         salt = deriver.derive_bytes(Axis.WEBGL_PIXEL, 16, context="salt").hex()
+
+        # The parameter table.  The limits of a card are read off the
+        # *host* machine, so a fleet built on one build server reports
+        # one identical table -- and a site that reads a dozen of those
+        # limits groups the whole fleet for free.
+        #
+        # The fix is not a random limit; it is a limit the model really
+        # produces.  Every GPU model has a table of internally
+        # consistent variants -- the stock one, the half-memory one,
+        # and the high-memory one where the model has a SKU above its
+        # catalogue entry -- and the unit draws one of them.  The whole
+        # set moves together, because the memory that bounds the
+        # texture bounds the cube map, the renderbuffer and the
+        # viewport with it.
+        #
+        # The tier was drawn by the identity layer, so that the WebGPU
+        # limit table -- which describes the same physical GPU -- gets
+        # the same one.
+        tier = tier_for(gpu, identity.gpu_tier)
+        limits = tier.limits
+        param_salt = deriver.derive_bytes(Axis.GPU_PARAMS, 16, context="salt").hex()
+
         return WebGLConfig(
             mode="noise",
             unmasked_vendor=gpu.unmasked_vendor,  # type: ignore[arg-type]
@@ -1592,32 +1800,37 @@ class ProfileGenerator:
             read_pixels_sync=True,
             extensions=WebGLExtensions(supported=list(_CHROMIUM_ANDROID_EXTENSIONS)),
             parameters=WebGLParameters(
-                max_texture_size=gpu.max_texture_size,
-                max_cube_map_texture_size=gpu.max_cube_map_texture_size,
-                max_3d_texture_size=gpu.max_3d_texture_size,
-                max_array_texture_layers=gpu.max_array_texture_layers,
-                max_renderbuffer_size=gpu.max_renderbuffer_size,
-                max_viewport_dims=list(gpu.max_viewport_dims),
-                max_vertex_attribs=gpu.max_vertex_attribs,
-                max_vertex_uniform_vectors=gpu.max_vertex_uniform_vectors,
-                max_vertex_uniform_components=gpu.max_vertex_uniform_components,
-                max_fragment_uniform_vectors=gpu.max_fragment_uniform_vectors,
-                max_fragment_uniform_components=gpu.max_fragment_uniform_components,
-                max_varying_vectors=gpu.max_varying_vectors,
-                max_combined_texture_image_units=gpu.max_combined_texture_image_units,
-                max_vertex_texture_image_units=gpu.max_vertex_texture_image_units,
-                max_texture_image_units=gpu.max_texture_image_units,
-                max_color_attachments=gpu.max_color_attachments,
-                max_draw_buffers=gpu.max_draw_buffers,
-                max_samples=gpu.max_samples,
-                max_uniform_buffer_bindings=gpu.max_uniform_buffer_bindings,
-                aliased_line_width_range=list(gpu.aliased_line_width_range),
-                aliased_point_size_range=list(gpu.aliased_point_size_range),
-                sample_buffers=gpu.sample_buffers,
-                samples=gpu.samples,
-                max_texture_max_anisotropy_ext=gpu.max_texture_max_anisotropy_ext,
+                max_texture_size=limits.max_texture_size,
+                max_cube_map_texture_size=limits.max_cube_map_texture_size,
+                max_3d_texture_size=limits.max_3d_texture_size,
+                max_array_texture_layers=limits.max_array_texture_layers,
+                max_renderbuffer_size=limits.max_renderbuffer_size,
+                max_viewport_dims=list(limits.max_viewport_dims),
+                max_vertex_attribs=limits.max_vertex_attribs,
+                max_vertex_uniform_vectors=limits.max_vertex_uniform_vectors,
+                max_vertex_uniform_components=limits.max_vertex_uniform_components,
+                max_fragment_uniform_vectors=limits.max_fragment_uniform_vectors,
+                max_fragment_uniform_components=limits.max_fragment_uniform_components,
+                max_varying_vectors=limits.max_varying_vectors,
+                max_combined_texture_image_units=limits.max_combined_texture_image_units,
+                max_vertex_texture_image_units=limits.max_vertex_texture_image_units,
+                max_texture_image_units=limits.max_texture_image_units,
+                max_color_attachments=limits.max_color_attachments,
+                max_draw_buffers=limits.max_draw_buffers,
+                max_samples=limits.max_samples,
+                max_uniform_buffer_bindings=limits.max_uniform_buffer_bindings,
+                aliased_line_width_range=list(limits.aliased_line_width_range),
+                aliased_point_size_range=list(limits.aliased_point_size_range),
+                sample_buffers=limits.sample_buffers,
+                samples=limits.samples,
+                max_texture_max_anisotropy_ext=limits.max_texture_max_anisotropy_ext,
             ),
             shader_precision=self._shader_precision(),
+            parameter_set=GpuParameterSet(
+                tier=tier.index,
+                source_renderer=gpu.unmasked_renderer,
+                salt=param_salt,
+            ),
         )
 
     def _shader_precision(self) -> ShaderPrecision:
@@ -1672,7 +1885,12 @@ class ProfileGenerator:
         # a real GPU produces: every WebGPU implementation exposes a limit
         # table.  The values below follow the device's GPU, so the adapter
         # agrees with the WebGL parameters of the same device.
-        gpu = identity.gpu
+        #
+        # The *tier* is the same one the WebGL builder applied: the two
+        # surfaces describe the same physical card, and a site that
+        # compares the WebGPU texture limit with the WebGL one and
+        # finds them different has found a contradiction.
+        gpu = tier_for(identity.gpu, identity.gpu_tier).limits
         limits: dict[str, float] = {
             "maxTextureDimension1D": float(gpu.max_texture_size),
             "maxTextureDimension2D": float(gpu.max_texture_size),
@@ -1835,11 +2053,35 @@ class ProfileGenerator:
         for mandatory in ("Roboto", "Noto Color Emoji"):
             if mandatory not in installed:
                 installed.append(mandatory)
+
+        # The font timing shield.  The delay is drawn from its own
+        # axis, so it is independent of the font list: two profiles
+        # that ship the same families still report different probe
+        # timings.
+        #
+        # The shield is what makes the timing *uniform*: every probe of
+        # this profile costs the same, whether the family it asks for
+        # is on the device or not.  A site that times a probe for a
+        # family it knows is absent learns nothing from the time.
+        probe_delay = round(
+            deriver.derive_float(Axis.FONT_TIMING, 0.2, 2.0, context="font_probe_delay"),
+            3,
+        )
+        measure_delay = round(
+            deriver.derive_float(Axis.FONT_TIMING, 0.2, 2.0, context="font_measure_delay"),
+            3,
+        )
+
         return Fonts(
             mode="android_preset",
             installed=sorted(installed),
             salt=salt,
             preserve_metric_clusters=True,
+            timing=FontTimingShield(
+                enabled=True,
+                delay_ms=probe_delay,
+                measure_delay_ms=measure_delay,
+            ),
         )
 
     def _pruned_fonts(self, deriver: SeedDeriver, available: list[str]) -> list[str]:
@@ -2469,7 +2711,7 @@ def _release_number(release: str) -> int:
 
 @lru_cache(maxsize=64)
 def _chromium_band_for_android_release(release: str) -> tuple[int, int]:
-    """The Chromium majors that shipped with an Android release.
+    """The Chromium majors a device on this Android release can be running.
 
     A profile that claims a browser version the operating system never
     shipped is a contradiction a vendor can read straight off the
@@ -2477,18 +2719,30 @@ def _chromium_band_for_android_release(release: str) -> tuple[int, int]:
     *derived* from the version registry, which is the single source of
     truth for what each Chromium major looks like.
 
-    The derivation inverts :func:`novaprofile.core.versions._android_for_major`:
-    every supported major is asked which Android release it belongs to,
-    and the majors of the requested release are collected.  For the
-    shipped table that yields
+    The band is **open at the top**.  The first Chromium major that
+    shipped with a release is the oldest one the release can be found
+    running; the newest is the newest major that exists.  That is what
+    a real fleet looks like: a handset on Android 14 is running the
+    Chrome it shipped with, or a version a few updates later, or the
+    one from this month -- Chrome updates through the Play Store on its
+    own schedule and is not held back by the operating system.
 
-    ==========  ===================
+    The closed band -- one major per release -- was the wrong shape.
+    It said that every handset on Android 14 runs one of fourteen
+    browsers, which is not how the fleet is distributed, and it made
+    the family of one model run out of browser versions long before
+    it ran out of handsets.
+
+    For the shipped table the bands are
+
+    ==========  ==========================
     Android      Chromium
-    ==========  ===================
-    13           100 .. 113
-    14           114 .. 127
-    15           128 .. 155
-    ==========  ===================
+    ==========  ==========================
+    13           103 .. 160
+    14           114 .. 160
+    15           128 .. 160
+    16           156 .. 160
+    ==========  ==========================
 
     A release the registry does not know about inherits the band of the
     newest release that shipped at or below it, which is what a device
@@ -2515,7 +2769,9 @@ def _chromium_band_for_android_release(release: str) -> tuple[int, int]:
         # some release, so this cannot happen unless the table is emptied.
         return (MIN_SUPPORTED_MAJOR, MAX_SUPPORTED_MAJOR)
 
-    return (majors[0], majors[-1])
+    # The oldest major the release shipped with, and the newest major
+    # that exists.
+    return (majors[0], MAX_SUPPORTED_MAJOR)
 
 
 def _pick_chrome_major(deriver: SeedDeriver, release: str, stratum: int | None = None) -> int:

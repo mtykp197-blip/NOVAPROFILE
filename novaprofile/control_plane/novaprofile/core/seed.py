@@ -70,6 +70,33 @@ class Axis(str, Enum):
     MATH_PRECISION = "math_precision"
     HEAP_SIZE = "heap_size"
     MEDIA_DECODE = "media_decode"
+    #: The timing of the canvas readback.
+    #:
+    #: ``canvas.toDataURL()`` and ``gl.readPixels()`` take a time that
+    #: depends on the GPU, and a site that measures it groups every
+    #: profile that runs on the same graphics card.  The delay this
+    #: axis carries is drawn per profile, so two units of the same
+    #: model do not report the same readback time -- while the value
+    #: stays fixed for the lifetime of the profile, so that two reads
+    #: of one profile never disagree with each other.
+    CANVAS_TIMING = "canvas_timing"
+    #: The timing of the font probes.
+    #:
+    #: ``document.fonts.check()`` and the measurement of rendered text
+    #: take a time that depends on whether the font is really on the
+    #: device.  This axis carries the *shield*: the constant delay
+    #: that makes the timing of a present font and the timing of an
+    #: absent one indistinguishable.
+    FONT_TIMING = "font_timing"
+    #: The WebGL parameter table of the unit.
+    #:
+    #: The limits a graphics card reports are a property of the model,
+    #: but they are not the same on every unit of that model: the
+    #: driver revision and the memory configuration move them.  This
+    #: axis carries the per-unit variant of the table, so that a
+    #: fleet does not report one identical parameter set on every
+    #: machine it was built on.
+    GPU_PARAMS = "gpu_params"
 
 
 #: Domain separation strings.  These are *not* secrets -- they are protocol
@@ -95,6 +122,9 @@ DOMAIN_SALTS: dict[Axis, bytes] = {
     Axis.MATH_PRECISION: b"nova/v1/math_precision",
     Axis.HEAP_SIZE: b"nova/v1/heap_size",
     Axis.MEDIA_DECODE: b"nova/v1/media_decode",
+    Axis.CANVAS_TIMING: b"nova/v1/canvas_timing",
+    Axis.FONT_TIMING: b"nova/v1/font_timing",
+    Axis.GPU_PARAMS: b"nova/v1/gpu_params",
 }
 
 
@@ -405,7 +435,88 @@ class SeedDeriver:
             # count): fall back to the whole space.
             low, high = 0, count
 
-        return options[self.derive_int(axis, low, high - 1, context)]
+        # The value is *derived from the slice*, not drawn from it.
+        #
+        # Drawing inside the slice -- even a stratified draw -- lets two
+        # slices land on the same value, and the whole point of slicing
+        # is that they do not.  The slice therefore chooses the value
+        # outright, and the draw only decides *which* value of the
+        # slice, in a way that is fixed for the unit rather than
+        # re-rolled.
+        #
+        # The offset inside the slice comes from the seed, so the choice
+        # is still a function of the profile: a unit does not always
+        # take the first value of its slice.
+        offset = self.derive_int(axis, 0, high - low - 1, f"{context}|offset")
+        return options[low + offset]
+
+    # ------------------------------------------------------------------
+    # The mixed radix -- several axes at once, without a repeat
+    # ------------------------------------------------------------------
+
+    def derive_mixed_radix(
+        self,
+        axis: Axis,
+        dimensions: Sequence[Sequence[T]],
+        context: str,
+        stratum: int,
+    ) -> tuple[T, ...]:
+        """Pick one value from each of several spaces, without a repeat.
+
+        The narrow readings of a device -- the memory size, the number
+        of cores, the display size, the region suffix -- are drawn one
+        after the other, and each one is stratified on its own.  That
+        is not enough: two units can each land inside their own slice
+        and still land on the *same combination*, and a site that
+        groups on the combination has found its pair.
+
+        A site groups on the combination.  It is the physical
+        resolution, the density, the system version, the core count,
+        the memory and the model of the device, read out of one
+        telemetry record; a profile that agrees with another on all of
+        them is one device to that site, whatever its canvas, its
+        audio and its seed say.
+
+        The mixed radix is the way to walk the space of the
+        combinations without repeating one.  The index is folded
+        through the dimensions the way a number is folded through its
+        digits: dividing the index by the size of the previous
+        dimension folds the combinations onto each other, and giving
+        every dimension its own step misses the combinations where two
+        steps happen to agree.  Two units of the same family therefore
+        get two different combinations, and they keep getting them
+        however large the family grows -- the space is exhausted only
+        when the combinations really run out.
+
+        The result is a pure function of the seed and the stratum, so
+        the profile keeps the same hardware across restarts.
+        """
+
+        if not dimensions:
+            raise SeedError("cannot choose from an empty set of dimensions")
+
+        # The number of values each dimension offers.  The step of a
+        # dimension is the size of the space *before* it, and it has to
+        # be the same for every index, or the radix folds the
+        # combinations onto each other and two indexes paint the same
+        # machine.
+        sizes = [len(dimension) for dimension in dimensions]
+        for size in sizes:
+            if size == 0:
+                raise SeedError("cannot choose from an empty sequence")
+
+        # The index is the stratum, walked through the dimensions.  The
+        # stratum is the unit's place in its family, so the family is
+        # dealt the combinations in order, one to a unit.
+        index = stratum
+
+        chosen: list[T] = []
+        for dimension, size in zip(dimensions, sizes, strict=True):
+            value = dimension[index % size]
+            index //= size
+            chosen.append(value)
+
+        return tuple(chosen)
 
     # ------------------------------------------------------------------
     # WebGL image value -- the anti cross-GPU-collision axis

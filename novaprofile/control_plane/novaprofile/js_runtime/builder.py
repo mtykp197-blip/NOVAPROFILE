@@ -322,6 +322,59 @@ RUNTIME_JS = r"""
   // reporter.
   installSourceText();
 
+  // -- the timing shield ----------------------------------------------------
+  //
+  // Some surfaces leak through their *duration* rather than through
+  // their value.  A canvas readback and a font probe both take a time
+  // that depends on the hardware underneath, and a site that measures
+  // the duration learns which hardware it is talking to -- or, worse
+  // for a fleet, that every profile it sees was built on the same
+  // machine.
+  //
+  // The delay below is a **constant of the profile**, not a jitter per
+  // call.  Two reads of the same profile therefore take the same
+  // time, which is what a real device does; a per-call jitter would
+  // be its own signature, because a site that reads the canvas twice
+  // and compares the two durations would find them unequal and no
+  // real device ever does that.
+  //
+  // The wait is a spin on the clock rather than a timer.  A timer
+  // would add its own quantisation -- Chromium clamps a timeout to
+  // about a millisecond -- so the delay would be visible as a
+  // rounding artefact, and the profile would report a duration that
+  // is a multiple of the tick instead of the number the profile
+  // carries.  The spin burns the time exactly, and the clock it
+  // reads is the same one the page would read.
+  var nowMs = (function () {
+    try {
+      if (typeof performance !== 'undefined' && performance
+          && typeof performance.now === 'function') {
+        return function () { return performance.now(); };
+      }
+    } catch (e) { /* falls through to Date */ }
+    return function () { return Date.now(); };
+  })();
+
+  // Burn ``ms`` milliseconds.
+  //
+  // The loop is bounded by the clock, so it always ends; the extra
+  // counter is a guard against a clock that does not move at all,
+  // which would otherwise hang the page.
+  function burn(ms) {
+    if (!ms || ms <= 0) { return; }
+    var deadline = nowMs() + ms;
+    var guard = 0;
+    while (nowMs() < deadline && guard < 10000000) { guard++; }
+  }
+
+  // The delay a profile carries on a surface.  A surface without a
+  // timing shield keeps the host's clock, which is the leak.
+  function timingDelay(surface, key) {
+    if (!surface || !surface.enabled) { return 0; }
+    var value = surface[key];
+    return typeof value === 'number' && value > 0 ? value : 0;
+  }
+
   function nativeLike(obj, name, fn, descriptor) {
     var target = descriptor && descriptor.configurable !== undefined
       ? descriptor : { configurable: true, enumerable: true };
@@ -385,7 +438,17 @@ RUNTIME_JS = r"""
         // alone: the native core is better at that than a JavaScript
         // override, and a duplicated override is a second chance to be
         // detected.
-        if (key === 'webdriver') { return; }
+        //
+        // ``webdriver`` used to be exempt here, on the grounds that
+        // the native core sets it and a second override would be a
+        // second chance to be detected.  That exemption was wrong
+        // when the profile is served by the JavaScript runtime alone:
+        // headless Chrome reports ``navigator.webdriver`` as true, and
+        // a site that reads it sees every profile of the fleet as
+        // automated.  The exemption is kept only for the case where
+        // the native core is already in place -- the runtime detects
+        // that by the accessor being a native one, which the guard
+        // below handles.
         var desc = Object.getOwnPropertyDescriptor(Navigator.prototype, key);
         if (isReplaced(desc)) {
           // Already native -- do not wrap it.
@@ -551,21 +614,68 @@ RUNTIME_JS = r"""
       window.Date = DateProxy;
     } catch (e) { /* a locked-down Date stays stock */ }
 
+    // ``Date.prototype.getTimezoneOffset`` is read directly by most
+    // pages -- ``new Date().getTimezoneOffset()`` reaches the
+    // prototype method through the proxy, but
+    // ``Date.prototype.getTimezoneOffset.call(d)`` and the bare
+    // ``d.getTimezoneOffset()`` on a date that was *not* built by the
+    // proxy do not.  Without this the host's offset leaks through the
+    // one accessor that reports it most directly.
+    try {
+      var nativeOffset = Date.prototype.getTimezoneOffset;
+      if (typeof nativeOffset === 'function') {
+        var profileOffset = tz.offset_minutes;
+        Object.defineProperty(Date.prototype, 'getTimezoneOffset', {
+          value: hide(function () { return -profileOffset; }, 'getTimezoneOffset'),
+          writable: true,
+          configurable: true,
+          enumerable: false
+        });
+      }
+    } catch (e) { /* a locked-down Date stays stock */ }
+
     // The time zone is read from ``Intl``, not from ``Date``: a page
     // that wants the zone asks the formatter for it.  The offset of
     // ``Date`` and the name of the zone have to agree, so both come
     // from the profile.
+    //
+    // The *locale* comes from the profile as well.  A formatter built
+    // without a locale resolves to the host's -- ``en-US`` on a
+    // machine whose profile claims ``es-US`` -- and the resolved
+    // options then carry the host's locale and its hour cycle, which
+    // a site reads straight out of ``resolvedOptions()``.
     try {
       if (typeof Intl !== 'undefined' && Intl.DateTimeFormat) {
         var NativeDateTimeFormat = Intl.DateTimeFormat;
         var IanaName = tz.iana_name;
+        var ProfileLocale = tz.intl_locale || (P.navigator && P.navigator.language) || '';
+        var ProfileHourCycle = tz.hour_cycle || '';
+        var ProfileCalendar = tz.calendar || '';
+        var ProfileNumbering = tz.numbering_system || '';
         var IntlProxy = function (locales, options) {
-          var formatter = new NativeDateTimeFormat(locales, options);
+          // A page that names its own locale keeps it; a page that
+          // names none gets the profile's.
+          var wanted = (locales === undefined || locales === null || locales === '')
+            ? ProfileLocale
+            : locales;
+          var formatter = new NativeDateTimeFormat(wanted, options);
           var resolved = formatter.resolvedOptions.bind(formatter);
           formatter.resolvedOptions = function () {
             var options = resolved();
             if (options && options.timeZone !== undefined && IanaName) {
               options.timeZone = IanaName;
+            }
+            if (options && ProfileLocale && options.locale === undefined) {
+              options.locale = ProfileLocale;
+            }
+            if (options && ProfileHourCycle && options.hourCycle === undefined) {
+              options.hourCycle = ProfileHourCycle;
+            }
+            if (options && ProfileCalendar && options.calendar === undefined) {
+              options.calendar = ProfileCalendar;
+            }
+            if (options && ProfileNumbering && options.numberingSystem === undefined) {
+              options.numberingSystem = ProfileNumbering;
             }
             return options;
           };
@@ -573,6 +683,59 @@ RUNTIME_JS = r"""
         };
         IntlProxy.prototype = NativeDateTimeFormat.prototype;
         Intl.DateTimeFormat = IntlProxy;
+      }
+
+      // ``Intl.NumberFormat`` resolves to the host's locale in the
+      // same way, and a page reads the resolved options of a number
+      // formatter just as readily as those of a date formatter.
+      if (Intl.NumberFormat) {
+        var NativeNumberFormat = Intl.NumberFormat;
+        var NumberProxy = function (locales, options) {
+          var wanted = (locales === undefined || locales === null || locales === '')
+            ? ProfileLocale
+            : locales;
+          var formatter = new NativeNumberFormat(wanted, options);
+          var resolved = formatter.resolvedOptions.bind(formatter);
+          formatter.resolvedOptions = function () {
+            var options = resolved();
+            if (options && ProfileLocale && options.locale === undefined) {
+              options.locale = ProfileLocale;
+            }
+            if (options && ProfileNumbering && options.numberingSystem === undefined) {
+              options.numberingSystem = ProfileNumbering;
+            }
+            return options;
+          };
+          return formatter;
+        };
+        NumberProxy.prototype = NativeNumberFormat.prototype;
+        Intl.NumberFormat = NumberProxy;
+      }
+
+      // ``Intl.Collator`` resolves to the host's locale as well, and
+      // the sorting it produces is a reading of the locale.
+      if (Intl.Collator) {
+        var NativeCollator = Intl.Collator;
+        var CollatorProxy = function (locales, options) {
+          var wanted = (locales === undefined || locales === null || locales === '')
+            ? ProfileLocale
+            : locales;
+          var collator = new NativeCollator(wanted, options);
+          var resolved = collator.resolvedOptions.bind(collator);
+          collator.resolvedOptions = function () {
+            var options = resolved();
+            if (options && ProfileLocale && options.locale === undefined) {
+              options.locale = ProfileLocale;
+            }
+            if (options && ProfileNumbering && options.numberingSystem === undefined) {
+              options.numberingSystem = ProfileNumbering;
+            }
+            return options;
+          };
+          return collator;
+        };
+        CollatorProxy.prototype = NativeCollator.prototype;
+        Intl.Collator = CollatorProxy;
       }
     } catch (e) { /* a locked-down Intl stays stock */ }
   }
@@ -692,6 +855,9 @@ RUNTIME_JS = r"""
       CanvasRenderingContext2D.prototype.getImageData = hide(function (x, y, w, h) {
         var img = nativeGetImageData.call(this, x, y, w, h);
         img.data = perturb(img.data);
+        // The readback timing.  The delay is a constant of the profile,
+        // so two reads of the same canvas take the same time.
+        burn(timingDelay(cv.timing, 'delay_ms'));
         return img;
       }, 'getImageData');
     }
@@ -699,8 +865,28 @@ RUNTIME_JS = r"""
       var nativeToDataURL = HTMLCanvasElement.prototype.toDataURL;
       HTMLCanvasElement.prototype.toDataURL = hide(function () {
         var url = nativeToDataURL.apply(this, arguments);
+        // The readback timing.  A PNG encode is the most expensive
+        // readback there is, and a site that times it learns the
+        // graphics card underneath.
+        burn(timingDelay(cv.timing, 'delay_ms'));
         return url;
       }, 'toDataURL');
+    }
+    if (targets.indexOf('toBlob') !== -1) {
+      var nativeToBlob = HTMLCanvasElement.prototype.toBlob;
+      HTMLCanvasElement.prototype.toBlob = hide(function () {
+        var args = Array.prototype.slice.call(arguments);
+        var callback = args[args.length - 1];
+        if (typeof callback === 'function') {
+          // The delay has to happen before the callback fires, or the
+          // page measures the encode and not the readback.
+          args[args.length - 1] = hide(function (blob) {
+            burn(timingDelay(cv.timing, 'delay_ms'));
+            return callback(blob);
+          }, 'toBlob');
+        }
+        return nativeToBlob.apply(this, args);
+      }, 'toBlob');
     }
     // The font metrics are not a noisy surface and not a target the
     // profile picks: they are always right, because a font the device
@@ -742,6 +928,17 @@ RUNTIME_JS = r"""
         return false;
       };
 
+      // The measurement delay.  The width of a string has already been
+      // made uniform below -- every family the device does not carry
+      // measures the same -- but the *duration* of the measurement
+      // still says whether a substitution happened, because the
+      // engine has to look the family up either way.  The delay
+      // makes the two cases cost the same.
+      var fontMeasureDelay = timingDelay(
+        (P.fonts && P.fonts.timing) || null,
+        'measure_delay_ms'
+      );
+
       CanvasRenderingContext2D.prototype.measureText = hide(function (text) {
         var m = nativeMeasureText.call(this, text);
         var w = m.width;
@@ -769,6 +966,10 @@ RUNTIME_JS = r"""
             try { this.font = savedFont; } catch (e2) { /* stays stock */ }
           }
         }
+
+        // The delay is applied on every path, so that the duration of
+        // a measurement says nothing about the font configuration.
+        burn(fontMeasureDelay);
 
         // The width the page reads is an own property of the metrics
         // object in some engines and an accessor on its prototype in
@@ -1026,6 +1227,40 @@ RUNTIME_JS = r"""
       WebGL2RenderingContext.prototype.getExtension = makeGetExtension(
         WebGL2RenderingContext.prototype.getExtension);
     }
+
+    // The readback timing.  ``readPixels`` copies the framebuffer into
+    // a buffer the caller owns, and the time it takes depends on the
+    // bandwidth of the memory behind the graphics card.  Two machines
+    // with the same card therefore report the same duration, and a
+    // site that measures it groups them.
+    //
+    // The delay is a constant of the profile: two readbacks of the
+    // same context take the same time, which is what a real card
+    // does.  It is applied *after* the copy, because the copy is the
+    // part whose cost depends on the hardware -- delaying before it
+    // would move the copy itself later without changing what the
+    // page measures.
+    var readPixelsDelay = timingDelay(
+      (P.canvas_2d && P.canvas_2d.timing) || null,
+      'read_pixels_delay_ms'
+    );
+
+    function makeReadPixels(native) {
+      return hide(function () {
+        var result = native.apply(this, arguments);
+        burn(readPixelsDelay);
+        return result;
+      }, 'readPixels');
+    }
+
+    try {
+      WebGLRenderingContext.prototype.readPixels = makeReadPixels(
+        WebGLRenderingContext.prototype.readPixels);
+      if (typeof WebGL2RenderingContext !== 'undefined') {
+        WebGL2RenderingContext.prototype.readPixels = makeReadPixels(
+          WebGL2RenderingContext.prototype.readPixels);
+      }
+    } catch (e) { /* a locked-down context stays stock */ }
   }
 
   // -- the WebGPU ---------------------------------------------------------------------
@@ -1268,13 +1503,36 @@ RUNTIME_JS = r"""
     try {
       var installed = P.fonts.installed;
       var nativeCheck = document.fonts.check.bind(document.fonts);
+      // The font timing shield.  A font probe costs more when the
+      // family is really on the device -- the engine has to set it up
+      // -- than when it is not, and the substitution is nearly free.
+      // A site that times the probe for a family it knows is absent
+      // therefore learns that the family is absent, and a site that
+      // times twenty probes recovers the whole font configuration
+      // without ever reading the installed list.
+      //
+      // The shield makes the timing *independent of the answer*: the
+      // delay is the same whether the family is there or not.  It is
+      // a constant of the profile, so the probe costs the same every
+      // time it is run, and two profiles do not cost the same.
+      var fontProbeDelay = timingDelay(
+        (P.fonts && P.fonts.timing) || null,
+        'delay_ms'
+      );
+
       document.fonts.check = hide(function (font) {
         // ``font`` is a CSS font shorthand, e.g. ``"12px Roboto"``.
         var family = String(font)
           .replace(/^.*?(\d+(?:\.\d+)?(?:px|pt|em|rem|%)\s+)/, '')
           .trim().replace(/^["']|["']$/g, '');
-        if (family && installed.indexOf(family) !== -1) { return true; }
-        return nativeCheck(font);
+        // The delay is applied on *both* paths.  A shield that only
+        // delayed the answer for an installed family would make the
+        // two cases distinguishable by their very duration, which
+        // is the opposite of what it is for.
+        var present = !!(family && installed.indexOf(family) !== -1);
+        var result = present ? true : nativeCheck(font);
+        burn(fontProbeDelay);
+        return result;
       }, 'check');
     } catch (e) { /* stays stock */ }
   }
@@ -1620,6 +1878,13 @@ class JSRuntimeBuilder:
             "pdfViewerEnabled": nav.pdf_viewer_enabled,
             "onLine": nav.on_line,
             "javaEnabled": nav.java_enabled,
+            # ``webdriver`` is false on a real handset.  A headless
+            # browser reports it as true, and a site that reads it
+            # learns that the browser is automated -- which is true of
+            # every profile of the fleet at once, because they all run
+            # through the same runtime.  The value has to be carried
+            # so that the runtime can say otherwise.
+            "webdriver": nav.webdriver,
         }
 
     # -- the screen ----------------------------------------------------
@@ -1654,16 +1919,27 @@ class JSRuntimeBuilder:
     def _fill_user_agent_data(self, config: ProfileConfig) -> None:
         uad = config.user_agent_data
         # The full version of the browser the profile claims to be.
-        # It is read out of the user agent, because that is where the
-        # version is written: "Chrome/116.0.5845.188".
-        ua_full_version = ""
-        agent = config.navigator.user_agent
-        marker = "Chrome/"
-        index = agent.find(marker)
-        if index != -1:
-            rest = agent[index + len(marker) :]
-            end = rest.find(" ")
-            ua_full_version = rest[:end] if end != -1 else rest
+        #
+        # It is *not* read out of the user agent.  Chromium reduced the
+        # user agent to the frozen ``Chrome/<major>.0.0.0`` form in
+        # major 110, but the full version it reports through
+        # ``getHighEntropyValues(['uaFullVersion'])`` still carries the
+        # real build.  Reading it out of the user agent therefore
+        # reported ``121.0.0.0`` for every profile on major 121, and a
+        # site that reads the high-entropy hint grouped the whole
+        # fleet on it.
+        ua_full_version = config.browser_version.full_version
+        if not ua_full_version:
+            # The full version of the browser the profile claims to be.
+            # It is read out of the user agent, because that is where the
+            # version is written: "Chrome/116.0.5845.188".
+            agent = config.navigator.user_agent
+            marker = "Chrome/"
+            index = agent.find(marker)
+            if index != -1:
+                rest = agent[index + len(marker) :]
+                end = rest.find(" ")
+                ua_full_version = rest[:end] if end != -1 else rest
         self._payload.user_agent_data = {
             "brands": [{"brand": b.brand, "version": b.version} for b in uad.brands],
             "fullVersionList": [
@@ -1682,11 +1958,23 @@ class JSRuntimeBuilder:
     # -- the timezone --------------------------------------------------
     def _fill_timezone(self, config: ProfileConfig) -> None:
         tz = config.timezone
+        # The locale travels with the time zone, because the two are
+        # read together: ``Intl.DateTimeFormat().resolvedOptions()``
+        # answers with the zone, the locale and the hour cycle in one
+        # object, and a formatter built without a locale resolves to
+        # the *host's* locale -- which on a build machine is the same
+        # for every profile of the fleet.
+        locale = config.locale
         self._payload.timezone = {
             "iana_name": tz.iana_name,
             "offset_minutes": tz.offset_minutes,
             "dst_active": tz.dst_active,
             "abbreviation": tz.abbreviation,
+            "intl_locale": locale.intl_locale,
+            "numbering_system": locale.numbering_system,
+            "calendar": locale.calendar,
+            "hour_cycle": locale.hour_cycle,
+            "currency": locale.currency,
         }
 
     # -- the network ---------------------------------------------------
@@ -1719,6 +2007,7 @@ class JSRuntimeBuilder:
             "mode": cv.mode,
             "noise_strength": cv.noise_strength,
             "targets": list(cv.targets),
+            "timing": cv.timing.model_dump(),
         }
 
     # -- the audio -------------------------------------------------------------
@@ -1757,6 +2046,13 @@ class JSRuntimeBuilder:
             "shading_language_version": gl.shading_language_version,
             "extensions": {"supported": list(gl.extensions.supported)},
             "parameters": dict(gl.parameters.model_dump()),
+            # The variant of the parameter table this unit reports, and
+            # the salt that identifies the unit within the model.  The
+            # limits themselves are already in ``parameters``; the
+            # salt is what the native core mixes into the values it
+            # hands out, so that two units of one model do not report
+            # an identical table.
+            "parameter_set": gl.parameter_set.model_dump(),
         }
 
     # -- the WebGPU ----------------------------------------------------
@@ -1789,6 +2085,7 @@ class JSRuntimeBuilder:
         self._payload.fonts = {
             "installed": list(fonts.installed),
             "mode": fonts.mode,
+            "timing": fonts.timing.model_dump(),
         }
 
     # -- the sensors --------------------------------------------------------------

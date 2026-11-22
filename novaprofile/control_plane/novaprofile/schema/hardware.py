@@ -232,6 +232,52 @@ class MediaQueries(BaseModel):
 # --------------------------------------------------------------------------
 
 
+class CanvasReadbackTiming(BaseModel):
+    """The timing profile of the canvas readback.
+
+    A canvas readback -- ``canvas.toDataURL()``, ``canvas.toBlob()``,
+    ``gl.readPixels()`` -- takes a time that depends on the graphics
+    card and on the memory bandwidth of the machine.  A site that
+    measures it, takes the median over a hundred samples and groups
+    the profiles whose timings land in the same bucket has found a
+    *host* grouping key: every profile that was built on the same
+    build machine reports the same number, and the whole fleet falls
+    into one bucket.
+
+    The fix is a delay that is drawn from the seed, so that every
+    profile has a readback time of its own.  Two properties matter:
+
+    * **It is fixed.**  The delay is a property of the profile, not of
+      the call.  Two reads of the same profile therefore take the same
+      time, and a site that reads the canvas twice and compares the
+      two timings finds them identical -- which is what a real device
+      does, and what a jittering defence would betray.
+    * **It is small.**  A delay of hundreds of milliseconds would be
+      its own signal.  The band below is the one a real graphics stack
+      spends on a readback anyway.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    #: Whether the delay is applied at all.  A profile that reports the
+    #: host's timings is a profile that leaks the host.
+    enabled: bool = True
+    #: The delay added to a canvas readback, in milliseconds.
+    #:
+    #: The band is 0.5 .. 3.0 ms: below half a millisecond the delay is
+    #: lost in the timer resolution of a browser, and above three it
+    #: starts to show up as a page that feels slower than it should.
+    delay_ms: float = Field(default=0.5, ge=0.0, le=3.0)
+    #: The delay added to a WebGL ``readPixels`` call, in milliseconds.
+    #:
+    #: The two are separate because the two paths cost different
+    #: amounts on a real device: a PNG encode in the browser costs
+    #: more than a buffer copy in the compositor.  A profile that
+    #: delayed both by the same amount would report a readback cost
+    #: that no real graphics stack has.
+    read_pixels_delay_ms: float = Field(default=0.5, ge=0.0, le=3.0)
+
+
 class Canvas2DConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -242,6 +288,8 @@ class Canvas2DConfig(BaseModel):
     targets: list[CanvasTarget] = Field(
         default_factory=lambda: ["toDataURL", "toBlob", "getImageData"]
     )
+    #: The timing shield of the readback surface.
+    timing: CanvasReadbackTiming = Field(default_factory=CanvasReadbackTiming)
 
 
 class ShaderPrecisionRange(BaseModel):
@@ -330,6 +378,49 @@ class WebGLParameters(BaseModel):
     max_texture_max_anisotropy_ext: int = Field(ge=1)
 
 
+class GpuParameterSet(BaseModel):
+    """The per-unit variant of the WebGL parameter table.
+
+    The limits a graphics card reports are a property of the *model*,
+    not of the individual card.  That is why every unit of one model
+    reports the same table -- and it is exactly why a fleet built on
+    one machine is trivially grouped: the whole fleet carries the
+    limits of the *build host*, not the limits of the parts it claims
+    to be.
+
+    The way out is not to invent limits.  A limit that no real part of
+    that family ever reported is a contradiction a site can find by
+    comparing the table against a public specification.  The way out
+    is to report a limit that *the family really does produce*, but
+    the one *this* unit produces: the driver revision and the memory
+    configuration of a card move the texture and viewport limits
+    within the band the model allows, and a fleet of real phones of
+    one model does not report one identical table.
+
+    ``tier`` names the variant that was chosen.  It is an index into
+    the tier table of the GPU model, and the whole table of the tier
+    is applied as one consistent set -- a limit is never moved on its
+    own.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    #: The index of the variant inside the tier table of the GPU model.
+    tier: int = Field(default=0, ge=0, le=15)
+    #: The renderer the variant was derived from.  A profile that
+    #: carries a table of a different GPU is a profile whose own
+    #: consistency check fails.
+    source_renderer: str = ""
+    #: The per-unit salt of the parameter surface.
+    #:
+    #: The table itself carries only a handful of bits -- the tier
+    #: index is worth about two -- and the entropy budget demands
+    #: 26.6 bits of every identifying field.  The salt is what the
+    #: native core mixes into the parameters it hands out, and it is
+    #: what makes this surface able to hold the fleet.
+    salt: str = ""
+
+
 class WebGLConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -353,6 +444,8 @@ class WebGLConfig(BaseModel):
     extensions: WebGLExtensions
     parameters: WebGLParameters
     shader_precision: ShaderPrecision
+    #: The per-unit variant of the parameter table.
+    parameter_set: GpuParameterSet = Field(default_factory=GpuParameterSet)
 
 
 class WebGPUAdapter(BaseModel):
@@ -390,11 +483,13 @@ __all__ = [
     "Viewport",
     "MediaQueries",
     "Canvas2DConfig",
+    "CanvasReadbackTiming",
     "ShaderPrecisionRange",
     "ShaderPrecision",
     "WebGLImageNoise",
     "WebGLExtensions",
     "WebGLParameters",
+    "GpuParameterSet",
     "WebGLConfig",
     "WebGPUAdapter",
     "WebGPUConfig",

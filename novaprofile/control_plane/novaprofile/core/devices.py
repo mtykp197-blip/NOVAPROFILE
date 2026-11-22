@@ -314,6 +314,36 @@ class DevicePreset:
     density_options: tuple[int, ...] = (420, 440, 480)
     year: int = 2024
 
+    #: The Android releases this handset can be found running.
+    #:
+    #: A phone is not pinned to the release it shipped with.  Android
+    #: updates arrive over the air, and a fleet of identical handsets
+    #: is spread across several releases: the one that shipped last
+    #: month, the one that has not been updated since, the one whose
+    #: owner turned off auto-update.  The Android release is in the
+    #: user agent, so two handsets on different releases are visibly
+    #: different handsets.
+    #:
+    #: The tuple holds ``(release, sdk_int)`` pairs, newest first.  An
+    #: empty tuple means the handset runs the release it shipped with
+    #: and nothing else.
+    release_variants: tuple[tuple[str, int], ...] = ()
+
+    #: The model codes this handset is sold under, one per region.
+    #:
+    #: A handset is not one device but a family of them: the same
+    #: phone is sold in several regions under different model codes,
+    #: and the code is in the user agent, in the client hints and in
+    #: the build fingerprint.  Two handsets of one model that were
+    #: bought in different regions are two different devices to a site
+    #: that reads the code, and a fleet where every unit carries the
+    #: same code hands the site a grouping key for free.
+    #:
+    #: The codes have to be the ones the manufacturer really uses for
+    #: this handset; a code that does not exist is a contradiction the
+    #: vendor's own device list can contradict.
+    model_variants: tuple[str, ...] = ()
+
     # ---------------- derived helpers ----------------
 
     @property
@@ -463,6 +493,11 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         dpr_options=(3.0, 2.75, 2.625),
         density_options=(420, 440, 480),
         year=2024,
+        release_variants=(("16", 36), ("15", 35), ("14", 34)),
+        # The Pixel 8 Pro is sold under four codes: the global
+        # one, the American one, the Japanese one and the one the
+        # Australian market carries.
+        model_variants=("GC3VE", "G1MN", "GE9DP", "G1FQ"),
     ),
     DevicePreset(
         preset_id="pixel-7-android14",
@@ -488,6 +523,11 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         dpr_options=(3, 2.75, 2.625),
         density_options=(420, 440),
         year=2023,
+        release_variants=(("15", 35), ("14", 34)),
+        # The Pixel 7 is sold under four codes: the global one, the
+        # American one, the Japanese one and the one the
+        # Australian market carries.
+        model_variants=("G046D", "G0BGW", "GFE4J", "G9BQD"),
     ),
     DevicePreset(
         preset_id="galaxy-s24-ultra-android14",
@@ -513,6 +553,10 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         dpr_options=(3.0, 2.75, 2.625),
         density_options=(480, 560),
         year=2024,
+        release_variants=(("16", 36), ("15", 35), ("14", 34)),
+        # The S24 Ultra is sold under four codes: the global one, the
+        # American one, the Korean one and the South-East Asian one.
+        model_variants=("SM-S928B", "SM-S928U", "SM-S928N", "SM-S9280"),
     ),
     DevicePreset(
         preset_id="galaxy-s23-android14",
@@ -538,6 +582,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         dpr_options=(3, 2.75, 2.625),
         density_options=(420, 440, 480),
         year=2023,
+        release_variants=(("15", 35), ("14", 34)),
+        model_variants=("SM-S911B", "SM-S911U", "SM-S911N", "SM-S9110"),
     ),
     DevicePreset(
         preset_id="galaxy-a54-android13",
@@ -568,6 +614,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         dpr_options=(3, 2.75, 2.625, 2.5),
         density_options=(400, 440, 480),
         year=2023,
+        release_variants=(("15", 35), ("14", 34), ("13", 33)),
+        model_variants=("SM-A546B", "SM-A546N", "SM-A5460"),
     ),
     DevicePreset(
         preset_id="oneplus-11-android13",
@@ -598,6 +646,10 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         dpr_options=(3.0, 2.75, 2.625),
         density_options=(420, 440, 480),
         year=2023,
+        release_variants=(("15", 35), ("14", 34), ("13", 33)),
+        # The OnePlus 11 is sold under four codes: the global one,
+        # the Indian one and the two the Chinese market carries.
+        model_variants=("CPH2449", "CPH2447", "PGZ110", "PHB110"),
     ),
     DevicePreset(
         preset_id="xiaomi-13-android14",
@@ -628,6 +680,10 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         dpr_options=(3.0, 2.75, 2.625),
         density_options=(420, 440, 480),
         year=2023,
+        release_variants=(("15", 35), ("14", 34)),
+        # The Xiaomi 13 is sold under four codes: the global one and
+        # the Indian one, each in its two radio variants.
+        model_variants=("2211133C", "2211133G", "2210132C", "2210132G"),
     ),
     DevicePreset(
         preset_id="redmi-note-12-android13",
@@ -658,18 +714,22 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         dpr_options=(3.0, 2.75),
         density_options=(440, 480),
         year=2023,
+        release_variants=(("15", 35), ("14", 34), ("13", 33)),
+        # The Redmi Note 12 is sold under four codes: the global one,
+        # the Indian one and the two the Chinese market carries.
+        model_variants=("23021RAAEG", "23021RAAEGY", "22111317I", "23028RA60L"),
     ),
     DevicePreset(
         preset_id="oppo-find-x6-android14",
         manufacturer="OPPO",
         brand="OPPO",
-        model="PJZ110",
-        device="PJZ110",
-        product="PJZ110",
+        model="CPH2573",
+        device="CPH2573",
+        product="CPH2573",
         hardware="qcom",
         board="qcom",
-        bootloader="PJZ110-1.0-20230701",
-        fingerprint_product="PJZ110",
+        bootloader="CPH2573-1.0-20230701",
+        fingerprint_product="CPH2573",
         gpu=ADRENO_740,
         screen=_screen(1264, 2780, 3.0, 480),
         abi=_abi(
@@ -688,6 +748,13 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         dpr_options=(3.0, 2.75, 2.625),
         density_options=(420, 440, 480),
         year=2024,
+        release_variants=(("16", 36), ("15", 35), ("14", 34)),
+        # The Find X6 is sold under three codes: the global one, the
+        # Indian one and the one the Chinese market carries.  The
+        # code ``PJZ110`` is **not** one of them -- that one belongs
+        # to the A3 Pro, and a profile that claims it is a profile
+        # the vendor's own device list can contradict.
+        model_variants=("CPH2573", "CPH2487", "PGZ110"),
     ),
     DevicePreset(
         preset_id="vivo-x90-android14",
@@ -718,6 +785,10 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         dpr_options=(3.0, 2.75, 2.625),
         density_options=(420, 440, 480),
         year=2024,
+        release_variants=(("16", 36), ("15", 35), ("14", 34)),
+        # The vivo X90 is sold under four codes: the global one, the
+        # Indian one and the two the Chinese market carries.
+        model_variants=("V2247A", "V2246A", "V2266A", "V2229A"),
     ),
     DevicePreset(
         preset_id="samsung-galaxy-a14-android13",
@@ -748,6 +819,11 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         dpr_options=(3, 2.75, 2.625, 2.5),
         density_options=(400, 440),
         year=2023,
+        release_variants=(("15", 35), ("14", 34), ("13", 33)),
+        # The Galaxy A14 is sold under four codes: the European one,
+        # the Malaysian one, the Korean one and the one the Asian
+        # market carries.
+        model_variants=("SM-A145F", "SM-A145M", "SM-A145N", "SM-A1450"),
     ),
 )
 

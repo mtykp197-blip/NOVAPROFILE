@@ -41,8 +41,14 @@ class ProfileStatusEnum(str, Enum):
 # 1. Identity / seed / android build
 # --------------------------------------------------------------------------
 
-AndroidRelease = Literal["13", "14", "15"]
-AndroidSdkInt = Literal[33, 34, 35]
+#: The Android releases the catalogue covers.
+#:
+#: A handset keeps updating after it ships, so a fleet of one model is
+#: spread across several releases.  The release is in the user agent,
+#: which makes it one of the cheapest ways to tell two handsets of the
+#: same model apart.
+AndroidRelease = Literal["13", "14", "15", "16"]
+AndroidSdkInt = Literal[33, 34, 35, 36]
 
 
 class SeedConfigStatus(str, Enum):

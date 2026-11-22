@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from ..schema.profile import ProfileConfig
 from .devices import DEVICE_PRESETS
+from .gpu_params import build_tier_table, tier_for
 from .seed import SeedDeriver
 
 # --------------------------------------------------------------------------
@@ -926,6 +927,120 @@ class ConsistencyResolver:
             )
 
         self._check_client_hints_against_version(config, errors, warnings)
+        self._check_full_version_agreement(config, errors, warnings)
+
+    def _check_full_version_agreement(
+        self,
+        config: ProfileConfig,
+        errors: list[ConsistencyIssue],
+        warnings: list[ConsistencyIssue],
+    ) -> None:
+        """Check that every statement of the browser version agrees.
+
+        The version is stated in four places: the reduced user agent,
+        the brand list, the full version list, and the full version
+        itself.  Chromium freezes the user agent to ``<major>.0.0.0``
+        but keeps the real build in the high-entropy hints, so the two
+        are *meant* to disagree on the last three fields.
+
+        What must agree is the major.  A profile whose brand list
+        announces Chrome 121 while its full version list announces
+        120 is telling a site two different stories, and a site that
+        reads both learns that the profile is assembled rather than
+        observed.  The build number is checked against the range the
+        major actually spans, because a build number from another
+        branch is just as impossible.
+        """
+
+        version = getattr(config, "browser_version", None)
+        if version is None:
+            return
+
+        uad = config.user_agent_data
+        major = version.major
+
+        # The brands and the full version list both carry a version per
+        # brand.  Every one of them has to belong to the declared
+        # major.
+        for brand in uad.brands:
+            if brand.brand == "Not)A;Brand":
+                # The GREASE brand is a number that means nothing; it is
+                # there precisely so that it cannot be checked.
+                continue
+            if not brand.version.isdigit():
+                continue
+            if int(brand.version) != major:
+                errors.append(
+                    ConsistencyIssue(
+                        severity="error",
+                        axis="client_hints",
+                        message=(
+                            f"the {brand.brand} brand reports version "
+                            f"{brand.version!r} but the profile declares "
+                            f"Chromium {major}"
+                        ),
+                        fields=["user_agent_data.brands"],
+                    )
+                )
+
+        for brand in uad.full_version_list:
+            if brand.brand == "Not)A;Brand":
+                continue
+            parts = brand.version.split(".")
+            if not parts or not parts[0].isdigit():
+                continue
+            if int(parts[0]) != major:
+                errors.append(
+                    ConsistencyIssue(
+                        severity="error",
+                        axis="client_hints",
+                        message=(
+                            f"the full version list reports {brand.version!r} "
+                            f"for {brand.brand} but the profile declares "
+                            f"Chromium {major}"
+                        ),
+                        fields=["user_agent_data.full_version_list"],
+                    )
+                )
+            elif len(parts) >= 3 and parts[2].isdigit():
+                # The build number has to be one the major can be
+                # found at.  A build from another branch is impossible.
+                try:
+                    from .versions import build_range_for
+
+                    low, high = build_range_for(major)
+                except Exception:  # noqa: BLE001 - an unknown major is not fatal
+                    return
+                build = int(parts[2])
+                if not low <= build <= high:
+                    errors.append(
+                        ConsistencyIssue(
+                            severity="error",
+                            axis="client_hints",
+                            message=(
+                                f"the build number {build} is outside the range "
+                                f"{low}-{high} that Chromium {major} spans"
+                            ),
+                            fields=["user_agent_data.full_version_list"],
+                        )
+                    )
+
+        # The full version itself.
+        full = version.full_version
+        if full:
+            parts = full.split(".")
+            if parts and parts[0].isdigit() and int(parts[0]) != major:
+                errors.append(
+                    ConsistencyIssue(
+                        severity="error",
+                        axis="client_hints",
+                        message=(
+                            f"the full version {full!r} does not belong to the "
+                            f"declared major {major}"
+                        ),
+                        fields=["browser_version.full_version"],
+                    )
+                )
 
     def _check_client_hints_against_version(
         self,
@@ -1105,11 +1220,12 @@ class ConsistencyResolver:
             # rather than of the GPU model, and it is applied as a
             # consistent set, so the halved value is just as legitimate
             # as the catalogue one.
-            expected = {
-                gpu.max_texture_size,
-                max(1024, gpu.max_texture_size // 2),
-            }
-            if params.max_texture_size not in expected:
+            #
+            # The tier table is the authority: it holds every limit set the
+            # model is known to produce, and each of them moves the whole
+            # addressable-memory group together.
+            allowed = {tier.max_texture_size for tier in build_tier_table(gpu)}
+            if params.max_texture_size not in allowed:
                 warnings.append(
                     ConsistencyIssue(
                         severity="warning",
@@ -1121,6 +1237,85 @@ class ConsistencyResolver:
                         fields=["webgl.parameters.max_texture_size"],
                     )
                 )
+
+            # The whole set has to move together.  A card that samples a
+            # 16384 texture but cannot render into a 16384 renderbuffer is
+            # not a configuration any driver produces, and a site that
+            # compares the two numbers finds it in one read.
+            tier = tier_for(gpu, webgl.parameter_set.tier)
+            expected = tier.limits
+            group = (
+                ("max_texture_size", params.max_texture_size, expected.max_texture_size),
+                (
+                    "max_cube_map_texture_size",
+                    params.max_cube_map_texture_size,
+                    expected.max_cube_map_texture_size,
+                ),
+                (
+                    "max_renderbuffer_size",
+                    params.max_renderbuffer_size,
+                    expected.max_renderbuffer_size,
+                ),
+            )
+            for name, actual, wanted in group:
+                if actual != wanted:
+                    errors.append(
+                        ConsistencyIssue(
+                            severity="error",
+                            axis="webgl_params",
+                            message=(
+                                f"{name} is {actual} but the tier of {renderer} this unit "
+                                f"reports has {wanted}; the addressable memory limits of "
+                                "a card always move together"
+                            ),
+                            fields=[f"webgl.parameters.{name}"],
+                        )
+                    )
+            if list(params.max_viewport_dims) != list(expected.max_viewport_dims):
+                errors.append(
+                    ConsistencyIssue(
+                        severity="error",
+                        axis="webgl_params",
+                        message=(
+                            f"max_viewport_dims is {list(params.max_viewport_dims)} but the "
+                            f"tier of {renderer} this unit reports has "
+                            f"{list(expected.max_viewport_dims)}"
+                        ),
+                        fields=["webgl.parameters.max_viewport_dims"],
+                    )
+                )
+
+        # The parameter surface needs a per-unit salt.  The limit table
+        # itself carries only a handful of bits -- the tier index is
+        # worth about two -- and the entropy budget demands 26.6 bits of
+        # every identifying field.
+        if not webgl.parameter_set.salt:
+            errors.append(
+                ConsistencyIssue(
+                    severity="error",
+                    axis="webgl_params",
+                    message=(
+                        "the WebGL parameter surface needs a per-device salt; without it "
+                        "every unit of a GPU model reports the same limit table"
+                    ),
+                    fields=["webgl.parameter_set.salt"],
+                )
+            )
+        if webgl.parameter_set.source_renderer and (
+            webgl.parameter_set.source_renderer != webgl.unmasked_renderer
+        ):
+            errors.append(
+                ConsistencyIssue(
+                    severity="error",
+                    axis="webgl_params",
+                    message=(
+                        f"the parameter table was derived for "
+                        f"{webgl.parameter_set.source_renderer!r} but the profile reports "
+                        f"{webgl.unmasked_renderer!r}"
+                    ),
+                    fields=["webgl.parameter_set.source_renderer"],
+                )
+            )
 
     def _check_geo(
         self,
@@ -1406,6 +1601,52 @@ class ConsistencyResolver:
                 )
             )
 
+        # The readback timing.  A profile that leaves the canvas readback
+        # on the host's clock reports the timing of the *build machine*,
+        # and a site that measures the readback groups the whole fleet
+        # into one bucket.
+        timing = canvas.timing
+        if not timing.enabled:
+            errors.append(
+                ConsistencyIssue(
+                    severity="error",
+                    axis="canvas_2d",
+                    message=(
+                        "the canvas readback timing shield is disabled; the profile "
+                        "reports the timing of the host, which groups every profile "
+                        "built on that host"
+                    ),
+                    fields=["canvas_2d.timing.enabled"],
+                )
+            )
+        else:
+            if not 0.0 < timing.delay_ms <= 3.0:
+                errors.append(
+                    ConsistencyIssue(
+                        severity="error",
+                        axis="canvas_2d",
+                        message=(
+                            f"the canvas readback delay is {timing.delay_ms} ms; a delay "
+                            "of zero is no delay and a delay above three milliseconds is "
+                            "a signal of its own"
+                        ),
+                        fields=["canvas_2d.timing.delay_ms"],
+                    )
+                )
+            if not 0.0 < timing.read_pixels_delay_ms <= 3.0:
+                errors.append(
+                    ConsistencyIssue(
+                        severity="error",
+                        axis="canvas_2d",
+                        message=(
+                            f"the WebGL readback delay is {timing.read_pixels_delay_ms} ms; "
+                            "a delay of zero is no delay and a delay above three "
+                            "milliseconds is a signal of its own"
+                        ),
+                        fields=["canvas_2d.timing.read_pixels_delay_ms"],
+                    )
+                )
+
         # --- audio ---
         audio = config.audio
         if audio.channel_count > audio.max_channel_count:
@@ -1636,6 +1877,52 @@ class ConsistencyResolver:
                     fields=["fonts.salt"],
                 )
             )
+
+        # The font timing shield.  Without it the timing of a font probe
+        # depends on whether the family is really on the device, and a
+        # site that times the probe recovers the font configuration
+        # without ever reading the installed list.
+        font_timing = fonts.timing
+        if not font_timing.enabled:
+            errors.append(
+                ConsistencyIssue(
+                    severity="error",
+                    axis="fonts",
+                    message=(
+                        "the font timing shield is disabled; the timing of a font "
+                        "probe then depends on whether the family is installed, "
+                        "which leaks the font configuration"
+                    ),
+                    fields=["fonts.timing.enabled"],
+                )
+            )
+        else:
+            if not 0.0 < font_timing.delay_ms <= 2.0:
+                errors.append(
+                    ConsistencyIssue(
+                        severity="error",
+                        axis="fonts",
+                        message=(
+                            f"the font probe delay is {font_timing.delay_ms} ms; a delay "
+                            "of zero is no delay, and a delay below the resolution of "
+                            "the browser's timer is invisible"
+                        ),
+                        fields=["fonts.timing.delay_ms"],
+                    )
+                )
+            if not 0.0 < font_timing.measure_delay_ms <= 2.0:
+                errors.append(
+                    ConsistencyIssue(
+                        severity="error",
+                        axis="fonts",
+                        message=(
+                            f"the text measurement delay is {font_timing.measure_delay_ms} "
+                            "ms; a delay of zero is no delay, and a delay below the "
+                            "resolution of the browser's timer is invisible"
+                        ),
+                        fields=["fonts.timing.measure_delay_ms"],
+                    )
+                )
 
 
 # --------------------------------------------------------------------------

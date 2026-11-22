@@ -36,7 +36,7 @@ from novaprofile.core.generator import (
     _pick_chrome_major,
 )
 from novaprofile.core.seed import SeedDeriver
-from novaprofile.core.versions import VERSION_TABLE, _android_for_major
+from novaprofile.core.versions import MAX_SUPPORTED_MAJOR, VERSION_TABLE, _android_for_major
 from novaprofile.schema.version import BrowserVersion
 
 #: The presets the tests draw from, one per Android release in the
@@ -99,18 +99,54 @@ def test_the_band_matches_the_shipped_table() -> None:
     below 103 shipped with Android 12, so they are not in the band of
     Android 13 -- a profile that claims Android 13 and reports Chrome
     101 claims a browser version the release never shipped.
+
+    The band is open at the top.  Chrome updates through the Play
+    Store on its own schedule, and a handset is not held back by the
+    operating system: the machine that shipped with Android 14 is
+    running the Chrome of this month.  The newest major of the band is
+    therefore the newest major that exists, not the one that shipped
+    alongside the release.
     """
 
-    assert _chromium_band_for_android_release("12") == (100, 102)
-    assert _chromium_band_for_android_release("13") == (103, 113)
-    assert _chromium_band_for_android_release("14") == (114, 127)
-    assert _chromium_band_for_android_release("15") == (128, 155)
+    assert _chromium_band_for_android_release("12") == (100, MAX_SUPPORTED_MAJOR)
+    assert _chromium_band_for_android_release("13") == (103, MAX_SUPPORTED_MAJOR)
+    assert _chromium_band_for_android_release("14") == (114, MAX_SUPPORTED_MAJOR)
+    assert _chromium_band_for_android_release("15") == (128, MAX_SUPPORTED_MAJOR)
+    assert _chromium_band_for_android_release("16") == (156, MAX_SUPPORTED_MAJOR)
+
+
+def test_the_band_reaches_the_newest_major() -> None:
+    """Every release can be found running the newest browser.
+
+    A closed band said that every handset on a release runs one of a
+    dozen browsers, which is not how the fleet is distributed.  The
+    band has to reach the newest major, or the fleet of one model runs
+    out of browser versions long before it runs out of handsets.
+    """
+
+    for release in ("13", "14", "15", "16"):
+        _, high = _chromium_band_for_android_release(release)
+        assert high == MAX_SUPPORTED_MAJOR
+
+
+def test_the_band_starts_where_the_release_shipped() -> None:
+    """The oldest major of the band is the one the release shipped with.
+
+    The other end of the band is open, but this one is not: Chrome 101
+    cannot run on Android 14, so a profile claiming both is claiming
+    a browser the operating system never shipped.
+    """
+
+    assert _chromium_band_for_android_release("13")[0] == 103
+    assert _chromium_band_for_android_release("14")[0] == 114
+    assert _chromium_band_for_android_release("15")[0] == 128
+    assert _chromium_band_for_android_release("16")[0] == 156
 
 
 def test_every_major_of_the_band_is_in_the_registry() -> None:
     """A major outside ``VERSION_TABLE`` would have no capability entry."""
 
-    for release in ("13", "14", "15"):
+    for release in ("13", "14", "15", "16"):
         low, high = _chromium_band_for_android_release(release)
         for major in range(low, high + 1):
             assert major in VERSION_TABLE
@@ -119,7 +155,7 @@ def test_every_major_of_the_band_is_in_the_registry() -> None:
 def test_the_representative_major_sits_inside_the_band() -> None:
     """The build's default version is a real member of its band."""
 
-    for release in ("13", "14", "15"):
+    for release in ("13", "14", "15", "16"):
         low, high = _chromium_band_for_android_release(release)
         assert low <= _major_for_android_release(release) <= high
 
@@ -458,6 +494,13 @@ def test_an_explicit_browser_version_is_never_redrawn(gen) -> None:
 
     The same explicit version has to produce the same profile whatever
     the seed, which is only true if the draw was skipped entirely.
+
+    The user agent is not one of those readings that the seed decides
+    on its own: the model code is part of it, and the model code is
+    drawn from the stratum of the unit.  Two profiles built from
+    different seeds are two different handsets, and two different
+    handsets may carry two different model codes -- that is what the
+    code is for.  So the agent may differ; the *browser* must not.
     """
 
     first = gen.generate(
@@ -471,7 +514,8 @@ def test_an_explicit_browser_version_is_never_redrawn(gen) -> None:
         browser_version=BrowserVersion(major=118),
     )
     assert first.browser_version.major == second.browser_version.major == 118
-    assert first.navigator.user_agent == second.navigator.user_agent
+    assert "Chrome/118.0.0.0" in first.navigator.user_agent
+    assert "Chrome/118.0.0.0" in second.navigator.user_agent
 
 
 def test_an_explicit_full_version_is_kept(gen) -> None:

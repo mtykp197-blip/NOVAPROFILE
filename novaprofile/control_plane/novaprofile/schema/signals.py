@@ -92,6 +92,49 @@ class Rects(BaseModel):
 # --------------------------------------------------------------------------
 
 
+class FontTimingShield(BaseModel):
+    """The timing shield of the font surface.
+
+    A font probe -- ``document.fonts.check("12px Some Rare Face")`` --
+    takes a *different* amount of time depending on whether the family
+    is on the device.  When it is, the engine has to load and set it
+    up; when it is not, the fallback is substituted, which is nearly
+    free.  A site that measures the probe for a family it knows is
+    absent learns that the family is absent, and a site that measures
+    the probe for twenty families learns the whole font configuration
+    from the timings alone -- without ever looking at the installed
+    list.
+
+    The shield makes the timing *independent of the answer*: every
+    probe costs the same, whether the family is there or not.  The
+    delay is drawn from the seed, so that it is a constant of the
+    profile rather than a constant of the engine: two profiles do not
+    report the same probe cost, and one profile reports the same probe
+    cost on every one of its own probes.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    #: Whether the shield is applied at all.  A profile that reports the
+    #: host's font timings leaks the font configuration of the host.
+    enabled: bool = True
+    #: The delay added to a font probe, in milliseconds.
+    #:
+    #: The band is 0.2 .. 2.0 ms.  The lower bound is above the
+    #: resolution of ``performance.now()`` in a browser -- Chromium
+    #: clamps it to about 0.1 ms -- so a delay below it would be
+    #: invisible and the shield would do nothing.
+    delay_ms: float = Field(default=0.2, ge=0.0, le=2.0)
+    #: The delay added to a text measurement, in milliseconds.
+    #:
+    #: The measurement path -- ``CanvasRenderingContext2D.measureText``
+    #: -- is the other way a font configuration leaks: the width of a
+    #: string tells the site which family was substituted, and the
+    #: *time* the measurement took tells it whether the substitution
+    #: happened at all.
+    measure_delay_ms: float = Field(default=0.2, ge=0.0, le=2.0)
+
+
 class Fonts(BaseModel):
     """Installed font list.
 
@@ -106,6 +149,8 @@ class Fonts(BaseModel):
     installed: list[str] = Field(default_factory=list)
     salt: str = Field(min_length=8, max_length=128)
     preserve_metric_clusters: bool = True
+    #: The timing shield of the font surface.
+    timing: FontTimingShield = Field(default_factory=FontTimingShield)
 
     @field_validator("installed")
     @classmethod
@@ -442,6 +487,7 @@ __all__ = [
     "Audio",
     "Rects",
     "Fonts",
+    "FontTimingShield",
     "AudioInputDevice",
     "AudioOutputDevice",
     "VideoInputDevice",

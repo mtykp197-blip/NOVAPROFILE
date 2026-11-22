@@ -49,7 +49,10 @@ from pydantic import BaseModel, ConfigDict, Field
 MIN_SUPPORTED_MAJOR: int = 100
 
 #: The newest Chromium major NOVA can impersonate.
-MAX_SUPPORTED_MAJOR: int = 155
+#:
+#: Android 16 shipped with Chromium 156, so the band of majors that
+#: can be found on it runs 156 to here.
+MAX_SUPPORTED_MAJOR: int = 160
 
 #: Aliases that resolve to a concrete major version.
 MAJOR_ALIASES: dict[str, int] = {
@@ -358,6 +361,7 @@ _ANDROID_SHIPPED: tuple[tuple[str, int, int], ...] = (
     ("13", 33, 103),
     ("14", 34, 114),
     ("15", 35, 128),
+    ("16", 36, 156),
 )
 
 
@@ -537,8 +541,112 @@ def _full_version_for(major: int) -> str:
         153: "153.0.7997.0",
         154: "154.0.8046.0",
         155: "155.0.8095.0",
+        156: "156.0.8144.0",
+        157: "157.0.8193.0",
+        158: "158.0.8242.0",
+        159: "159.0.8291.0",
+        160: "160.0.8340.0",
     }
     return known.get(major, f"{major}.0.0.0")
+
+
+#: The build number of each major's first release, and the number of
+#: the branch it ends at.
+#:
+#: Chromium ships a new *build* of a major roughly every six weeks,
+#: and each build has its own build number -- the third field of
+#: ``121.0.6167.184``.  The build number therefore carries more
+#: information than the major does: two handsets on the same major are
+#: very often on different builds, because Chrome updates through the
+#: Play Store on its own schedule and no two phones update on the same
+#: day.
+#:
+#: The table gives the range of build numbers a major can be found at.
+#: The lower bound is the build number of the major's first release and
+#: the upper bound is roughly where the next major branched off.
+_BUILD_RANGES: dict[int, tuple[int, int]] = {
+    100: (4896, 5060),
+    103: (5060, 5249),
+    106: (5249, 5359),
+    108: (5359, 5414),
+    109: (5414, 5481),
+    110: (5481, 5615),
+    112: (5615, 5672),
+    113: (5672, 5735),
+    114: (5735, 5790),
+    115: (5790, 5845),
+    116: (5845, 5901),
+    119: (6045, 6099),
+    120: (6099, 6167),
+    121: (6167, 6261),
+    122: (6261, 6312),
+    123: (6312, 6367),
+    124: (6367, 6422),
+    125: (6422, 6478),
+    126: (6478, 6533),
+    127: (6533, 6613),
+    128: (6613, 6668),
+    129: (6668, 6723),
+    130: (6723, 6778),
+    131: (6778, 6834),
+    132: (6834, 6889),
+    133: (6889, 6943),
+    134: (6943, 6998),
+    135: (6998, 7049),
+    136: (7049, 7103),
+    137: (7103, 7151),
+    138: (7151, 7204),
+    139: (7204, 7258),
+    140: (7258, 7311),
+    141: (7311, 7360),
+    142: (7360, 7444),
+    143: (7444, 7499),
+    144: (7499, 7552),
+    145: (7552, 7600),
+    146: (7600, 7653),
+    147: (7653, 7704),
+    148: (7704, 7754),
+    149: (7754, 7803),
+    150: (7803, 7851),
+    151: (7851, 7900),
+    152: (7900, 7948),
+    153: (7948, 7997),
+    154: (7997, 8046),
+    155: (8046, 8095),
+    156: (8095, 8144),
+    157: (8144, 8193),
+    158: (8193, 8242),
+    159: (8242, 8291),
+    160: (8291, 8340),
+}
+
+
+def build_range_for(major: int) -> tuple[int, int]:
+    """The build numbers a Chromium major can be found at.
+
+    A major that the table does not know about inherits the range of
+    the nearest known major below it, which is what a branch that
+    shipped after the table was written would be carrying.
+    """
+
+    known = sorted(_BUILD_RANGES)
+    anchor = known[0]
+    for candidate in known:
+        if candidate <= major:
+            anchor = candidate
+    return _BUILD_RANGES[anchor]
+
+
+def full_version_for_build(major: int, build: int, patch: int) -> str:
+    """Assemble a full version string from its parts.
+
+    The shape is the one Chromium uses: ``major.0.build.patch``.  The
+    middle zero is not a placeholder -- Chromium froze the minor
+    number at zero when it reduced the user agent, and the full
+    version still carries it.
+    """
+
+    return f"{major}.0.{build}.{patch}"
 
 
 #: The full registry, keyed by major version.
@@ -781,4 +889,6 @@ __all__ = [
     "VersionError",
     "VersionRegistry",
     "DEFAULT_REGISTRY",
+    "build_range_for",
+    "full_version_for_build",
 ]

@@ -59,14 +59,12 @@ another profile unless their seeds agree.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, timedelta
 
 from ..schema.hardware import (
     AndroidAbiSoc,
     AndroidBuild,
-    AndroidRelease,
-    AndroidSdkInt,
     Screen,
 )
 from .device_catalog_market import (
@@ -96,6 +94,7 @@ from .devices import (
     DevicePreset,
     GpuProfile,
 )
+from .gpu_params import build_tier_table
 from .seed import Axis, SeedDeriver
 
 #: Security patch dates are ``YYYY-MM-DD``; the range below covers the
@@ -399,6 +398,8 @@ class DeviceIdentity:
         The panel this unit reports.
     gpu:
         The measured GPU characteristics of this unit.
+    gpu_tier:
+        The index of the parameter variant this unit reports.
     """
 
     preset_id: str
@@ -406,6 +407,61 @@ class DeviceIdentity:
     screen: Screen
     gpu: GpuProfile
     abi: AndroidAbiSoc
+    #: Which of the model's parameter variants this unit reports.
+    #:
+    #: The limits of a card are a property of the model, but they are
+    #: not the same on every card of that model -- the driver revision
+    #: and the memory configuration move them.  The index names the
+    #: variant, and the whole internally consistent set of that variant
+    #: is applied at once, so that the texture, the cube map, the
+    #: renderbuffer and the viewport always agree with each other.
+    #:
+    #: The tier lives here rather than in the WebGL builder because the
+    #: WebGPU limit table describes the *same* physical GPU: a site
+    #: that compares ``navigator.gpu``'s limits with
+    #: ``getParameter(MAX_TEXTURE_SIZE)`` and finds them different has
+    #: found a contradiction.
+    gpu_tier: int = 0
+
+
+def panel_space(preset: DevicePreset) -> tuple[tuple[tuple[int, int], ...], tuple[int, ...]]:
+    """The panel sizes and the density buckets this family may report.
+
+    The two spaces are the ones the display size and the density move
+    over.  They are returned together because they are walked
+    together: a site groups on the *combination* of the physical
+    resolution and the density, so the two have to be drawn from one
+    index.
+
+    The panel is the outer space and the density the inner one,
+    because the density changes more often in the wild -- the owner
+    of the phone changes the display size in the settings, and the
+    panel behind it does not move.
+    """
+
+    base_w, base_h = preset.screen.width, preset.screen.height
+    candidates = tuple(
+        (w, h)
+        for w, h in _PANEL_VARIANTS.get(preset.preset_id, ())
+        if abs(w - base_w) <= 400 and abs(h - base_h) <= 400
+    )
+    if not candidates:
+        candidates = tuple(
+            (w, h)
+            for w, h in _DEFAULT_PANEL_VARIANTS
+            if abs(w - base_w) <= 400 and abs(h - base_h) <= 400
+        ) or ((base_w, base_h),)
+
+    offered_ratios = tuple(preset.dpr_options or ())
+    buckets = tuple(
+        bucket
+        for bucket in _DENSITY_VARIANTS.get(preset.preset_id, preset.density_options)
+        if not offered_ratios or ratio_for_density(bucket) in offered_ratios
+    )
+    if not buckets:
+        buckets = tuple(preset.density_options)
+
+    return candidates, buckets
 
 
 class DeviceIdentityFactory:
@@ -416,8 +472,30 @@ class DeviceIdentityFactory:
     between instances.
     """
 
-    def __init__(self, deriver: SeedDeriver) -> None:
+    def __init__(
+        self,
+        deriver: SeedDeriver,
+        stratum: int | None = None,
+        *,
+        chosen_release: str | None = None,
+        chosen_model: str | None = None,
+        chosen_panel: tuple[int, int] | None = None,
+        chosen_density: int | None = None,
+    ) -> None:
         self._deriver = deriver
+        # The unit's place in its device family.  It is what lets the
+        # narrow readings -- the Android release, the browser major --
+        # be dealt out instead of drawn independently.
+        self._stratum = stratum
+        # The readings the caller already drew.  The release, the
+        # model code, the panel and the density are walked together
+        # with the memory in one mixed radix, so they have to arrive
+        # here already chosen; the factory would otherwise draw them
+        # a second time and land on a different answer.
+        self._chosen_release = chosen_release
+        self._chosen_model = chosen_model
+        self._chosen_panel = chosen_panel
+        self._chosen_density = chosen_density
 
     # ------------------------------------------------------------------
     # Individual fields
@@ -540,45 +618,52 @@ class DeviceIdentityFactory:
         return preset.board
 
     def _panel(self, preset: DevicePreset) -> Screen:
-        """Pick a panel for this unit, constrained by the family's class."""
-        base_w, base_h = preset.screen.width, preset.screen.height
-        candidates = [
-            (w, h)
-            for w, h in _PANEL_VARIANTS.get(preset.preset_id, ())
-            if abs(w - base_w) <= 400 and abs(h - base_h) <= 400
-        ]
-        if not candidates:
-            candidates = [
-                (w, h)
-                for w, h in _DEFAULT_PANEL_VARIANTS
-                if abs(w - base_w) <= 400 and abs(h - base_h) <= 400
-            ] or [(base_w, base_h)]
-        width, height = self._deriver.derive_choice(
-            Axis.SCREEN_VIEWPORT, candidates, context="panel"
-        )
+        """Pick a panel for this unit, constrained by the family's class.
 
-        # The density bucket is drawn from the family's own buckets, not
-        # from the preset's single declared value.  A phone's display
-        # density is a setting the owner changes; the panel behind it
-        # does not move.  Every unit of a family sharing one bucket
-        # would give a site a free grouping key over the whole fleet.
-        #
-        # Only buckets the family may actually report are drawn.  The
-        # bucket decides the scale factor, and a bucket whose ratio the
-        # model does not offer would have to be snapped onto a bucket
-        # that does -- which would quietly move the unit back to the
-        # single bucket the draw was meant to leave.
-        offered_ratios = tuple(preset.dpr_options or ())
-        buckets = tuple(
-            bucket
-            for bucket in _DENSITY_VARIANTS.get(preset.preset_id, preset.density_options)
-            if not offered_ratios or ratio_for_density(bucket) in offered_ratios
-        )
-        if not buckets:
-            buckets = tuple(preset.density_options)
-        density = self._deriver.derive_choice(
-            Axis.SCREEN_VIEWPORT, buckets, context="panel_density"
-        )
+        The panel and the density bucket are drawn **together**, through
+        one mixed radix, and not one after the other.
+
+        The reason is the grouping key.  A site groups on the
+        combination -- the physical resolution, the density, the
+        system version, the core count, the memory and the model,
+        read out of one telemetry record.  A panel drawn on its own
+        and a density drawn on its own each land on their own slice,
+        but two units can land on the *same pair* of slices and the
+        combination repeats.  Walking both spaces with one index
+        makes the pair repeat only when the pair is genuinely
+        exhausted.
+
+        The caller may pass the panel and the bucket it already chose,
+        because the panel is walked in the *same* radix as the memory,
+        the release and the model code -- one index over the whole
+        space of the device, not one index per group of readings.
+        Two radices would fold onto each other and put two units on
+        the same combination again.
+        """
+
+        candidates, buckets = panel_space(preset)
+
+        # The panel and the bucket are walked together, in the same radix
+        # as the rest of the device.  The bucket changes more often than
+        # the panel does in the wild, so it is the inner dimension and
+        # the panel is the outer one.
+        if self._chosen_panel is not None and self._chosen_density is not None:
+            width, height = self._chosen_panel
+            density = self._chosen_density
+        elif self._stratum is not None:
+            (width, height), density = self._deriver.derive_mixed_radix(
+                Axis.SCREEN_VIEWPORT,
+                (candidates, buckets),
+                "panel",
+                self._stratum,
+            )
+        else:
+            width, height = self._deriver.derive_choice(
+                Axis.SCREEN_VIEWPORT, candidates, context="panel"
+            )
+            density = self._deriver.derive_choice(
+                Axis.SCREEN_VIEWPORT, buckets, context="panel_density"
+            )
 
         # The ratio follows the density bucket, it is not picked beside
         # it.  The platform rounds the raw pixel density onto a bucket
@@ -633,29 +718,40 @@ class DeviceIdentityFactory:
         )
 
     def _gpu(self, preset: DevicePreset) -> GpuProfile:
-        """Derive the measured GPU characteristics of this unit.
+        """The catalogue entry of the GPU this unit carries.
 
         The renderer string and the limits always come from the same
         catalogue entry, so the reported limits are the ones that GPU really
         has.  Varying them independently would produce a contradiction a
         site could use to link two profiles.
+
+        The *variant* of the limits -- the tier -- is not decided here.
+        It is drawn on the ``gpu_params`` axis, which is separate from
+        the ``webgl_params`` axis that picks the renderer, so that the
+        choice of part and the choice of its memory configuration do
+        not perturb each other.  The tier is carried on the identity
+        so that the WebGL and the WebGPU builders apply the same one.
         """
         variants = _GPU_VARIANTS.get(preset.preset_id, (preset.gpu.unmasked_renderer,))
         renderer = self._deriver.derive_choice(Axis.WEBGL_PARAMS, variants, context="gpu_model")
-        gpu = _GPU_CATALOGUE.get(renderer, preset.gpu)
-        # A unit may ship with a memory configuration that halves the
-        # addressable texture size; the drop is a property of the unit, not
-        # of the GPU model, so it is applied as a consistent set.
-        derated = self._deriver.derive_bool(Axis.WEBGL_PARAMS, 0.25, context="gpu_derated")
-        if not derated:
-            return gpu
-        half = max(1024, gpu.max_texture_size // 2)
-        return replace(
-            gpu,
-            max_texture_size=half,
-            max_cube_map_texture_size=half,
-            max_renderbuffer_size=half,
-            max_viewport_dims=(half, half),
+        return _GPU_CATALOGUE.get(renderer, preset.gpu)
+
+    def _gpu_tier(self, gpu: GpuProfile) -> int:
+        """Draw the parameter variant of this unit.
+
+        A unit may ship with a memory configuration that halves the
+        addressable texture size, and a model that is not already at
+        the top of its class may ship with the high-memory one.  Both
+        are properties of the *unit*, not of the GPU model, so they
+        are drawn per unit -- and the whole set of limits moves with
+        the choice, because the memory that bounds the texture bounds
+        the cube map, the renderbuffer and the viewport with it.
+        """
+        table = build_tier_table(gpu)
+        if len(table) == 1:
+            return 0
+        return self._deriver.derive_int(
+            Axis.GPU_PARAMS, 0, len(table) - 1, context="gpu_tier"
         )
 
     # ------------------------------------------------------------------
@@ -669,8 +765,8 @@ class DeviceIdentityFactory:
         incremental = self._version_incremental()
         hardware = self._hardware(preset)
         board = self._board(preset)
-        release: AndroidRelease = preset.release
-        sdk_int: AndroidSdkInt = preset.sdk_int
+        release, sdk_int = self._release(preset)
+        model = self._model(preset)
 
         build = AndroidBuild(
             version_release=release,
@@ -679,7 +775,7 @@ class DeviceIdentityFactory:
             build_id=build_id,
             display=f"{build_id}.{incremental}",
             version_incremental=incremental,
-            model=preset.model,
+            model=model,
             device=preset.device,
             product=preset.product,
             manufacturer=preset.manufacturer,
@@ -689,7 +785,7 @@ class DeviceIdentityFactory:
             bootloader=self._bootloader(preset),
             fingerprint=(
                 f"{preset.brand.lower()}/{preset.product}/{preset.device}:"
-                f"{preset.release}/{build_id}.{incremental}:"
+                f"{release}/{build_id}.{incremental}:"
                 f"{self._build_id_number()}:user/release-keys"
             ),
             host=preset.host,
@@ -698,13 +794,92 @@ class DeviceIdentityFactory:
             type=preset.type,
             serial=self._serial(),
         )
+        gpu = self._gpu(preset)
         return DeviceIdentity(
             preset_id=preset.preset_id,
             build=build,
             screen=self._panel(preset),
-            gpu=self._gpu(preset),
+            gpu=gpu,
             abi=preset.abi,
+            gpu_tier=self._gpu_tier(gpu),
         )
+
+    def _model(self, preset: DevicePreset) -> str:
+        """The model code this unit carries.
+
+        A handset is sold under several codes -- the global one, the
+        American one, the Korean one -- and the code is in the build
+        fingerprint, in the user agent and in the client hints.  Two
+        handsets of one model that were bought in different regions
+        are two different devices to a site that reads the code.
+
+        The caller may pass the code it already chose, because the
+        code is walked together with the memory and the release in one
+        mixed radix and the three have to agree.
+        """
+
+        variants = preset.model_variants
+        if not variants:
+            return preset.model
+
+        if self._chosen_model in variants:
+            return self._chosen_model
+
+        if self._stratum is not None:
+            index = self._deriver.derive_stratified(
+                Axis.ANDROID_BUILD,
+                list(range(len(variants))),
+                "model-code",
+                self._stratum,
+            )
+        else:
+            index = self._deriver.derive_int(
+                Axis.ANDROID_BUILD, 0, len(variants) - 1, context="model-code"
+            )
+        return variants[index]
+
+    def _release(self, preset: DevicePreset) -> tuple[str, int]:
+        """Pick the Android release this unit is running.
+
+        A handset is not pinned to the release it shipped with.  The
+        Android release is in the user agent, so two handsets on
+        different releases are visibly different handsets -- and a
+        fleet of identical phones really is spread across releases,
+        because the update arrives over the air and each phone takes
+        it at its own time.
+
+        The draw is stratified for the same reason the browser major
+        is: the release list is short, and an independent draw lets
+        two handsets of one model land on the same one often enough
+        for a site to group them.
+
+        The caller may pass the release it already chose, because the
+        release is walked together with the memory in one mixed radix
+        and the two have to agree.
+        """
+
+        variants = preset.release_variants
+        if not variants:
+            return preset.release, preset.sdk_int
+
+        for release, sdk_int in variants:
+            if release == self._chosen_release:
+                return release, sdk_int
+
+        stratum = self._stratum
+        if stratum is not None:
+            index = self._deriver.derive_stratified(
+                Axis.ANDROID_BUILD,
+                list(range(len(variants))),
+                "android-release",
+                stratum,
+            )
+        else:
+            index = self._deriver.derive_int(
+                Axis.ANDROID_BUILD, 0, len(variants) - 1, context="android-release"
+            )
+        release, sdk_int = variants[index]
+        return release, sdk_int
 
 
 __all__ = ["DeviceIdentity", "DeviceIdentityFactory"]
