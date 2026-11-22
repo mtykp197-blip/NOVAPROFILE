@@ -520,7 +520,44 @@ bảng 6.2 nêu: độ chính xác số thực, `jsHeapSizeLimit`, mã giải m�
 được, JA3/JA4, bảng phông theo hệ điều hành, trạng thái
 `mediaDevices`, và danh sách phông.
 
-### 6.4 Điểm cần nói rõ
+### 6.4 Những lỗi đã tìm ra trong tầng JavaScript
+
+Bộ kiểm tra cũ chỉ đọc *văn bản* của script, không chạy nó. Ba lỗi
+nghiêm trọng đã lọt qua đó, và cả ba đều làm cho tầng JavaScript
+**không hoạt động** trên trang thật:
+
+1. **Biến không được khai báo.** Khối `navigator` so sánh với
+   `NATIVE_SOURCE`, một cái tên không tồn tại trong script. Lỗi
+   `ReferenceError` xảy ra ngay ở dòng đầu tiên của khối đó, nên
+   **mọi override phía sau nó đều không chạy**: màn hình, khung nhìn,
+   tỉ lệ điểm ảnh và client hints.
+2. **Rò mã nguồn.** Cách che nguồn cũ đặt thuộc tính `toString` riêng
+   lên hàm. Cách kiểm tra mà một script fingerprint dùng là
+   `Function.prototype.toString.call(getter)`, và hàm này đọc văn bản
+   nguồn *bên trong* của hàm, bỏ qua thuộc tính riêng. Nên mã nguồn
+   thật của override vẫn nằm đó cho trang đọc. Đây đúng là cách kiểm
+   tra mà ON68 chạy 86 lần.
+3. **Đọc global không bảo vệ.** Khối `navigator` đọc global trực tiếp.
+   Câu lệnh `if (nav)` ngay sau đó không bảo vệ được gì, vì lỗi đã ném
+   ra ở dòng trên nó.
+
+Cả ba đã được sửa và có test hồi quy:
+
+* `hide()` trả về hàm sau một `Proxy`. Proxy đáp ứng `toString` bằng
+  mã native, nên `Function.prototype.toString.call()` cũng trả mã
+  native. Proxy vẫn chuyển tiếp lời gọi, tên và độ dài.
+* Tên của getter cũng phải khớp. Một getter native có tên `"get"`, còn
+  tên của override (`"raw"`, `"value"`) là dấu hiệu không cần đọc mã
+  nguồn cũng nhận ra. Override giờ giữ tên của getter mà nó thay.
+* Mọi global được đọc qua `typeof`.
+
+Bộ kiểm tra mới `tests/test_js_runtime_execution.py` **chạy** script
+dưới Node, trong ba môi trường: môi trường đầy đủ, môi trường
+trống (không có API trình duyệt nào), và kiểm tra hình dạng descriptor.
+Cả ba lỗi trên đều làm test đỏ, và đã xác nhận bằng cách sửa lại lỗi
+cũ rồi chạy lại.
+
+### 6.5 Điểm cần nói rõ
 
 * FingerprintJS và ThumbmarkJS **băm giá trị rồi gửi**. Điều này có
   nghĩa là giá trị thô không quan trọng bằng giá trị băm, nhưng băm
