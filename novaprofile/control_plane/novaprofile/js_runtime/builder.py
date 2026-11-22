@@ -96,14 +96,54 @@ RUNTIME_JS = r"""
 
   var NATIVE = 'function () { [native code] }';
 
+  // -- the source hiding ------------------------------------------------
+  //
+  // A page that suspects a value was patched reads the source of the
+  // function that produced it:
+  //
+  //   Function.prototype.toString.call(
+  //       Object.getOwnPropertyDescriptor(Navigator.prototype, 'userAgent').get)
+  //
+  // An own 'toString' property on the function does NOT survive that
+  // check.  ``Function.prototype.toString`` reads the internal source
+  // text of the function, and it ignores the function's own properties
+  // entirely -- so an own toString that claims to be native leaves the
+  // real source right there for the page to read.
+  //
+  // The function is therefore returned behind a Proxy.  The Proxy
+  // answers the 'toString' property with the native text, and
+  // ``Function.prototype.toString`` -- which reads the source of the
+  // *target*, not of the proxy -- sees a function whose own source is
+  // already native.  The proxy forwards the call, the name, the length
+  // and the own property names, so the override still behaves like the
+  // function it replaces.
   function hide(fn) {
     try {
-      Object.defineProperty(fn, 'toString', {
-        value: function () { return NATIVE; },
-        writable: true, enumerable: false, configurable: true
+      return new Proxy(fn, {
+        apply: function (target, thisArg, args) {
+          return Reflect.apply(target, thisArg, args);
+        },
+        construct: function (target, args, newTarget) {
+          return Reflect.construct(target, args, newTarget);
+        },
+        get: function (target, prop, receiver) {
+          if (prop === 'toString') {
+            return function () { return NATIVE; };
+          }
+          return Reflect.get(target, prop, receiver);
+        }
       });
-    } catch (e) { /* a frozen function is still fine */ }
-    return fn;
+    } catch (e) {
+      // A Proxy is not available: fall back to the own property, which
+      // at least survives a direct ``fn.toString()`` call.
+      try {
+        Object.defineProperty(fn, 'toString', {
+          value: function () { return NATIVE; },
+          writable: true, enumerable: false, configurable: true
+        });
+      } catch (inner) { /* a frozen function is still fine */ }
+      return fn;
+    }
   }
 
   function nativeLike(obj, name, fn, descriptor) {
@@ -136,7 +176,7 @@ RUNTIME_JS = r"""
         // detected.
         if (key === 'webdriver') { return; }
         var desc = Object.getOwnPropertyDescriptor(Navigator.prototype, key);
-        if (desc && desc.get && desc.get.toString && desc.get.toString() === NATIVE_SOURCE) {
+        if (desc && desc.get && desc.get.toString && desc.get.toString() === NATIVE) {
           // Already native -- do not wrap it.
           return;
         }
