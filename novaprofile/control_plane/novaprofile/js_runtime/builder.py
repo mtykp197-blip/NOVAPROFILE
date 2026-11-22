@@ -619,16 +619,90 @@ RUNTIME_JS = r"""
   if (typeof navigator !== 'undefined' && navigator.permissions && P.permissions) {
     var policies = P.permissions || {};
     var nativeQuery = navigator.permissions.query;
+
+    // The names the Permissions API accepts.  A name that is not in
+    // the list is not answered with a state: the browser rejects the
+    // call with a TypeError, and a script that tries a name the browser
+    // does not know and gets an answer instead is being told something
+    // no real browser would tell it.
+    //
+    // The names are held in an array rather than an object because
+    // several of them carry a hyphen, and a hyphen is not a legal
+    // character in an unquoted object key -- which is a syntax error
+    // that only shows up when the script is actually run.
+    var KNOWN_PERMISSIONS = [
+      'accelerometer',
+      'ambient-light-sensor',
+      'background-fetch',
+      'background-sync',
+      'camera',
+      'clipboard-read',
+      'clipboard-write',
+      'geolocation',
+      'gyroscope',
+      'magnetometer',
+      'microphone',
+      'midi',
+      'nfc',
+      'notifications',
+      'payment-handler',
+      'periodic-background-sync',
+      'persistent-storage',
+      'push',
+      'sensors',
+      'storage-access',
+      'window-management'
+    ];
+    var isKnownPermission = function (name) {
+      for (var i = 0; i < KNOWN_PERMISSIONS.length; i++) {
+        if (KNOWN_PERMISSIONS[i] === name) { return true; }
+      }
+      return false;
+    };
+
+    var makePermissionStatus = function (name, state) {
+      // A real PermissionStatus is a PermissionStatus instance, and a
+      // script that checks the prototype finds out.  Building one from
+      // the real constructor is the only way to be one.
+      var status = null;
+      try {
+        if (typeof PermissionStatus === 'function') {
+          status = new PermissionStatus();
+        }
+      } catch (e) { /* the constructor is not constructible here */ }
+
+      var target = status || {};
+      try {
+        Object.defineProperty(target, 'name', {
+          value: name, enumerable: true, configurable: true
+        });
+        Object.defineProperty(target, 'state', {
+          value: state, enumerable: true, configurable: true
+        });
+        if (typeof EventTarget === 'function' && !(target instanceof EventTarget)) {
+          // The listener methods have to exist; the object does not
+          // have to be an EventTarget for a script to use them.
+          target.addEventListener = function () {};
+          target.removeEventListener = function () {};
+          target.dispatchEvent = function () { return false; };
+        }
+      } catch (e) { /* a frozen prototype stays stock */ }
+      return target;
+    };
+
     navigator.permissions.query = hide(function (descriptor) {
       var name = descriptor && descriptor.name;
       if (name && Object.prototype.hasOwnProperty.call(policies, name)) {
-        return Promise.resolve({
-          state: policies[name],
-          name: name,
-          onchange: null,
-          addEventListener: function () {},
-          removeEventListener: function () {}
-        });
+        return Promise.resolve(makePermissionStatus(name, policies[name]));
+      }
+      if (name && !isKnownPermission(name)) {
+        // An unknown name is a programming error, and the browser says
+        // so.  A profile that answers every question is a profile that
+        // never made a mistake.
+        return Promise.reject(new TypeError(
+          "Failed to read the 'permissions' property from 'Navigator': " +
+          "the permission name '" + String(name) + "' is not supported."
+        ));
       }
       return nativeQuery.call(this, descriptor);
     });
