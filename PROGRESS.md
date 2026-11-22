@@ -1243,6 +1243,130 @@ kê từng tên sẽ hỏng ở release sau.
 13 test mới, tất cả xanh.
 
 
+## 6e. Lượt 8 — build `chrome.exe` thật và tìm ra 3 lỗi thật
+
+### A. `chrome.exe` build xong
+
+```
+Source:   C:\chromium\src
+Out dir:  C:\chromium\src\out\nova-win
+Binary:   C:\chromium\src\out\nova-win\chrome.exe
+Version:  Chromium 160.0.8177.0
+```
+
+**Ba lần build fail trước khi xong**, đều ở `chrome/windows_services/service_program/service.cc`:
+
+1. **Link fail**: `LNK4099: Cannot use debug info for 'atls.lib(atlbase.obj)'` — ATL là
+   component tùy chọn của VS Build Tools, máy không có. Đã gỡ umbrella header
+   ATL khỏi `base/win/atl.h` và viết lại `Service::InitializeComSecurity()`
+   bằng Win32 SDDL thuần.
+2. **`static_assert` fail**: giá trị SDDL đặt sai. Đã đoán sai 3 lần
+   (0x1f0007 → 0x1f007f → 0x1f0fff) trước khi hiểu rằng compiler báo giá trị
+   thật là **2033663 = 0x1f07ff**. Bài học: **đọc con số trong thông báo lỗi,
+   đừng suy đoán từ tên hằng số** — `COM_RIGHTS_EXECUTE |
+   COM_RIGHTS_EXECUTE_LOCAL` không phải 0x1f0007.
+3. **`lld-link: permission denied`**: `chrome.dll` bị khoá vì 18 process Chrome
+   còn chạy từ lần probe trước. Đã kill trước khi build lại.
+
+**Bài học để ghi lại:** luôn kill Chrome trước khi relink `chrome.dll`.
+
+### B. Ba lỗi thật trong cách bàn giao profile — tất cả chỉ lộ ra khi chạy thật
+
+#### B.1 Số vượt int32 — profile **bị từ chối toàn bộ**
+
+Log của Chromium nói rõ:
+
+```
+NOVA: failed to load the profile configuration: missing or non-integer field: quota_bytes/usage_bytes
+```
+
+Nguyên nhân: core đọc số bằng **number reader 32-bit**. Profile sinh ra:
+
+| Field | Giá trị | Vượt int32? |
+|---|---|---|
+| `storage_network.quota_bytes` | 12.884.901.888 | ❌ |
+| `heap_size_limit.js_heap_size_limit` | 8.589.934.592 | ❌ |
+
+**Đây là loại lỗi tệ nhất**: browser **vẫn khởi động**, trông y hệt browser bình
+thường, nhưng mọi surface trả về giá trị thật của máy host — đúng thứ mà site
+đang săn.
+
+Đã sửa: quota về `{1 GB, 1.5 GB, 2 GB, 2^31-1}`, heap ceiling về
+`{512 MB, 1 GB, 2 GB}`. Viết `tools/check_int32_fields.py` quét catalogue và
+báo mọi field vượt — giờ **0 field**.
+
+#### B.2 Kiểu dữ liệu lệch — `null` và `""` xen kẽ
+
+| Field | Python | Core đòi | Lỗi |
+|---|---|---|---|
+| `http_headers.dnt` | `null` | string | `missing or non-string field: dnt` |
+| `geolocation.latitude` | `""` | optional number | `non-numeric field: latitude` |
+
+Đã viết `novaprofile/launcher/core_document.py` — **biên giới** giữa profile
+mà control plane giữ và document mà core đọc:
+
+- số vượt int32 → clamp
+- `null` ở field string → `""`
+- `""` ở field number → `null` (core đọc optional number: vắng mặt = `null`)
+- float phải nguyên → truncate (không round)
+
+Cả launcher và probe đều dùng chung module này, nên không thể trôi lệch.
+
+#### B.3 **Renderer không nhận được config** — lỗi nghiêm trọng nhất
+
+Chromium **dựng lại command line của mọi child process từ đầu** — không kế
+thừa. Nên `--nova-config` chỉ tới browser process, còn renderer (nơi chứa
+`navigator`, `screen`, `canvas`) thì không.
+
+Đã vá `content/browser/renderer_host/render_process_host_impl.cc`:
+`AppendRendererCommandLine()` giờ truyền tiếp `--nova-config` xuống renderer.
+
+**Sau vá: `identity` axis match** (trước đó mismatch hoàn toàn).
+
+### C. Harness đọc sai client hints
+
+`navigator.userAgentData.platformVersion` / `.architecture` / `.bitness` /
+`.model` / `.wow64` **không phải property** — chúng chỉ có trong
+`getHighEntropyValues()`. Đọc như property cho ra `undefined` trên **mọi**
+browser, kể cả browser đã patch.
+
+Đã sửa harness: đọc qua `getHighEntropyValues([...])` đúng như một script
+fingerprinting thật sự làm. **Sau đó `client_hints` axis match.**
+
+### D. GPU process chưa có hook
+
+`webgl`, `canvas`, `webgpu` đọc từ **GPU process**, mà GPU process chưa có hook
+NOVA. Đã thêm:
+
+- `content/gpu/gpu_main.cc`: `nova::InitializeGpuProcess(command_line)` trước khi
+  GPU trả lời truy vấn đầu tiên
+- `content/gpu/BUILD.gn`: dep `//third_party/blink/renderer/core/nova:nova_core`
+- include `nova_chromium_hooks.h`
+
+### E. Bảng trạng thái probe
+
+Đo trên `chrome.exe` đã patch, profile `pixel-8-pro-android14`:
+
+| Trạng thái | Axis |
+|---|---|
+| ✅ **Match** | `identity`, `client_hints`, `audio` |
+| ⚠️ Cần GPU hook (đang build) | `webgl`, `canvas`, `webgpu` |
+| ⚠️ Cần accessor patch | `screen` (dpr), `rects`, `storage`, `heap`, `math`, `fonts`, `sensors`, `media_devices`, `media_decode` |
+
+Baseline: Chrome hệ thống → **1/15 match**. Chrome đã patch (trước GPU hook) →
+**3/15 match**.
+
+### F. Bài học
+
+1. **Số trong thông báo lỗi của compiler là sự thật** — đọc nó, đừng suy đoán.
+2. **Kill Chrome trước khi relink** `chrome.dll`.
+3. **Chromium dựng lại command line của child** — muốn truyền gì xuống
+   renderer thì phải vá `AppendRendererCommandLine`.
+4. **Chỉ có browser thật mới lộ ra lỗi hình dạng document** — parse fail
+   âm thầm, browser vẫn chạy và trông bình thường.
+5. **Đọc API đúng**: `getHighEntropyValues()` không phải property.
+
+
 ### H. Bàn giao
 
 Viết `NEXT_STEPS.md` — roadmap đầy đủ: ưu tiên, ước lượng thời gian, bảng file
