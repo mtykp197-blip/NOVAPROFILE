@@ -25,14 +25,14 @@ _Cập nhật: 22/11/2026 13:45 (UTC+7)_
 
 | Việc | Kết quả |
 |---|---|
-| **Test suite control plane** | ✅ **1.341 passed**, 5 skipped, 0 failed — ruff sạch 100% |
-| **Build Chromium 160 thật** | 🔄 **195.457 target**, đang ở Blink bindings (V8 đã xong), 0 lỗi |
+| **Test suite control plane** | ✅ **1.368 passed**, 5 skipped, 0 failed — ruff sạch 100% |
+| **Build Chromium 160 thật** | 🔄 **197.540 target**, đang ở `blink/renderer/core`, 0 lỗi, ninja PID 22324 |
 | **3 bề mặt mới từ khảo sát** | ✅ `Math.acos(0.5)`, `jsHeapSizeLimit`, `MediaRecorder.isTypeSupported` — có schema, generator, lớp JS, và **là trục kiểm chứng trong bộ dò e2e** |
 | **Bảng phông theo hạng thiết bị** | ✅ Font set giờ theo **cả locale lẫn hạng máy** — budget 9 font, flagship 19 font |
 | **Quy tắc bộ nhớ** | ✅ Đọc từ `approximated_device_memory.cc` của Chromium 160 — làm tròn tới gần nhất, clamp `[1,8]` trên Android |
 | **Fleet thiết bị** | ✅ **7.222 preset, 7.222 id duy nhất** — 4.788 model, 230 GPU, 256 màn hình |
 | **Validator fleet** | ✅ **0 lỗi, 0 cảnh báo** trên toàn bộ fleet |
-| **Đồng bộ GitHub** | ✅ commit `ef4e165`, đẩy lên `origin/main` xong |
+| **Đồng bộ GitHub** | ✅ commit `3dc5c42`, đẩy lên `origin/main` xong |
 
 ---
 
@@ -537,10 +537,12 @@ Xếp theo **giá trị trên mỗi giờ công**, không theo thứ tự dễ. 
 | 2 | **JA3/JA4** khớp hệ điều hành | Native/TLS | So `tls.extensions` với TLS ClientHello thật của Chromium mobile | ~4 giờ — **cần build xong**, không làm được bằng JS |
 | 3 | **Đo lại toàn bộ fleet** với quy tắc bộ nhớ mới | Core | `nova fleet-audit` → 0 lỗi, 0 cảnh báo | ~1 giờ |
 | 4 | **Rebuild installer** sau khi core xong (kèm `.ico`/`.icns` thật từ `asset/`) | Installer | Build thật, chạy entry point | ~30 phút |
-| 5 | **`mediaDevices`** chi tiết hơn (loại thiết bị, độ phân giải, facing mode) | JS | Đối chiếu với `enumerateDevices` của thiết bị thật | ~2 giờ |
-| 6 | **`permissions`** trạng thái đầy đủ (`query` trả `prompt`/`granted`/`denied` theo ngữ cảnh) | JS | So với hành vi của Chrome Android | ~1,5 giờ |
+| 5 | ~~**`mediaDevices`** chi tiết hơn~~ | JS | ✅ **Xong** — đọc `media_device_id.cc`, 64 hex, 2 camera, group đúng | ✅ |
+| 6 | ~~**`permissions`** trạng thái đầy đủ~~ | JS | ✅ **Xong** — `PermissionStatus` thật, tên lạ → `TypeError` | ✅ |
 | 7 | **Đo `measureText`** theo hạng thiết bị (dải rộng hơn `fonts.installed`) | JS | Đo trong iframe thật | ~2 giờ |
 | 8 | **Kiểm chứng lại `SURVEY.md`** với các site còn sống | Docs | Chụp lại, đối chiếu từng mục | ~1 giờ |
+| 9 | **`speechSynthesis.getVoices()`** theo ngôn ngữ thiết bị | JS | Đối chiếu danh sách voice của Chrome Android | ~1,5 giờ |
+| 10 | **`navigator.connection`** theo hạng thiết bị (4g vs 3g vs wifi) | JS | Đo trên thiết bị thật | ~1 giờ |
 
 ### Việc đã xong trong lượt này
 
@@ -551,6 +553,19 @@ Xếp theo **giá trị trên mỗi giờ công**, không theo thứ tự dễ. 
 | Sửa 7 preset báo 9 lõi | ✅ → 8; 0 SoC lệch; có test giữ |
 | RAM của profile bám theo model | ✅ `navigator.deviceMemory` không còn có thể là 16 GB trên máy 4 GB |
 | 3 bề mặt từ khảo sát | ✅ math precision, heap limit, media decode — có trục e2e riêng |
+| **`mediaDevices` đúng hình dạng Chromium** | ✅ `deviceId` 64 ký tự hex (đọc từ `media_device_id.cc`), **2 camera** với group riêng, nhãn `camera2 0, facing back`, mic + loa **cùng group** |
+| **`permissions` trả lời như trình duyệt** | ✅ `PermissionStatus` thật, tên lạ → `TypeError`, **sửa lỗi cú pháp JS** (tên có dấu gạch trong object literal) |
+
+### Lỗi cú pháp JS chỉ lộ ra khi chạy thật
+
+Danh sách tên permission được giữ trong **object literal**, mà nhiều tên có dấu
+gạch (`ambient-light-sensor`, `background-sync`, `payment-handler`).  Điều đó
+là **syntax error** — toàn bộ runtime không parse được.
+
+Test trước đó **chỉ đọc script**, nên không bắt được.  Test mới **chạy script
+ qua Node thật** (`C:\chromium\src\third_party\node\win\node.exe`) và kiểm tra
+kết quả.  Đây là bài học: một test chỉ kiểm tra "chuỗi này có trong script"
+thì không bằng một test chạy script.
 
 ---
 
@@ -558,7 +573,8 @@ Xếp theo **giá trị trên mỗi giờ công**, không theo thứ tự dễ. 
 
 | Thời điểm | Nội dung |
 |---|---|
-| **22/11 13:45** | **Lượt sửa ba lỗi "đúng nhưng sai":** bộ nhớ bốc từ tập phẳng, schema giữ giả định lỗi thời về phép làm tròn, 7 preset báo 9 lõi. Đọc source Chromium 160 + đo trên Chrome thật để kiểm chứng. Thêm bảng phông theo hạng thiết bị. **1.341 test pass**, ruff sạch. Đẩy `ef4e165` lên GitHub. |
+| **22/11 14:20** | **Lượt 2:** sửa `mediaDevices` (deviceId 64 hex theo `media_device_id.cc`, 2 camera với group riêng, mic+loa cùng group) và `permissions` (`PermissionStatus` thật, tên lạ → `TypeError`). **Sửa lỗi cú pháp JS** chỉ lộ ra khi chạy Node thật. **1.368 test pass**, ruff sạch. Đẩy `3dc5c42`. |
+| **22/11 13:45** | **Lượt 1:** sửa ba lỗi "đúng nhưng sai": bộ nhớ bốc từ tập phẳng, schema giữ giả định lỗi thời về phép làm tròn, 7 preset báo 9 lõi. Đọc source Chromium 160 + đo trên Chrome thật để kiểm chứng. Thêm bảng phông theo hạng thiết bị. **1.341 test pass**, ruff sạch. Đẩy `ef4e165` lên GitHub. |
 | 22/11 01:20 | **Bổ sung R8 (không dừng, không hỏi) + R9 (viết xong ≠ xong)** vào `RULES.md` và `AGENTS.md`. Bắt đầu 4 việc còn lại. |
 | 22/11 01:15 | Sửa bug launcher. Đóng gói git (commit `baebcc5`, 134 file). Viết `RULES.md` đầy đủ 11 mục. Thêm `tools/cursor_chat_transfer.py` + export chat 81,6 MB. |
 | 22/11 00:50 | Catalog 11→42 preset. Sửa đơn vị đo screen (logical pixel). Thêm `fleet-audit` vào ledger. 559 test pass. 2M profile 0 va chạm. |
