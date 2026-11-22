@@ -927,6 +927,65 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
 )
 
 
+def _generated_presets() -> tuple[DevicePreset, ...]:
+    """The expanded catalogue, loaded on demand.
+
+    The generated catalogue is two thousand handsets derived from the
+    reference device descriptors.  It is a module of its own because it
+    is large: importing it eagerly would cost every process a parse of
+    a file that most callers never look at.  The import happens the
+    first time the catalogue is asked for it, which is once per
+    process.
+    """
+
+    global _GENERATED_CACHE
+    if _GENERATED_CACHE is None:
+        from .generated_presets import GENERATED_PRESETS
+
+        _GENERATED_CACHE = GENERATED_PRESETS
+    return _GENERATED_CACHE
+
+
+_GENERATED_CACHE: tuple[DevicePreset, ...] | None = None
+
+
+def _generated_gpu_profiles() -> dict[str, GpuProfile]:
+    """The GPU profiles of the expanded catalogue, keyed by the renderer.
+
+    The engine keeps one table of the parts it knows about, so that the
+    limits it reports always come from a single entry and never
+    contradict each other.  The expanded catalogue brings renderers the
+    hand-written tables do not name, and this is where those entries
+    come from.
+    """
+
+    from .generated_presets import GENERATED_PRESETS
+
+    profiles: dict[str, GpuProfile] = {}
+    for preset in GENERATED_PRESETS:
+        renderer = preset.gpu.unmasked_renderer
+        if renderer and renderer not in profiles:
+            profiles[renderer] = preset.gpu
+    return profiles
+
+
+def _generated_gpu_variants() -> dict[str, tuple[str, ...]]:
+    """The renderer variants of every preset of the expanded catalogue.
+
+    A handset that shipped with more than one GPU is a family, and the
+    engine needs the family to know which parts it can pick from.  A
+    handset that shipped with a single GPU names just that one.
+    """
+
+    from .generated_presets import GENERATED_PRESETS
+
+    return {
+        preset.preset_id: (preset.gpu.unmasked_renderer,)
+        for preset in GENERATED_PRESETS
+        if preset.gpu.unmasked_renderer
+    }
+
+
 def _extended_presets() -> tuple[DevicePreset, ...]:
     """The additional devices, loaded on demand.
 
@@ -970,15 +1029,22 @@ _MARKET_CACHE: tuple[DevicePreset, ...] | None = None
 def all_presets() -> tuple[DevicePreset, ...]:
     """Every device the engine knows about.
 
-    This is the reference catalogue plus the extended one plus the
-    market one.  The reference devices are the ones the test suite is
-    written against; the extended devices widen the fleet so that a
-    vendor grouping on the model, the board or the build identifier has
-    far more than a handful of buckets to separate; the market devices
-    are the handsets the Vietnamese market actually buys.
+    This is the reference catalogue plus the expanded one plus the
+    extended one plus the market one.  The reference devices are the
+    ones the test suite is written against; the expanded devices are
+    the two thousand handsets the reference device descriptors name, and
+    they widen the fleet so that a vendor grouping on the model, the
+    board or the build identifier has far more than a handful of
+    buckets to separate; the market devices are the handsets the
+    Vietnamese market actually buys.
     """
 
-    return DEVICE_PRESETS + _extended_presets() + _market_presets()
+    return (
+        DEVICE_PRESETS
+        + _generated_presets()
+        + _extended_presets()
+        + _market_presets()
+    )
 
 
 def get_preset(preset_id: str) -> DevicePreset | None:

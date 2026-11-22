@@ -1,0 +1,18 @@
+<!doctype html><html lang="vi"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NOVA · Kiểm tra profile</title>
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNTYiIGhlaWdodD0iMjU2IiB2aWV3Qm94PSIwIDAgMjU2IDI1NiI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+PHN0b3Agc3RvcC1jb2xvcj0iIzY1NjVmZiIvPjxzdG9wIG9mZnNldD0iLjU1IiBzdG9wLWNvbG9yPSIjNGY0NmU1Ii8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjMWY5ZWQ4Ii8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3QgeD0iOCIgeT0iOCIgd2lkdGg9IjI0MCIgaGVpZ2h0PSIyNDAiIHJ4PSI2NiIgZmlsbD0idXJsKCNnKSIvPjxwYXRoIGQ9Ik02NyAxNzJWODRoMjJsNzggODhoMjJWODQiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIxOSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PHBhdGggZD0ibTE4OCA0MyA1IDE2IDE2IDUtMTYgNS01IDE2LTUtMTYtMTYtNSAxNi01WiIgZmlsbD0iI2I5ZjVlZiIvPjxjaXJjbGUgY3g9IjYzIiBjeT0iMjAxIiByPSI2IiBmaWxsPSIjYThjN2ZmIi8+PC9zdmc+Cg=="><style>body{font:15px system-ui;background:#eef3ff;color:#17223d;margin:20px}h1{font-size:24px}section{background:white;border-radius:16px;padding:18px;margin:16px 0}#pad{height:210px;background:linear-gradient(135deg,#536dff,#30baa0);color:white;touch-action:none;border-radius:20px;display:grid;place-content:center;text-align:center}pre{white-space:pre-wrap;word-break:break-word;font-size:12px}button{padding:12px;border:0;border-radius:10px;background:#536dff;color:white}.item{padding:22px;border-bottom:1px solid #ddd}</style>
+<h1>Android · Kiểm tra profile</h1><section><b>Thử bấm, kéo và vuốt</b><p id="events">Chưa có thao tác chạm</p><div id="pad">Chạm vào đây<br>Kéo để thử cảm ứng</div></section>
+<section><b>Thử đồng bộ nhập liệu</b><p>Chạm và nhập ở cửa sổ chính để kiểm tra cửa sổ nhận.</p><input id="sync-input" placeholder="Nhập thử tại đây" style="width:100%;padding:12px;box-sizing:border-box"></section><section><b>Thông số trình duyệt đang trả về</b><pre id="result">Đang đo…</pre></section><section><b>Cuộn trang bằng vuốt</b><div class="item">01 · Profile độc lập</div><div class="item">02 · Dữ liệu riêng</div><div class="item">03 · Màn hình di động</div><div class="item">04 · Kiểm tra vuốt</div><div class="item">05 · Cuối trang</div></section>
+<script>
+window.touchLog=[];const pad=document.getElementById('pad');
+for(const event of ['touchstart','touchmove','touchend','pointerdown','pointermove','pointerup'])pad.addEventListener(event,e=>{
+if(event==='pointermove'&&!e.buttons)return;const row={type:event,pointerType:e.pointerType||'touch',touches:e.touches?.length};
+touchLog.push(row);document.getElementById('events').textContent=event+' · '+row.pointerType+' · tổng '+touchLog.length;
+pad.style.background=event.endsWith('end')||event.endsWith('up')?'#30baa0':'#536dff';},{passive:true});
+(async()=>{const c=document.createElement('canvas'),gl=c.getContext('webgl'),d=gl?.getExtension('WEBGL_debug_renderer_info');
+const r={ua:navigator.userAgent,platform:navigator.platform,cpu:navigator.hardwareConcurrency,ram:navigator.deviceMemory,
+touch:navigator.maxTouchPoints,coarse:matchMedia('(pointer:coarse)').matches,screen:{width:screen.width,height:screen.height,dpr:devicePixelRatio},
+languages:navigator.languages,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,
+webgl:d?{vendor:gl.getParameter(d.UNMASKED_VENDOR_WEBGL),renderer:gl.getParameter(d.UNMASKED_RENDERER_WEBGL)}:null,
+hints:await navigator.userAgentData?.getHighEntropyValues(['architecture','bitness','model','platformVersion'])};
+window.profileReport=r;document.getElementById('result').textContent=JSON.stringify(r,null,2)})();
+</script></html>

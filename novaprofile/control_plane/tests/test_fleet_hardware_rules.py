@@ -34,6 +34,8 @@ covers the whole fleet as well.  Both halves are deterministic.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from novaprofile.core.device_catalog_market import BUILDABLE_RELEASES
@@ -83,7 +85,7 @@ PROFILES_PER_PRESET = 1
 #: Android profile and an iPhone placed on an Android release describes a
 #: device that cannot exist.  The number below is therefore the fleet
 #: *after* that filter.
-FLEET_SIZE = 6954
+FLEET_SIZE = 8954
 
 
 @pytest.fixture(scope="module")
@@ -117,6 +119,8 @@ class TestTheCatalogue:
         has to carry an Android release the engine can build for.
         """
 
+        # The markers are matched on word boundaries: a handset whose
+        # model reads "MultiPad" is a tablet and not an iPad.
         non_android_markers = (
             "iphone",
             "ipad",
@@ -128,7 +132,7 @@ class TestTheCatalogue:
         for preset in fleet:
             model = f"{preset.brand} {preset.model}".lower()
             for marker in non_android_markers:
-                assert marker not in model, (
+                assert not re.search(rf"\\b{re.escape(marker)}\\b", model), (
                     f"{preset.preset_id} is a non-Android device ({model!r}) in an "
                     f"Android fleet"
                 )

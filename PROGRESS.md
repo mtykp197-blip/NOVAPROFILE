@@ -1111,10 +1111,83 @@ chiếu symbol ATL nào.
 
 ---
 
+## 6d. Lượt 7 — mở rộng catalog lên 8.954 preset + sửa suy luận GPU + bàn giao
+
+### A. Vấn đề gốc: GPU bị suy sai vì tra bảng cứng
+
+`tools/generate_device_presets.py` tra `GPU_TABLE` (38 dòng) để lấy `gpu_architecture`
+và `max_texture_size`. Catalogue nguồn có **194 renderer khác nhau** → **163 renderer
+rơi về `DEFAULT_GPU`** (Mali-G57 MC2). Hậu quả: mọi handset dùng GPU không có
+trong bảng đều báo cùng một kiến trúc → site đọc WebGL architecture thấy trùng hàng
+loạt. Test bắt được: `samsung-galaxy-a55 claims the architecture 'mali-g57 mc2' but
+reports the renderer 'Xclipse 530'`.
+
+### B. Cách sửa: suy luận từ chính tên part, không tra bảng
+
+Hai hàm mới trong generator:
+
+1. **`clean_renderer(raw)`** — làm sạch chuỗi renderer lỗi do scraper ghép:
+   - `Adreno (TM) 3064002` → `Adreno (TM) 306` (số 4 chữ số là tọa độ ô spreadsheet)
+   - `PowerVR GE8300POWERVR` → `PowerVR GE8300`
+   - `Broadcom VideoCore IV / Adreno 305` → `Broadcom VideoCore IV` (ô chứa 2 part)
+
+2. **`gpu_facts(renderer)`** — trả `(vendor, architecture, webgl_vendor, texture_limit)`,
+   dùng chính bộ phân loại `_gpu_classes()` của `fleet_validator` để quyết định hạng
+   (budget/mid/flagship) rồi chọn đúng texture limit trong band.
+
+**Kết quả:** `gpu_architecture` khớp 100% với `unmasked_renderer`.
+
+### C. Nhất quán giới hạn GPU
+
+`max_texture_size` = 32768 nhưng `max_renderbuffer_size`/`max_viewport_dims` = 16384
+trên cùng một `GpuProfile` — cấu hình không driver nào tạo ra (làm `build_tier_table`
+sinh tier loãng). Đã sửa generator set đồng nhất cả 4 trường.
+
+### D. Bổ sung 4 GPU thật còn thiếu trong bảng phân loại
+
+| GPU | Thực tế | Hạng |
+|---|---|---|
+| `Immortalis-G925` | Dimensity 9200 | flagship (16384) |
+| `Immortalis-G710` | Dimensity 1300 | mid (8192) |
+| `Xclipse 550` | Exynos 1580 | flagship (16384) |
+| `Xclipse 950` | Exynos 2500 | flagship (16384) |
+
+### E. Sửa 2 test — lỗi của test, không phải lỗi của code
+
+1. `test_the_android_release_and_the_sdk_level_agree`: bảng mapping thiếu Android 16
+   (SDK 36) → thêm `"16": 36`.
+2. `test_the_fleet_holds_no_device_that_is_not_android`: marker `"ipad"` khớp substring
+   trong `"Prestigio MultiPad 4 Quantum 10.1 3G"` → đổi sang regex word-boundary.
+
+### F. Fix import sau refactor
+
+`identity.py` import `generated_gpu_profiles`/`generated_gpu_variants`, nhưng hàm thật
+tên `_generated_gpu_profiles`/`_generated_gpu_variants`. `_GPU_CATALOGUE` giờ 313
+renderer, `_GPU_VARIANTS` 8.954 preset.
+
+### G. Phân bố catalogue sau khi mở rộng
+
+| Trường | Số giá trị khác nhau | Giá trị phổ biến nhất | Tỉ lệ |
+|---|---|---|---|
+| `board` | 6.305 | 9 | 0.10% |
+| `device` | 4.959 | 11 | 0.12% |
+| `model` | 5.840 | 6 | 0.07% |
+| `gpu.renderer` | 312 | 1.027 | 11.47% |
+
+`gpu.renderer` tập trung 11.47% ở `Mali-G57 MC2` — **giới hạn vật lý đúng**, không
+được phân bố giả (sẽ tạo fingerprint không tồn tại).
+
+### H. Bàn giao
+
+Viết `NEXT_STEPS.md` — roadmap đầy đủ: ưu tiên, ước lượng thời gian, bảng file
+Chromium cần patch, quy trình Git LFS cho `chrome.exe`, xử lý file nhạy cảm, và
+mục "bẫy đã gặp — đừng lặp lại".
+
 ## 7. Lịch sử cập nhật
 
 | Thời điểm | Nội dung |
 |---|---|
+| **22/11 21:15** | **Lượt 7 — mở rộng catalog lên 8.954 preset + sửa suy luận GPU + bàn giao.** (1) **Lỗi gốc:** generator tra `GPU_TABLE` (38 dòng) trong khi catalogue có 194 renderer → 163 renderer rơi về `DEFAULT_GPU`, mọi handset dùng GPU lạ đều báo cùng kiến trúc. Đã thay bằng `clean_renderer()` (làm sạch renderer scraper ghép: `Adreno (TM) 3064002`→`Adreno (TM) 306`, `PowerVR GE8300POWERVR`→`PowerVR GE8300`) + `gpu_facts()` (suy từ tên part qua `_gpu_classes()`) → `gpu_architecture` khớp 100% renderer. (2) Sửa `max_renderbuffer_size`/`max_viewport_dims` lệch `max_texture_size` trên cùng `GpuProfile`. (3) Thêm 4 GPU thật vào bảng phân loại: Immortalis-G925 (Dimensity 9200), Immortalis-G710 (Dimensity 1300), Xclipse 550 (Exynos 1580), Xclipse 950 (Exynos 2500). (4) Sửa 2 lỗi *của test*: thiếu mapping Android 16 (SDK 36), và marker `"ipad"` khớp substring trong `"MultiPad"` → word-boundary. (5) Fix import `_generated_gpu_*`. **Phân bố:** board max 0.10%, device 0.12%, model 0.07%, gpu.renderer 11.47% (giới hạn vật lý đúng). Viết **`NEXT_STEPS.md`** — roadmap đầy đủ + bảng file Chromium cần patch + quy trình Git LFS + xử lý file nhạy cảm. |
 | **22/11 20:30** | **Lượt 6 — vá lỗi chống trùng ở tầng seed + mở rộng band Chrome + bỏ ATL để build `chrome.exe`.** (1) **Lỗi gốc:** `derive_bytes`/`derive_int` không gấp `stratum` vào HKDF `info` → **mọi profile cùng seed có cùng serial, cùng fingerprint, cùng mọi salt** (1/300). Đã vá bằng cách gấp stratum vào deriver → **300/300 unique** trên tất cả trường đó. (2) **Band Chrome Android 16** đặt nhầm ở 156; đã kiểm chứng Chrome 137 là milestone đầu tiên hỗ trợ API 36 → sửa thành 137 → **UA max nhóm 35 → 8**; tổ hợp UA+fullver+tz+screen vẫn 1/1 tuyệt đối. (3) Vá leak `OfflineAudioContext.sampleRate` trong JS runtime. (4) `maxTouchPoints` theo digitiser phần cứng thay vì random. (5) **Bỏ ATL khỏi tầng nguồn** (`base/win/atl.h` + `service.cc` dùng SDDL) để build không cần component tùy chọn của VS. **1.791 test pass**, ruff sạch. |
 
 ---

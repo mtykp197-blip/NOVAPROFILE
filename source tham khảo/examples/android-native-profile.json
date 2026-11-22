@@ -1,0 +1,24 @@
+{
+  "config": {
+    "name": "Android core probe - synthetic configuration",
+    "os": "android",
+    "browser": "chrome",
+    "fingerprint": {
+      "navigator": {
+        "userAgent": "Mozilla/5.0 (Linux; Android 15; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.8059.40 Mobile Safari/537.36",
+        "platform": "Linux armv8l",
+        "deviceMemory": 8,
+        "hardwareConcurrency": 8,
+        "maxTouchPoints": 5,
+        "osVersion": "15.0.0",
+        "device": "Pixel 8"
+      },
+      "screen": {"width": 393, "height": 873, "pixelRatio": 2.75},
+      "languages": {"acceptLanguage": "vi-VN,vi,en-US,en"},
+      "timezone": {"isProxy": false, "nameTimezone": "Asia/Ho_Chi_Minh"},
+      "webgl2": {"unmaskedVendor": "ARM", "unmaskedRenderer": "Mali-G715"}
+    }
+  },
+  "proxy": {"type": "Without proxy"},
+  "extensions": []
+}

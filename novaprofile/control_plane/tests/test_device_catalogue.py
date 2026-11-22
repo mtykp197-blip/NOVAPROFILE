@@ -114,11 +114,11 @@ def test_every_device_has_an_entry_in_the_variant_table(catalogue: list) -> None
 def test_the_android_release_and_the_sdk_level_agree(catalogue: list) -> None:
     """A release and an SDK level that disagree are a contradiction.
 
-    The mapping is fixed: Android 12 is 31, 13 is 33, 14 is 34 and 15
-    is 35.
+    The mapping is fixed: Android 12 is 31, 13 is 33, 14 is 34, 15 is
+    35 and 16 is 36.
     """
 
-    expected = {"12": 31, "13": 33, "14": 34, "15": 35}
+    expected = {"12": 31, "13": 33, "14": 34, "15": 35, "16": 36}
     for preset in catalogue:
         assert expected[preset.release] == preset.sdk_int, (
             f"{preset.preset_id} claims Android {preset.release} with the SDK "

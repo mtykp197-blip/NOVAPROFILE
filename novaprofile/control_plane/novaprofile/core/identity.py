@@ -93,6 +93,8 @@ from .devices import (
     XCLIPSE_920,
     DevicePreset,
     GpuProfile,
+    _generated_gpu_profiles,
+    _generated_gpu_variants,
 )
 from .gpu_params import build_tier_table
 from .seed import Axis, SeedDeriver
@@ -359,6 +361,33 @@ _GPU_VARIANTS.update(
     {
         preset_id: variants
         for preset_id, variants in market_gpu_variants().items()
+        if preset_id not in _GPU_VARIANTS
+    }
+)
+
+#: The renderers the expanded catalogue brings, added to the table above.
+#:
+#: The expanded catalogue is two thousand handsets derived from the
+#: reference device descriptors, and it names the graphics parts of
+#: handsets the hand-written tables never covered.  The engine has to
+#: know the limits of those parts too, or the preset and the table
+#: disagree about the same part.
+_GPU_CATALOGUE.update(
+    {
+        renderer: profile
+        for renderer, profile in _generated_gpu_profiles().items()
+        if renderer not in _GPU_CATALOGUE
+    }
+)
+
+#: The renderer variants of the expanded catalogue.
+#:
+#: Every handset of the expanded catalogue shipped with a single part,
+#: so the table names that one part.
+_GPU_VARIANTS.update(
+    {
+        preset_id: variants
+        for preset_id, variants in _generated_gpu_variants().items()
         if preset_id not in _GPU_VARIANTS
     }
 )

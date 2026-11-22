@@ -330,6 +330,9 @@ _GPU_CLASSES: dict[str, tuple[str, ...]] = {
         "Mali-T760",
         "Mali-T860",
         "Mali-G76 MC4",
+        # The Immortalis-G710 is the graphics part of the Dimensity
+        # 1300, and it reports the 8192 limit of the mid tier.
+        "Immortalis-G710",
         # The Mali-G615 MC2 of the RMX5108 reports 16384, so it is a
         # mid part rather than the budget one the bare family name
         # would make it.
@@ -372,9 +375,17 @@ _GPU_CLASSES: dict[str, tuple[str, ...]] = {
         "Mali-G615 MC6",
         "Immortalis-G715",
         "Immortalis-G720",
+        # The Immortalis-G925 is the graphics part of the Dimensity
+        # 9200, and it reports the 16384 limit of the flagship tier.
+        "Immortalis-G925",
         "Xclipse 920",
         "Xclipse 940",
         "Xclipse 530",
+        # The Xclipse 550 is the graphics part of the Exynos 1580 and
+        # the Xclipse 950 the one of the Exynos 2500; both report
+        # 16384.
+        "Xclipse 550",
+        "Xclipse 950",
         "Maleoon 910",
         # Apple's own GPU cores.  The four- and five-core designs are
         # the A-series parts of the iPhone 11 and the A13/A14; the
