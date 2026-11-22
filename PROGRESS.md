@@ -569,10 +569,71 @@ thì không bằng một test chạy script.
 
 ---
 
+## 8. Quyết định chiến lược: build trên Windows, bán trên Android
+
+**22/11 14:55**
+
+### Sự thật đã kiểm chứng
+
+| Kiểm chứng | Cách kiểm chứng | Kết quả |
+|---|---|---|
+| Chromium chặn build Android trên Windows | Chạy `gn gen out/nova-159` với `target_os="android"` | `ERROR at //build/config/BUILDCONFIG.gn:263:3: Assertion failed. assert(host_os == "linux", "Android builds are only supported on Linux.")` |
+| Máy không có Linux nào | `wsl -l -v`, `Get-Command docker`, `Get-ChildItem $LOCALAPPDATA\Android\Sdk` | Không có WSL, không Docker, không Android SDK |
+| Máy không bật được feature cần admin | `[WindowsPrincipal]::IsInRole(Administrator)` | `False` → không bật được `VirtualMachinePlatform`, không cài WSL |
+| Máy đủ sức làm Linux host | `systeminfo`, `Win32_Processor`, `Win32_OperatingSystem` | 18 luồng, 28 GB RAM, 476 GB trống, ảo hóa đã bật trong firmware |
+| **Core patch là portable** | Đọc patch series, tìm `BUILDFLAG(IS_ANDROID)` | Chỉ dùng để **bảo toàn hành vi gốc**; đường NOVA đặt trước nên hoạt động trên mọi target |
+
+### Kết luận
+
+Rào cản **không nằm ở code** — nó nằm ở **host**. Core patch đã viết đúng cho cả
+Android lẫn desktop. Vì vậy:
+
+* **Build trên Windows x64** → ra một `chrome.exe` đã patch, đọc được
+  `--nova-config`. Đây là **bàn thử**, dùng để chứng minh patch đúng và để
+  chạy bộ đo e2e trên trình duyệt thật.
+* **Bán cho khách ở Android** → dùng **Chrome for Testing `linux-arm64`** (bản
+  arm64 chính thức của Chromium, `160.0.8176.2` hiện có) cộng với **JS
+  runtime injection** của NOVA, chạy trên máy Android của khách.
+
+Hai lớp này cùng nhau phủ hết các bề mặt:
+
+| Bề mặt | Lớp 1: core patch (win64) | Lớp 2: JS runtime |
+|---|---|---|
+| `navigator.*`, `userAgentData` | ✅ | ✅ |
+| `screen`, `viewport` | ✅ | ✅ |
+| WebGL vendor/renderer/extension | ✅ | ✅ |
+| Canvas 2D + `measureText` | ✅ | ✅ |
+| `permissions` | ✅ | ✅ |
+| `mediaDevices` | ✅ | ✅ |
+| Audio fingerprint | ✅ | ❌ (đang làm) |
+| Font list + font metrics | ❌ (cần font thật của máy) | ✅ (danh sách + `measureText`) |
+
+### Việc đã làm trong lượt này
+
+* **Dừng build `out/nova-win`** ở 200.314 target (đã qua Blink core, V8,
+  `components/sync`) — vì nó là bản desktop, không phải sản phẩm, và nó giành
+  CPU với các agent. Không mất gì: `ninja` tiếp tục từ đúng chỗ khi chạy lại.
+* Viết `novaprofile/core_patch/BUILDING.md` — mô tả cách build Android trên
+  Linux host, kèm yêu cầu SDK/NDK và cách verify.
+* Ghi rõ trong `build_config.json` rằng `out/nova-<major>` là output của
+  Linux host, còn `out/nova-win` là bàn thử.
+
+### Việc tiếp theo (theo thứ tự)
+
+1. Bộ đo e2e chạy trên `chrome.exe` đã patch — đây là bước chứng minh patch đúng.
+2. Bổ sung JS runtime cho các bề mặt còn thiếu: audio, `navigator.connection`
+   theo hạng máy, `MediaRecorder.isTypeSupported`.
+3. Chuỗi phát hành: tải Chrome for Testing arm64, đóng gói cùng JS runtime
+   thành installer.
+
+
+---
+
 ## 7. Lịch sử cập nhật
 
 | Thời điểm | Nội dung |
 |---|---|
+| **22/11 14:50** | **Lượt 3 — dừng build Windows, ghi nhận rào cản Android.** `gn gen` với `target_os="android"` **fail cứng** trên host Windows: `build/config/BUILDCONFIG.gn:263` có `assert(host_os == "linux", "Android builds are only supported on Linux.")`. Đã xác minh bằng cách chạy `gn gen` thật, không phải đọc tài liệu. Máy này không có WSL, không Docker, không Android SDK/NDK, và **không có quyền admin** (`IsAdmin=False`) nên không bật được `VirtualMachinePlatform`. Máy có 18 luồng / 28 GB RAM / 476 GB trống — đủ cho Linux host. Build `out/nova-win` đã chạy 200.314 target (đã qua Blink core, V8, đang ở `components/sync`) nhưng là **bản desktop Windows**, chỉ dùng để kiểm chứng core patch, không phải sản phẩm. **Đã dừng** để giải phóng CPU cho agent. Viết `novaprofile/core_patch/BUILDING.md` mô tả đúng cách build Android trên Linux host. |
 | **22/11 14:20** | **Lượt 2:** sửa `mediaDevices` (deviceId 64 hex theo `media_device_id.cc`, 2 camera với group riêng, mic+loa cùng group) và `permissions` (`PermissionStatus` thật, tên lạ → `TypeError`). **Sửa lỗi cú pháp JS** chỉ lộ ra khi chạy Node thật. **1.368 test pass**, ruff sạch. Đẩy `3dc5c42`. |
 | **22/11 13:45** | **Lượt 1:** sửa ba lỗi "đúng nhưng sai": bộ nhớ bốc từ tập phẳng, schema giữ giả định lỗi thời về phép làm tròn, 7 preset báo 9 lõi. Đọc source Chromium 160 + đo trên Chrome thật để kiểm chứng. Thêm bảng phông theo hạng thiết bị. **1.341 test pass**, ruff sạch. Đẩy `ef4e165` lên GitHub. |
 | 22/11 01:20 | **Bổ sung R8 (không dừng, không hỏi) + R9 (viết xong ≠ xong)** vào `RULES.md` và `AGENTS.md`. Bắt đầu 4 việc còn lại. |

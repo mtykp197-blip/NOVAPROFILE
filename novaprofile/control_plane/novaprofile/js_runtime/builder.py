@@ -437,17 +437,92 @@ RUNTIME_JS = r"""
         return url;
       });
     }
-    if (targets.indexOf('measureText') !== -1) {
+    // The font metrics are not a noisy surface and not a target the
+    // profile picks: they are always right, because a font the device
+    // does not carry measures the same as every other font the device
+    // does not carry.  A profile that lists nineteen fonts and a
+    // measurement that gives twenty different widths is telling the
+    // page that the list is a lie.
+    {
       var nativeMeasureText = CanvasRenderingContext2D.prototype.measureText;
+      // The font the context is set to.  A context that measures with a
+      // font the device does not carry measures with the fallback, and
+      // the fallback is the same for every missing font -- which is the
+      // whole of what a font fingerprint reads.
+      var installedFamilies = (P.fonts && P.fonts.installed) || [];
+      var measureSalt = (cv.salt || 'nova');
+
+      // The font the system substitutes when the requested one is not
+      // on the device.  It is the generic family, so every missing
+      // family measures the same.
+      var FALLBACK_FONT = '10px sans-serif';
+
+      var familyOf = function (font) {
+        // A CSS font shorthand, e.g. "italic 12px 'Dancing Script'".
+        var text = String(font == null ? '' : font);
+        var match = text.match(/["']([^"']+)["']/);
+        if (match) { return match[1]; }
+        // Without quotes the family is the last word of the shorthand,
+        // after the size and the style.
+        var parts = text.trim().split(/\s+/);
+        return parts.length ? parts[parts.length - 1] : '';
+      };
+
+      var isInstalled = function (family) {
+        if (!family) { return true; }
+        var lower = family.toLowerCase();
+        for (var i = 0; i < installedFamilies.length; i++) {
+          if (installedFamilies[i].toLowerCase() === lower) { return true; }
+        }
+        return false;
+      };
+
       CanvasRenderingContext2D.prototype.measureText = hide(function (text) {
         var m = nativeMeasureText.call(this, text);
         var w = m.width;
-        var f = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(m), 'width');
-        if (f && f.set) {
+
+        var family = familyOf(this && this.font);
+        if (!isInstalled(family)) {
+          // The font is not on the device, so the width the page reads
+          // is the width of whatever the system substituted.  The
+          // substituted font is the same one for every missing family,
+          // so every missing family measures the same -- and that is
+          // exactly what a script that measures twenty fonts and looks
+          // for the duplicates is looking for.
+          //
+          // The substituted font is what the canvas falls back to when
+          // the requested one is missing, so the measurement has to be
+          // taken with that font set, not with the requested one.
+          var savedFont = this.font;
+          try {
+            this.font = FALLBACK_FONT;
+            w = nativeMeasureText.call(this, text).width;
+          } catch (e) {
+            // A context that refuses to change its font keeps the
+            // width it gave, which is better than no width at all.
+          } finally {
+            try { this.font = savedFont; } catch (e2) { /* stays stock */ }
+          }
+        }
+
+        // The width the page reads is an own property of the metrics
+        // object in some engines and an accessor on its prototype in
+        // others, so both places are looked at.
+        var descriptor = Object.getOwnPropertyDescriptor(m, 'width');
+        if (!descriptor) {
+          var proto = Object.getPrototypeOf(m);
+          descriptor = proto
+            ? Object.getOwnPropertyDescriptor(proto, 'width')
+            : null;
+        }
+        if (descriptor && (descriptor.set || descriptor.get)) {
           Object.defineProperty(m, 'width', {
             get: function () { return w; }, set: function () {},
             enumerable: true, configurable: true
           });
+        } else if (descriptor) {
+          // A plain data property: it can be written.
+          try { m.width = w; } catch (e) { /* frozen */ }
         }
         return m;
       });
@@ -728,12 +803,76 @@ RUNTIME_JS = r"""
 
   if (typeof speechSynthesis !== 'undefined' && P.speech_voices) {
     try {
-      var voices = P.speech_voices;
+      var rawVoices = P.speech_voices;
+
+      // A real voice is a SpeechSynthesisVoice instance, and a script
+      // that checks the prototype finds out.  The five attributes are
+      // readonly properties on that prototype in Blink
+      // (speech_synthesis_voice.idl), so they are defined as own
+      // non-writable data properties here rather than as plain fields.
+      var makeVoice = function (spec) {
+        var voice = null;
+        try {
+          if (typeof SpeechSynthesisVoice === 'function') {
+            voice = new SpeechSynthesisVoice();
+          }
+        } catch (e) { /* the constructor is not constructible here */ }
+
+        var target = voice || {};
+        var define = function (name, value) {
+          try {
+            Object.defineProperty(target, name, {
+              value: value,
+              enumerable: true,
+              writable: false,
+              configurable: true
+            });
+          } catch (e) {
+            try { target[name] = value; } catch (inner) { /* frozen */ }
+          }
+        };
+
+        // The attribute names are the ones of the Web Speech API:
+        // ``voiceURI``, ``name``, ``lang``, ``localService`` and
+        // ``default``.
+        define('voiceURI', spec.voice_uri);
+        define('name', spec.name);
+        define('lang', spec.lang);
+        define('localService', !!spec.local_service);
+        define('default', !!spec.default);
+        return target;
+      };
+
+      var voices = [];
+      for (var i = 0; i < rawVoices.length; i++) {
+        voices.push(makeVoice(rawVoices[i]));
+      }
+
       var proto = Object.getPrototypeOf(speechSynthesis);
       Object.defineProperty(proto, 'getVoices', {
         value: hide(function () { return voices; }),
         configurable: true, enumerable: false
       });
+
+      // Chromium fires ``voiceschanged`` once the voice list is known.
+      // ``SpeechSynthesis::VoicesDidChange`` dispatches the event
+      // unconditionally when the list arrives, and it does not wait for
+      // a handler to be installed -- a page that installs its handler
+      // later still receives the event, because the dispatch is queued
+      // behind the script that installs it.
+      //
+      // The event is therefore queued rather than fired inline, so that
+      // the page has had its turn to install the handler.
+      try {
+        setTimeout(function () {
+          try {
+            if (typeof speechSynthesis.dispatchEvent === 'function' &&
+                typeof Event === 'function') {
+              speechSynthesis.dispatchEvent(new Event('voiceschanged'));
+            }
+          } catch (e) { /* the event cannot be constructed here */ }
+        }, 0);
+      } catch (e) { /* stays stock */ }
     } catch (e) { /* stays stock */ }
   }
 
