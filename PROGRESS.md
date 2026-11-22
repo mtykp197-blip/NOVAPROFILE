@@ -1,6 +1,6 @@
 # NOVA PROFILE — Báo cáo tiến độ
 
-_Cập nhật: 22/11/2026 06:30 (UTC+7)_
+_Cập nhật: 22/11/2026 09:05 (UTC+7)_
 
 ---
 
@@ -13,14 +13,24 @@ _Cập nhật: 22/11/2026 06:30 (UTC+7)_
 | **Registry / Store** — SQLite, seed store, persistence | ✅ Hoàn tất | **~90%** |
 | **Network layer** — DNS, proxy, WebRTC, rotation, leak-check | ✅ Hoàn tất | **~88%** |
 | **Security** — crypto, token auth, redaction, hardening | ✅ Hoàn tất | **~90%** |
-| **Core Patch (C++)** — config parser, Blink hooks, patch series | 🔄 **Đang biên dịch thật** | **~75%** |
+| **Core Patch (C++)** — config parser, Blink hooks, patch series | 🔄 **Đang biên dịch thật — NOVA .obj đã xong** | **~80%** |
 | **js_runtime** — lớp JS fallback cho Chromium stock | ✅ Hoàn tất | **~90%** |
 | **Probe / Measurement** — simulator + harness + e2e thật | ✅ Hoàn tất | **~95%** |
-| **Installer** — gói cài đặt độc lập | ✅ Hoàn tất | **~90%** |
+| **Installer** — gói cài đặt độc lập | ✅ Hoàn tất | **~95%** |
 | **Measurement Ledger** — sổ đo đạc + CLI | ✅ Hoàn tất | **~95%** |
 | **Docs** — ARCHITECTURE, AGENT_CONTRACT, RULES | ✅ Có | **~90%** |
 
-### Ước lượng tổng thể: **~90%**
+### Ước lượng tổng thể: **~92%**
+
+### Bằng chứng mới nhất (22/11/2026 09:05)
+
+| Việc | Kết quả |
+|---|---|
+| Build Chromium 160 thật (MSVC 2022, Win x64) | **40,4% → đang chạy**, 0 lỗi, 1h23m đã trôi qua |
+| Code C++ NOVA biên dịch | ✅ `nova_blink_patch.obj` (730 KB), `nova_core_config.obj` (1.148 KB), `nova_pixel_noise.obj` (225 KB) |
+| Test suite control plane | ✅ **894 passed**, 5 skipped, ruff sạch 100% |
+| Lỗi installer đã sửa | ✅ `launch.py`/`uninstall.py` sinh ra thiếu `main()` → đã sửa, 12/12 installer test pass |
+| Đồng bộ GitHub | ✅ `github.com/mtykp197-blip/NOVAPROFILE` (private), 167 files, 2,08 MB, commit `09f010d` |
 
 ---
 
@@ -28,12 +38,12 @@ _Cập nhật: 22/11/2026 06:30 (UTC+7)_
 
 | Thành phần | Số dòng |
 |---|---|
-| Python (control_plane) | ~23.500 dòng |
-| C++ (core_patch) | ~5.000 dòng |
-| Tests (34 file) | ~8.000 dòng |
+| Python (control_plane) | 27.211 dòng |
+| C++ (core_patch) | 2.403 dòng |
+| Tests (34 file) | 9.494 dòng |
 | Docs | ~48 KB |
 
-**Test suite:** 882 passed, 5 skipped, ruff sạch 100%.
+**Test suite:** 894 passed, 5 skipped, ruff sạch 100%.
 
 ---
 

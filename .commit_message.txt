@@ -1,0 +1,5 @@
+Record the progress report and the build evidence
+
+The report now carries the numbers that were measured rather than
+remembered: the source size, the test count, the state of the Chromium
+build and the list of compiled NOVA objects.
