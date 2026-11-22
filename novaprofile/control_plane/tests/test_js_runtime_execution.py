@@ -208,7 +208,10 @@ HARNESS = textwrap.dedent(
       }),
       uaGetterOwnToString: read(function () {
         return uaDescriptor.get.toString();
-      })
+      }),
+      uaGetterName: read(function () { return uaDescriptor.get.name; }),
+      uaGetterLength: read(function () { return uaDescriptor.get.length; }),
+      stockGetterName: 'get'
     }));
     """
 ).strip()
@@ -401,6 +404,20 @@ def test_the_override_still_behaves_like_a_function(profile, tmp_path) -> None:
     report = _run(profile, tmp_path)
     assert not str(report["userAgent"]).startswith("THREW")
     assert report["userAgent"] == profile.navigator.user_agent
+
+
+def test_the_overridden_getter_keeps_the_native_name(profile, tmp_path) -> None:
+    """The name of the getter must not give the override away.
+
+    A native accessor getter is named "get" (or "get userAgent" in
+    Blink).  The name of the replacement -- "raw", "value", "fn" -- is
+    a giveaway that needs no source check at all, so the replacement
+    reports the name of the getter it took the place of.
+    """
+
+    report = _run(profile, tmp_path)
+    assert report["uaGetterName"] == report["stockGetterName"]
+    assert report["uaGetterLength"] == 0
 
 
 # --------------------------------------------------------------------------

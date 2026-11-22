@@ -117,7 +117,13 @@ RUNTIME_JS = r"""
   // already native.  The proxy forwards the call, the name, the length
   // and the own property names, so the override still behaves like the
   // function it replaces.
-  function hide(fn) {
+  //
+  // The name is the one thing the proxy does not forward.  A native
+  // accessor getter is named "get" (or "get userAgent" in Blink), and
+  // the name of the replacement -- "raw", "value", "fn" -- is a
+  // giveaway that needs no source check to spot.  The proxy therefore
+  // reports the name of the getter it replaced.
+  function hide(fn, name) {
     try {
       return new Proxy(fn, {
         apply: function (target, thisArg, args) {
@@ -129,6 +135,9 @@ RUNTIME_JS = r"""
         get: function (target, prop, receiver) {
           if (prop === 'toString') {
             return function () { return NATIVE; };
+          }
+          if (prop === 'name' && name !== undefined) {
+            return name;
           }
           return Reflect.get(target, prop, receiver);
         }
@@ -149,9 +158,19 @@ RUNTIME_JS = r"""
   function nativeLike(obj, name, fn, descriptor) {
     var target = descriptor && descriptor.configurable !== undefined
       ? descriptor : { configurable: true, enumerable: true };
+    // The name of the getter that is being replaced.  A native accessor
+    // is named "get" or "get <property>"; the name of the replacement
+    // would be a giveaway, so the replacement reports the name of the
+    // getter it took the place of.
+    var getterName = 'get';
+    try {
+      if (descriptor && descriptor.get && descriptor.get.name) {
+        getterName = descriptor.get.name;
+      }
+    } catch (e) { /* the name is a nicety, not a requirement */ }
     try {
       Object.defineProperty(obj, name, {
-        get: hide(fn),
+        get: hide(fn, getterName),
         set: undefined,
         enumerable: target.enumerable,
         configurable: target.configurable
