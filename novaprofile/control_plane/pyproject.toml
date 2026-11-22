@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["ruff>=0.5", "mypy>=1.10", "pytest-cov>=5.0"]
+dev = ["ruff>=0.5", "mypy>=1.10", "pytest-cov>=5.0", "pytest-timeout>=2.3"]
 
 [project.scripts]
 nova = "novaprofile.cli.main:app"
