@@ -1350,6 +1350,13 @@ def derive_ram_options(memory: str) -> tuple[int, ...]:
     kept once: a handset sold as "64GB 6GB RAM, 128GB 6GB RAM,
     128GB 8GB RAM" ships with 6 GB and with 8 GB, and the storage sizes
     are not an axis of variation.
+
+    The amounts are the *physical* memory of the handset.  The value a
+    page reads is Chromium's approximation of it, and that approximation
+    is applied by the generator -- see
+    :func:`novaprofile.core.hardware_approximation.approximate_device_memory`.
+    The catalogue keeps the physical facts, because that is what the
+    source data describes.
     """
 
     amounts: list[int] = []

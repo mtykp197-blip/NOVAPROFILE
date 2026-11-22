@@ -925,6 +925,11 @@ def derive_ram_options(memory: str) -> tuple[int, ...]:
 
     The memory text names the storage and the RAM of every configuration
     the handset was sold in; only the RAM amounts are of interest here.
+
+    The amounts are the *physical* memory of the handset.  The value a
+    page reads is Chromium's approximation of it, and that approximation
+    is applied by the generator -- see
+    :func:`novaprofile.core.hardware_approximation.approximate_device_memory`.
     """
 
     amounts: list[int] = []

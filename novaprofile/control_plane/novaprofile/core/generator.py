@@ -76,8 +76,12 @@ from ..schema.signals import (
 )
 from ..schema.version import BrowserVersion
 from .devices import get_preset
-from .font_catalog import fonts_for_locale
+from .font_catalog import fonts_for_device
 from .geo_catalog import GEO_CATALOGUE
+from .hardware_approximation import (
+    approximate_device_memory,
+    approximate_hardware_concurrency,
+)
 from .identity import DeviceIdentity, DeviceIdentityFactory
 from .seed import Axis, SeedDeriver, new_master_seed
 from .versions import (
@@ -300,6 +304,13 @@ class ProfileGenerator:
 
         self._resolver = resolver or ConsistencyResolver()
 
+        # The physical unit the profile is being built for.  These are set
+        # at the start of :meth:`generate` and read by the builders that
+        # need to know which device this is -- the font tier, for one.
+        self._device_ram_gb = 4
+        self._device_year = 2024
+        self._device_release = "14"
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -351,6 +362,31 @@ class ProfileGenerator:
         build = device.build
         abi = preset.abi
 
+        # The RAM of this physical unit.  A phone does not report a random
+        # amount of memory: it reports the amount the model was sold with,
+        # and the model's list of options is what the catalogue knows.
+        # Drawing from a flat set instead would let a 4 GB Redmi Note
+        # report 16 GB, and ``navigator.deviceMemory`` is one of the
+        # cheapest things for a script to compare between two visits.
+        #
+        # The value that reaches the page is *not* the physical memory.
+        # Chromium rounds it to the nearest power of two and clamps it to
+        # eight gigabytes on Android, so a 6 GB handset reports eight and
+        # a 12 GB handset also reports eight.
+        physical_ram_gb = int(
+            deriver.derive_choice(Axis.NAVIGATOR, preset.ram_options, context="ram")
+        )
+        ram_gb = approximate_device_memory(physical_ram_gb)
+
+        # The font tier follows the RAM and the model year, because those
+        # two are what decide how much room the system partition leaves
+        # for the optional font families.  The tier follows the *physical*
+        # memory, because the fonts a handset ships with are decided by
+        # the part that was soldered onto it.
+        self._device_ram_gb = physical_ram_gb
+        self._device_year = preset.year
+        self._device_release = preset.release
+
         # The browser version is chosen by the caller (or derived from the
         # device's own Android release); the capability entry decides the
         # UA, the brands and the headers.
@@ -387,7 +423,9 @@ class ProfileGenerator:
                 )
             version = browser_version
 
-        navigator = self._build_navigator(deriver, build, geo_target, caps)
+        navigator = self._build_navigator(
+            deriver, build, geo_target, caps, preset.cpu_options, ram_gb
+        )
         uad = self._build_user_agent_data(deriver, build, caps, version.full_version, abi)
 
         config = ProfileConfig(
@@ -469,6 +507,8 @@ class ProfileGenerator:
         build: AndroidBuild,
         geo: GeoTarget,
         caps: VersionCapabilities,
+        preset_cpu_options: tuple[int, ...] = (4, 6, 8, 12),
+        device_memory_gb: int = 8,
     ) -> Navigator:
         model = build.model
         # The UA is built from the capability entry: from Chromium 110 on the
@@ -497,12 +537,14 @@ class ProfileGenerator:
                 ["Linux armv8l", "Linux aarch64", "Linux armv7l"],
                 context="platform",
             ),
-            hardware_concurrency=deriver.derive_choice(
-                Axis.NAVIGATOR, (4, 6, 8, 12), context="cores"
-            ),  # type: ignore[arg-type]
-            device_memory=deriver.derive_choice(
-                Axis.NAVIGATOR, (2, 4, 6, 8, 12, 16), context="memory"
-            ),  # type: ignore[arg-type]
+            hardware_concurrency=approximate_hardware_concurrency(
+                int(deriver.derive_choice(Axis.NAVIGATOR, preset_cpu_options, context="cores"))
+            ),
+            # The *approximated* memory, not the physical one.  This is
+            # the value Chromium would have produced on the same
+            # hardware, and the native core hands it to the page
+            # unchanged.
+            device_memory=device_memory_gb,  # type: ignore[arg-type]
             max_touch_points=deriver.derive_choice(Axis.NAVIGATOR, (5, 10), context="touch"),  # type: ignore[arg-type]
             language=geo.locale,
             languages=list(geo.languages),
@@ -1108,11 +1150,21 @@ class ProfileGenerator:
 
     def _build_fonts(self, deriver: SeedDeriver, locale: str) -> Fonts:
         salt = deriver.derive_bytes(Axis.FONTS, 16, context="salt").hex()
-        # The font set follows the locale: a device whose user reads Japanese
-        # carries the CJK families and no Devanagari ones.  The Latin core is
-        # shuffled and trimmed the way a real device's font config is.
-        available = fonts_for_locale(locale, ANDROID_FONT_PRESET)
-        count = deriver.derive_int(Axis.FONTS, 8, len(available), "count")
+        # The font set follows two independent things: the locale, which
+        # decides which scripts the user can read, and the device tier,
+        # which decides how much room the system partition leaves for the
+        # optional families.  A budget phone and a flagship in the same
+        # country report different font lists, and that difference is what
+        # a script comparing this device with a device it saw yesterday
+        # is looking at.
+        available = fonts_for_device(
+            locale,
+            ANDROID_FONT_PRESET,
+            ram_gb=self._device_ram_gb,
+            year=self._device_year,
+            release=self._device_release,
+        )
+        count = deriver.derive_int(Axis.FONTS, min(8, len(available)), len(available), "count")
         installed = list(deriver.derive_shuffled(Axis.FONTS, available, context="shuffle"))[:count]
         # Roboto and Noto Color Emoji are always present on Android.
         for mandatory in ("Roboto", "Noto Color Emoji"):

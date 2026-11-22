@@ -34,8 +34,25 @@ class Navigator(BaseModel):
     product: str = "Gecko"
     product_sub: str = "20030107"
     platform: Literal["Linux armv8l", "Linux aarch64", "Linux armv7l"]
+    # ``hardwareConcurrency`` is the number of logical cores the platform
+    # reports.  Chromium reads ``base::SysInfo::NumberOfProcessors()``
+    # and hands that to the page, so the count is neither rounded nor
+    # clamped: a workstation with eighteen threads reports eighteen.
+    #
+    # The values here are the counts the handsets of this fleet ship
+    # with.  A big.LITTLE SoC of the era reports four, six, eight or
+    # twelve logical cores, because its little cores count twice.
     hardware_concurrency: Literal[4, 6, 8, 12]
-    device_memory: Literal[2, 4, 6, 8, 12, 16]
+    # ``deviceMemory`` is the physical memory in gigabytes, rounded to
+    # the nearest power of two and clamped -- the algorithm Chromium
+    # itself uses in ``ApproximatedDeviceMemory``.  A handset with 6 GB
+    # reports 8, and a handset with 3 GB reports 4.
+    #
+    # The ceiling is eight, because Chromium clamps Android to
+    # [1 GB, 8 GB]: the desktop clamp of thirty-two is what a desktop
+    # Chrome reports, and the product of this project is an Android
+    # browser.  A handset with twelve gigabytes therefore reports eight.
+    device_memory: Literal[1, 2, 4, 8]
     max_touch_points: Literal[5, 10]
     language: str
     languages: list[str] = Field(min_length=1)

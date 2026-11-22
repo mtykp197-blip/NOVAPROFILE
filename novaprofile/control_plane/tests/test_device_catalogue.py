@@ -179,3 +179,42 @@ def test_a_generated_profile_agrees_with_its_preset() -> None:
         assert profile.webgl.unmasked_renderer == preset.gpu.unmasked_renderer
         assert profile.android_build.model == preset.model
         assert profile.android_abi_soc.soc_model == preset.abi.soc_model
+
+
+def test_the_core_count_of_every_preset_is_one_the_schema_accepts() -> None:
+    """``hardwareConcurrency`` may only carry a value the schema allows.
+
+    The core count is not the number of physical cores: a Snapdragon 8
+    Gen 2 has five of them and reports eight, because its little cores
+    count twice.  So the count cannot be derived from the cluster
+    layout -- it has to be carried by the catalogue, and a typo in
+    the catalogue is a profile that reports nine cores, which no
+    Android handset has ever done.
+    """
+
+    allowed = {4, 6, 8, 12}
+    for preset in list_presets():
+        for cores in preset.cpu_options:
+            assert cores in allowed, (
+                f"{preset.preset_id} offers {cores} cores, "
+                f"which is not a value the schema accepts"
+            )
+
+
+def test_two_presets_of_the_same_chipset_report_the_same_core_count() -> None:
+    """The same chipset always reports the same number of cores.
+
+    The Pixel 7 and the Pixel Fold both carry a Tensor G2, so they
+    must both report eight cores.  A catalogue that gives the two
+    models different counts is a catalogue with a typo in it, and the
+    typo is invisible until a profile is generated from it.
+    """
+
+    by_soc: dict[str, set[int]] = {}
+    for preset in list_presets():
+        by_soc.setdefault(preset.abi.soc_model, set()).update(preset.cpu_options)
+
+    for soc, counts in by_soc.items():
+        assert len(counts) == 1, (
+            f"{soc} is listed with several core counts: {sorted(counts)}"
+        )
