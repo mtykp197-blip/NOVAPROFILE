@@ -60,8 +60,8 @@ from novaprofile.probe.simulator import simulate_payload
 #: Which ``sig_*`` key of ``ProfileConfig.signature_parts`` guards which
 #: axis of the harness.
 #:
-#: The eleven ``sig_*`` keys cover ten of the twelve axes directly.  Two
-#: groupings need spelling out:
+#: The fourteen ``sig_*`` keys cover thirteen of the fifteen axes directly.
+#: Two groupings need spelling out:
 #:
 #: * The two WebGL keys -- ``sig_webgl_draw`` (the pixels the GPU draws)
 #:   and ``sig_webgl_params`` (the parameter table it advertises) --
@@ -86,6 +86,9 @@ SIGNATURE_PART_TO_AXIS: dict[str, str] = {
     "sig_storage": "storage",
     "sig_webgpu": "webgpu",
     "sig_fonts": "fonts",
+    "sig_math": "math",
+    "sig_heap": "heap",
+    "sig_media_decode": "media_decode",
 }
 
 #: The axes that are guarded *through* ``sig_device`` rather than through
@@ -105,9 +108,9 @@ def _signature_keys() -> set[str]:
 
 
 class TestSurfaceExtractor:
-    def test_covers_exactly_the_twelve_guarded_axes(self) -> None:
-        assert len(GUARDED_AXES) == 12
-        assert len(set(GUARDED_AXES)) == 12
+    def test_covers_exactly_the_fifteen_guarded_axes(self) -> None:
+        assert len(GUARDED_AXES) == 15
+        assert len(set(GUARDED_AXES)) == 15
         assert set(GUARDED_AXES) == {
             "identity",
             "client_hints",
@@ -121,6 +124,9 @@ class TestSurfaceExtractor:
             "sensors",
             "storage",
             "webgpu",
+            "math",
+            "heap",
+            "media_decode",
         }
 
     def test_every_axis_has_a_surface_spec(self) -> None:
@@ -132,7 +138,7 @@ class TestSurfaceExtractor:
             assert spec.description
 
     def test_the_axis_set_covers_every_signature_part(self) -> None:
-        """Every ``sig_*`` key must be guarded by one of the twelve axes.
+        """Every ``sig_*`` key must be guarded by one of the fifteen axes.
 
         This is the invariant the task calls for: the axes the harness
         verifies are exactly the axes the collision guard protects.
@@ -426,6 +432,25 @@ _SAMPLE_PAYLOAD: dict[str, dict[str, Any]] = {
         "features": [],
         "isFallbackAdapter": False,
     },
+    "math": {
+        "values": {
+            "acos": 1.0471975511965979,
+            "asin": 0.5235987755982989,
+            "sinh": 0.5210953054937474,
+            "cosh": 1.1276259652063807,
+            "tanh": 0.46211715726000974,
+            "atan": 0.4636476090008061,
+        },
+    },
+    "heap": {
+        "jsHeapSizeLimit": 2147483648,
+    },
+    "media_decode": {
+        "supported": [
+            'video/mp4;codecs="avc1.42E01E"',
+            'video/webm;codecs="vp9"',
+        ],
+    },
 }
 
 
@@ -543,7 +568,7 @@ class TestComparisonEngine:
         payload = report.to_dict()
         assert payload["passed"] is False
         assert payload["profile_id"] == "p-1"
-        assert payload["metrics"]["axes_total"] == 12
+        assert payload["metrics"]["axes_total"] == 15
         assert payload["metrics"]["axes_mismatch"] == 1
         assert payload["conclusion"]
         # The report must be JSON-serialisable -- it is filed into the
@@ -594,7 +619,7 @@ class TestComparisonEngine:
                 assert measurements.verify() == []
                 record = measurements.latest(payload["slug"])
                 assert record is not None
-                assert record.metrics["axes_total"] == 12
+                assert record.metrics["axes_total"] == 15
                 assert record.metrics["axes_mismatch"] == 1
                 assert record.reusable is True
             finally:

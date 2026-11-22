@@ -47,6 +47,9 @@ from .signals import (
     Audio,
     BatterySpeechGamepad,
     Fonts,
+    HeapSizeLimit,
+    MathPrecision,
+    MediaDecode,
     MediaDevices,
     Rects,
     Sensors,
@@ -185,6 +188,9 @@ class ProfileConfig(BaseModel):
     storage_network: StorageNetwork
     battery_speech_gamepad: BatterySpeechGamepad
     sensors: Sensors
+    math_precision: MathPrecision = Field(default_factory=MathPrecision)
+    heap_size_limit: HeapSizeLimit = Field(default_factory=HeapSizeLimit)
+    media_decode: MediaDecode = Field(default_factory=MediaDecode)
 
     # -- 2. network -------------------------------------------------------
     proxy: Proxy
@@ -347,6 +353,40 @@ class ProfileConfig(BaseModel):
                 # trimmed per unit, so it identifies the unit.
                 self.fonts.salt,
                 str(self.fonts.installed),
+            ],
+            "sig_math": [
+                # The floating-point behaviour of the transcendental
+                # functions.  ``Math.acos(0.5)`` hands out a double whose
+                # last bits come from the C library of the platform, and
+                # a site that compares the exact bit pattern against a
+                # table of known engines can tell a real browser from a
+                # faked DOM.
+                #
+                # The salt comes first because the drift itself is inside
+                # a single ulp -- the values are all but identical, and
+                # the salt is what tells two units apart.
+                self.math_precision.salt,
+                repr(self.math_precision.acos),
+                repr(self.math_precision.asin),
+                repr(self.math_precision.sinh),
+                repr(self.math_precision.cosh),
+                repr(self.math_precision.tanh),
+                repr(self.math_precision.atan),
+            ],
+            "sig_heap": [
+                # ``performance.memory.jsHeapSizeLimit`` is readable on
+                # its own, and it follows the physical memory of the
+                # machine.  Reporting the desktop default on a handset
+                # is a signal.
+                self.heap_size_limit.salt,
+                str(self.heap_size_limit.js_heap_size_limit),
+            ],
+            "sig_media_decode": [
+                # The media codecs the platform claims to decode.  A
+                # device that claims a codec its build cannot play gives
+                # itself away.
+                self.media_decode.salt,
+                str(sorted(self.media_decode.supported)),
             ],
         }
 

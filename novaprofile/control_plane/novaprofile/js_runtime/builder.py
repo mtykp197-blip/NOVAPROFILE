@@ -755,6 +755,80 @@ RUNTIME_JS = r"""
     });
   }
 
+  // -- the floating-point precision --------------------------------------------
+  // ``Math.acos(0.5)`` and friends are the classic way to tell a real
+  // browser from a DOM that was faked in JavaScript: the last bits of
+  // the double follow the C library of the platform.  The runtime
+  // nudges the result by at most ``epsilon`` so that the profile is
+  // consistent with the device it claims to be, and never more.
+  if (typeof Math !== 'undefined' && Math && P.math_precision && P.math_precision.enabled) {
+    try {
+      var mp = P.math_precision;
+      var eps = typeof mp.epsilon === 'number' ? mp.epsilon : 1e-16;
+      // The canonical probe points are the ones a fingerprinting script
+      // uses.  Each function has its own set; the circular ones are
+      // probed at the ends of their range as well.
+      var probes = {
+        acos: [0.5, -0.5, 1, -1, 0],
+        asin: [0.5, -0.5, 1, -1, 0],
+        sinh: [0.5, -0.5, 1, -1, 0],
+        cosh: [0.5, -0.5, 1, -1, 0],
+        tanh: [0.5, -0.5, 1, -1, 0],
+        atan: [0.5, -0.5, 1, -1, 0]
+      };
+      ['acos', 'asin', 'sinh', 'cosh', 'tanh', 'atan'].forEach(function (fn) {
+        if (typeof Math[fn] !== 'function') { return; }
+        var reference = mp[fn];
+        if (typeof reference !== 'number') { return; }
+        var nativeFn = Math[fn];
+        var points = probes[fn] || [0.5];
+        Math[fn] = hide(function (x) {
+          var value = nativeFn.call(Math, x);
+          // Only the canonical probe points are corrected.  Everywhere
+          // else the host's own result is the right answer.
+          if (points.indexOf(x) !== -1) {
+            // The profile value already carries the per-unit drift, so
+            // it is returned as it stands.  The epsilon is a guard: if
+            // the host's own value is nowhere near the profile's, then
+            // the host is a different engine and its answer is the
+            // honest one.
+            if (Math.abs(reference - value) <= eps) { return reference; }
+          }
+          return value;
+        }, fn);
+      });
+    } catch (e) { /* stays stock */ }
+  }
+
+  // -- the heap size limit -------------------------------------------------------
+  if (typeof performance !== 'undefined' && performance
+      && performance.memory && P.heap_size_limit) {
+    try {
+      var hl = P.heap_size_limit;
+      var heapDescriptor = Object.getOwnPropertyDescriptor(performance.memory, 'jsHeapSizeLimit');
+      nativeLike(
+        performance.memory,
+        'jsHeapSizeLimit',
+        function () { return hl.js_heap_size_limit; },
+        heapDescriptor
+      );
+    } catch (e) { /* stays stock */ }
+  }
+
+  // -- the media decode support ----------------------------------------------------
+  if (typeof MediaRecorder !== 'undefined' && MediaRecorder
+      && MediaRecorder.isTypeSupported && P.media_decode) {
+    try {
+      var md = P.media_decode;
+      var nativeIsTypeSupported = MediaRecorder.isTypeSupported;
+      var supportedList = md.supported || [];
+      MediaRecorder.isTypeSupported = hide(function (type) {
+        if (typeof type === 'string' && supportedList.indexOf(type) !== -1) { return true; }
+        return nativeIsTypeSupported.call(MediaRecorder, type);
+      }, 'isTypeSupported');
+    } catch (e) { /* stays stock */ }
+  }
+
   // -- the user agent data brands ----------------------------------------
   if (typeof navigator !== 'undefined' && 'userAgentData' in navigator && P.user_agent_data) {
     var uad = navigator.userAgentData;
@@ -821,6 +895,9 @@ class JSRuntimePayload:
     sensors: dict[str, Any] = field(default_factory=dict)
     media_queries: dict[str, Any] = field(default_factory=dict)
     geolocation: dict[str, Any] = field(default_factory=dict)
+    math_precision: dict[str, Any] = field(default_factory=dict)
+    heap_size_limit: dict[str, Any] = field(default_factory=dict)
+    media_decode: dict[str, Any] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------
@@ -1062,6 +1139,40 @@ class JSRuntimeBuilder:
             "speed": geo.speed,
         }
 
+    # -- the floating-point precision ------------------------------------------------------
+    def _fill_math_precision(self, config: ProfileConfig) -> None:
+        mp = config.math_precision
+        self._payload.math_precision = {
+            "enabled": mp.enabled,
+            "acos": mp.acos,
+            "asin": mp.asin,
+            "sinh": mp.sinh,
+            "cosh": mp.cosh,
+            "tanh": mp.tanh,
+            "atan": mp.atan,
+            "epsilon": mp.epsilon,
+            "salt": mp.salt,
+        }
+
+    # -- the heap size limit ------------------------------------------------------------------
+    def _fill_heap_size_limit(self, config: ProfileConfig) -> None:
+        hl = config.heap_size_limit
+        self._payload.heap_size_limit = {
+            "enabled": hl.enabled,
+            "js_heap_size_limit": hl.js_heap_size_limit,
+            "memory_tier_limit": hl.memory_tier_limit,
+            "salt": hl.salt,
+        }
+
+    # -- the media decode support --------------------------------------------------------------
+    def _fill_media_decode(self, config: ProfileConfig) -> None:
+        md = config.media_decode
+        self._payload.media_decode = {
+            "enabled": md.enabled,
+            "supported": list(md.supported),
+            "salt": md.salt,
+        }
+
     # -- the entry point ---------------------------------------------------------------
     def build(self, config: ProfileConfig) -> str:
         """The complete script for one profile."""
@@ -1085,6 +1196,9 @@ class JSRuntimeBuilder:
         self._fill_sensors(config)
         self._fill_media_queries(config)
         self._fill_geolocation(config)
+        self._fill_math_precision(config)
+        self._fill_heap_size_limit(config)
+        self._fill_media_decode(config)
 
         payload = json.dumps(
             self._payload.__dict__, ensure_ascii=False, separators=(",", ":"), default=str

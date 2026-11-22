@@ -15,7 +15,7 @@ Modules
 ``simulator``
     A deterministic, browser-free simulation used by CI.
 ``e2e``
-    The end-to-end harness: it reads the twelve axes out of a real
+    The end-to-end harness: it reads the fifteen axes out of a real
     browser and compares them against the profile.
 """
 

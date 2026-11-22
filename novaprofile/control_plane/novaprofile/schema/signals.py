@@ -315,6 +315,119 @@ class Sensors(BaseModel):
     )
 
 
+# --------------------------------------------------------------------------
+# 7.8 Floating-point precision
+# --------------------------------------------------------------------------
+
+
+class MathPrecision(BaseModel):
+    """The floating-point behaviour of the transcendental functions.
+
+    ``Math.acos(0.5)`` and its relatives are the classic way to tell a
+    real browser from a JavaScript engine that fakes the DOM.  The result
+    is not the mathematical one -- it is whatever the particular C
+    library produces, and that differs between platforms and between
+    architectures.
+
+    The values here are the last few bits of the double that Chromium on
+    x86-64 produces.  ``epsilon`` is how far the reported value may
+    drift from the real one; the runtime mixes the profile salt into it
+    so that two profiles never report the same drift.
+
+    Setting ``enabled`` to ``False`` leaves the host's own ``Math``
+    untouched, which is the right thing to do on a real Chromium build
+    -- there is nothing to correct.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = True
+    #: The reference values, keyed by the function name.  These are the
+    #: values at the canonical probe point ``0.5``, as x86-64 produces
+    #: them -- the last bits differ from the correctly rounded result.
+    acos: float = 1.0471975511965979
+    asin: float = 0.5235987755982989
+    sinh: float = 0.5210953054937474
+    cosh: float = 1.1276259652063807
+    tanh: float = 0.46211715726000974
+    atan: float = 0.4636476090008061
+    #: The largest absolute deviation the runtime may introduce.  The
+    #: band is sixteen ulps wide: one ulp would hold only three
+    #: distinct doubles, which is no entropy at all for a fleet.
+    epsilon: float = Field(default=3.552713678800501e-15, ge=0.0, le=1e-8)
+    #: The per-unit salt of the math surface.
+    salt: str = ""
+
+
+# --------------------------------------------------------------------------
+# 7.9 Heap size limit
+# --------------------------------------------------------------------------
+
+
+class HeapSizeLimit(BaseModel):
+    """``performance.memory.jsHeapSizeLimit``.
+
+    Chromium reports the V8 heap ceiling in bytes, and the value is one
+    of a small set of fixed numbers -- 2 GB on most desktop builds, a
+    lower ceiling on memory-constrained ones.  ThumbmarkJS reads it
+    under the ``hardware`` group and treats an implausible value as a
+    signal.
+
+    The value is also a strong hint about the device class: a phone that
+    claims 12 GB of RAM should not report the same ceiling as a 2 GB
+    one, so the consistency resolver pins it to the device memory.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = True
+    #: The heap ceiling in bytes.  2 GiB is the Chromium default.
+    js_heap_size_limit: int = Field(default=2147483648, ge=268435456, le=8589934592)
+    #: The heap ceiling the device's own memory implies.
+    memory_tier_limit: int = Field(default=2147483648, ge=268435456, le=8589934592)
+    #: The per-unit salt of the heap surface.
+    salt: str = ""
+
+
+# --------------------------------------------------------------------------
+# 7.10 Media decode support
+# --------------------------------------------------------------------------
+
+
+class MediaDecode(BaseModel):
+    """``MediaRecorder.isTypeSupported`` and its relatives.
+
+    A browser claims to support a codec if it can actually decode it.
+    The set of supported container/codec strings is a property of the
+    platform's media stack, and it is what ThumbmarkJS probes with
+    ``mediaDecode``.  A phone that claims to be an Android device but
+    answers ``true`` for a codec its build cannot play gives itself away.
+
+    ``supported`` holds the MIME strings the runtime will answer
+    ``true`` for.  Everything else falls through to the host, so an
+    unusual codec still reports whatever the real engine says.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = True
+    #: The MIME types the profile claims to support.
+    supported: list[str] = Field(
+        default_factory=lambda: [
+            'video/mp4;codecs="avc1.42E01E"',
+            'video/mp4;codecs="avc1.4D401E"',
+            'video/mp4;codecs="avc1.640028"',
+            'video/webm;codecs="vp8, vorbis"',
+            'video/webm;codecs="vp9"',
+            'audio/webm;codecs="opus"',
+            'audio/mp4;codecs="mp4a.40.2"',
+            'audio/ogg;codecs="vorbis"',
+        ]
+    )
+    #: The per-unit salt of the media-decode surface.
+    salt: str = ""
+
+
 __all__ = [
     "Audio",
     "Rects",
@@ -333,4 +446,7 @@ __all__ = [
     "AbsoluteOrientation",
     "RelativeOrientation",
     "Sensors",
+    "MathPrecision",
+    "HeapSizeLimit",
+    "MediaDecode",
 ]

@@ -29,17 +29,17 @@ Design constraints
   the frame parser are pure functions; the browser-facing parts are only
   reachable through explicit injection points.
 
-The twelve guarded axes
+The fifteen guarded axes
 -----------------------
 
 The axis set is the one the specification names::
 
     identity, client_hints, screen, webgl, canvas, audio, fonts, rects,
-    media_devices, sensors, storage, webgpu
+    media_devices, sensors, storage, webgpu, math, heap, media_decode
 
 It corresponds to the per-axis signature inputs of
 :meth:`novaprofile.schema.profile.ProfileConfig.signature_parts`: the
-eleven ``sig_*`` keys cover ten of the twelve axes directly, and
+fourteen ``sig_*`` keys cover thirteen of the fifteen axes directly, and
 ``sig_webgl_draw`` / ``sig_webgl_params`` together form the single
 ``webgl`` axis (a WebGL surface has two halves -- the pixels it draws and
 the parameter table it advertises -- and a real mismatch in either half
@@ -75,7 +75,7 @@ from .simulator import simulate_payload
 # Vocabulary
 # --------------------------------------------------------------------------
 
-#: The twelve guarded axes, in the order they are reported.
+#: The fifteen guarded axes, in the order they are reported.
 GUARDED_AXES: Final[tuple[str, ...]] = (
     "identity",
     "client_hints",
@@ -89,6 +89,9 @@ GUARDED_AXES: Final[tuple[str, ...]] = (
     "sensors",
     "storage",
     "webgpu",
+    "math",
+    "heap",
+    "media_decode",
 )
 
 #: The verdict of a single axis comparison.
@@ -247,6 +250,15 @@ TOLERANCES: Final[dict[str, Tolerance]] = {
         relative=0.01,
         absolute=1.0,
         reason="the adapter limits belong to the GPU model",
+    ),
+    "math": Tolerance(
+        "exact",
+        reason="the transcendental values are the profile's, to the last bit",
+    ),
+    "heap": Tolerance("exact", reason="the heap ceiling is declared by the profile"),
+    "media_decode": Tolerance(
+        "exact",
+        reason="the codec inventory is declared by the profile",
     ),
 }
 
@@ -870,6 +882,74 @@ SURFACE_SCRIPT: Final[str] = r"""
     });
   }
 
+  function readMath() {
+    // The transcendental functions, at the points a fingerprinting
+    // script probes them.  The last bits of the double follow the C
+    // library of the platform.
+    if (typeof Math === "undefined") {
+      return { available: false };
+    }
+    var names = ["acos", "asin", "sinh", "cosh", "tanh", "atan"];
+    var values = {};
+    for (var i = 0; i < names.length; i++) {
+      var fn = names[i];
+      if (typeof Math[fn] !== "function") {
+        values[fn] = null;
+        continue;
+      }
+      try {
+        values[fn] = Math[fn](0.5);
+      } catch (e) {
+        values[fn] = null;
+      }
+    }
+    return { available: true, values: values };
+  }
+
+  function readHeap() {
+    // The V8 heap ceiling.  It follows the physical memory of the
+    // machine, so a desktop default on a handset is a signal.
+    if (typeof performance === "undefined" || !performance || !performance.memory) {
+      return { available: false };
+    }
+    var limit = performance.memory.jsHeapSizeLimit;
+    return {
+      available: true,
+      jsHeapSizeLimit: limit === undefined ? null : limit
+    };
+  }
+
+  function readMediaDecode() {
+    // The media codecs the platform claims to decode.
+    if (typeof MediaRecorder === "undefined" || !MediaRecorder ||
+        typeof MediaRecorder.isTypeSupported !== "function") {
+      return { available: false };
+    }
+    var types = [
+      'video/mp4;codecs="avc1.42E01E"',
+      'video/mp4;codecs="avc1.4D401E"',
+      'video/mp4;codecs="avc1.640028"',
+      'video/mp4;codecs="avc1.42E01F"',
+      'video/webm;codecs="vp8, vorbis"',
+      'video/webm;codecs="vp9"',
+      'video/webm;codecs="vp8"',
+      'audio/webm;codecs="opus"',
+      'audio/mp4;codecs="mp4a.40.2"',
+      'audio/ogg;codecs="vorbis"'
+    ];
+    var supported = [];
+    for (var i = 0; i < types.length; i++) {
+      try {
+        if (MediaRecorder.isTypeSupported(types[i])) {
+          supported.push(types[i]);
+        }
+      } catch (e) {
+        // A codec that throws is simply not supported.
+      }
+    }
+    return { available: true, supported: supported };
+  }
+
   // -- the reader --------------------------------------------------------
   //
   // The synchronous axes are read first and the asynchronous ones are
@@ -882,7 +962,7 @@ SURFACE_SCRIPT: Final[str] = r"""
     var AXES = [
       "identity", "client_hints", "screen", "webgl", "canvas",
       "fonts", "rects", "audio", "media_devices", "sensors",
-      "storage", "webgpu"
+      "storage", "webgpu", "math", "heap", "media_decode"
     ];
     var READERS = {
       identity: readIdentity,
@@ -896,7 +976,10 @@ SURFACE_SCRIPT: Final[str] = r"""
       media_devices: readMediaDevices,
       sensors: readSensors,
       storage: readStorage,
-      webgpu: readWebgpu
+      webgpu: readWebgpu,
+      math: readMath,
+      heap: readHeap,
+      media_decode: readMediaDecode
     };
 
     var chain = Promise.resolve();
@@ -1064,6 +1147,33 @@ SURFACE_SPECS: Final[dict[str, SurfaceSpec]] = {
         fields={},
         description="the WebGPU adapter description and its limit table",
     ),
+    "math": SurfaceSpec(
+        axis="math",
+        expression="Math.acos(0.5)",
+        fields={
+            "acos": "math_precision.acos",
+            "asin": "math_precision.asin",
+            "sinh": "math_precision.sinh",
+            "cosh": "math_precision.cosh",
+            "tanh": "math_precision.tanh",
+            "atan": "math_precision.atan",
+        },
+        description="the floating-point behaviour of the transcendental functions",
+    ),
+    "heap": SurfaceSpec(
+        axis="heap",
+        expression="performance.memory.jsHeapSizeLimit",
+        fields={
+            "jsHeapSizeLimit": "heap_size_limit.js_heap_size_limit",
+        },
+        description="the V8 heap ceiling, which follows the physical memory",
+    ),
+    "media_decode": SurfaceSpec(
+        axis="media_decode",
+        expression="MediaRecorder.isTypeSupported('video/mp4;codecs=\"avc1.42E01E\"')",
+        fields={},
+        description="the media codecs the platform claims to decode",
+    ),
 }
 
 
@@ -1073,7 +1183,7 @@ SURFACE_SPECS: Final[dict[str, SurfaceSpec]] = {
 
 
 class SurfaceExtractor:
-    """Reads the twelve guarded axes out of a JavaScript evaluation context.
+    """Reads the fifteen guarded axes out of a JavaScript evaluation context.
 
     The extractor is the *description* of what has to be read; the actual
     read is performed by the injected script and its result is handed back
@@ -1163,6 +1273,7 @@ _FLATTENED_CONTAINERS: Final[dict[str, tuple[str, ...]]] = {
     "webgpu": ("info", "limits"),
     "sensors": ("motionSample", "orientationSample"),
     "storage": ("storage", "connection"),
+    "math": ("values",),
 }
 
 
@@ -1362,6 +1473,20 @@ def derive_expected_values(config: ProfileConfig) -> dict[str, dict[str, Any]]:
                 config, "webgpu.limits.maxTextureDimension2D"
             ),
         },
+        "math": {
+            "acos": _config_attr(config, "math_precision.acos"),
+            "asin": _config_attr(config, "math_precision.asin"),
+            "sinh": _config_attr(config, "math_precision.sinh"),
+            "cosh": _config_attr(config, "math_precision.cosh"),
+            "tanh": _config_attr(config, "math_precision.tanh"),
+            "atan": _config_attr(config, "math_precision.atan"),
+        },
+        "heap": {
+            "jsHeapSizeLimit": _config_attr(config, "heap_size_limit.js_heap_size_limit"),
+        },
+        "media_decode": {
+            "supported": sorted(_config_attr(config, "media_decode.supported") or []),
+        },
     }
 
 
@@ -1467,6 +1592,9 @@ LIKELY_CAUSES: Final[dict[str, str]] = {
     "sensors": "the native core did not substitute this accessor",
     "storage": "the native core did not substitute this accessor",
     "webgpu": "the native core did not substitute this accessor",
+    "math": "the injected runtime did not install the math override",
+    "heap": "the injected runtime did not install the heap override",
+    "media_decode": "the injected runtime did not install the codec override",
 }
 
 
@@ -2320,7 +2448,7 @@ class E2ERunner:
     3. attach over the DevTools protocol and install the extractor script
        *before* the first navigation, so that the extractor is present at
        ``document_start``;
-    4. navigate to the local page and read the twelve axes;
+    4. navigate to the local page and read the fifteen axes;
     5. compare the measurement against the simulator and report.
 
     Every step can be replaced through the constructor arguments, so that

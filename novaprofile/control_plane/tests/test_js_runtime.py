@@ -158,7 +158,7 @@ def test_the_runtime_marks_itself_once(profile) -> None:
 def test_the_runtime_covers_every_axis(profile) -> None:
     """Every guarded axis has a surface in the runtime.
 
-    The twelve axes are the ones the collision guard hashes.  A surface
+    The fifteen axes are the ones the collision guard hashes.  A surface
     that is missing here is an axis the JavaScript fallback cannot hold,
     and it would silently fall back to the host's real values.
     """
@@ -176,6 +176,9 @@ def test_the_runtime_covers_every_axis(profile) -> None:
         "sensors": "DeviceMotionEvent",
         "storage": "navigator.storage",
         "webgpu": "navigator.gpu",
+        "math": "P.math_precision",
+        "heap": "P.heap_size_limit",
+        "media_decode": "P.media_decode",
     }
     for axis, marker in required.items():
         assert marker in script, f"axis {axis} has no surface in the runtime"

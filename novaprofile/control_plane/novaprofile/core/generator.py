@@ -62,6 +62,9 @@ from ..schema.signals import (
     BatterySpeechGamepad,
     Fonts,
     Gamepad,
+    HeapSizeLimit,
+    MathPrecision,
+    MediaDecode,
     MediaDevices,
     Rects,
     RelativeOrientation,
@@ -414,6 +417,9 @@ class ProfileGenerator:
             storage_network=self._build_storage(deriver),
             battery_speech_gamepad=self._build_battery(deriver),
             sensors=self._build_sensors(deriver),
+            math_precision=self._build_math_precision(deriver),
+            heap_size_limit=self._build_heap_size_limit(deriver),
+            media_decode=self._build_media_decode(deriver),
             proxy=proxy or Proxy(),
             proxy_rotation=ProxyRotation(),
             geo_intelligence=GeoIntelligence(
@@ -1356,6 +1362,124 @@ class ProfileGenerator:
                 beta=round(deriver.derive_float(Axis.SENSORS, -5.0, 5.0, "rbe"), 4),
                 gamma=round(deriver.derive_float(Axis.SENSORS, -5.0, 5.0, "rga"), 4),
             ),
+        )
+
+    def _build_math_precision(self, deriver: SeedDeriver) -> MathPrecision:
+        """Build the floating-point precision surface.
+
+        ``Math.acos(0.5)`` returns a double whose last bits come from
+        the C library of the platform, not from the mathematical
+        definition.  On x86-64 with glibc the value is
+        ``1.0471975511965979`` -- one ulp above the correctly rounded
+        result -- and a site that compares the exact bit pattern against
+        a table of known engines can tell a real browser from a DOM
+        that was faked in JavaScript.
+
+        The reference values here are the x86-64 ones.  The drift is
+        drawn per unit so that a fleet does not report the very same
+        last bits everywhere.
+
+        The band has to satisfy two constraints at once, and they pull
+        in opposite directions:
+
+        * **Plausibility.**  A value that is off by more than a few ulp
+          is a *different* engine, not a different unit, so the band
+          cannot be wide.
+        * **Capacity.**  One ulp of a double near 1.0 is 2.22e-16, so a
+          band of one ulp holds exactly three distinct doubles.  A fleet
+          of a hundred million profiles would collapse into three
+          buckets here, and the axis would carry no entropy at all.
+
+        The band is therefore sixteen ulps wide -- wide enough for
+        roughly a hundred thousand distinct values per function, narrow
+        enough that the result still round-trips to a value a real
+        C library produces.  Six functions at sixteen ulps each give the
+        axis about a hundred bits, which is what a fleet needs.
+        """
+        salt = deriver.derive_bytes(Axis.MATH_PRECISION, 16, context="salt").hex()
+
+        # One ulp of a number near 1.0 is about 2.22e-16.  The band is
+        # sixteen of them, so the reachable values are the ones a real
+        # platform library differs by.
+        ulp = 2.220446049250313e-16
+        epsilon = ulp * 16
+
+        def _drift(name: str) -> float:
+            # A deterministic wobble per function, inside the band.  The
+            # step is one ulp, so the value always lands on a double
+            # that is reachable from the reference.
+            steps = deriver.derive_int(Axis.MATH_PRECISION, -8, 8, name)
+            return steps * ulp
+
+        return MathPrecision(
+            enabled=True,
+            acos=1.0471975511965979 + _drift("acos"),
+            asin=0.5235987755982989 + _drift("asin"),
+            sinh=0.5210953054937474 + _drift("sinh"),
+            cosh=1.1276259652063807 + _drift("cosh"),
+            tanh=0.46211715726000974 + _drift("tanh"),
+            atan=0.4636476090008061 + _drift("atan"),
+            epsilon=epsilon,
+            salt=salt,
+        )
+
+    def _build_heap_size_limit(self, deriver: SeedDeriver) -> HeapSizeLimit:
+        """Build the ``performance.memory.jsHeapSizeLimit`` surface.
+
+        Chromium reports the V8 heap ceiling, and the value comes from
+        the physical memory of the machine, rounded down to a power of
+        two.  A phone with 4 GB of RAM gets a 2 GB ceiling; a machine
+        with 16 GB gets 4 GB.  Reporting the desktop default on a
+        handset is a signal, and so is reporting the *same* ceiling on
+        every unit of a large fleet.
+
+        The tier is therefore drawn per unit from the set of ceilings a
+        phone can actually have.
+        """
+        salt = deriver.derive_bytes(Axis.HEAP_SIZE, 16, context="salt").hex()
+
+        # The ceilings Chromium derives from the physical memory.
+        tiers = (2147483648, 4294967296, 8589934592)
+        tier = deriver.derive_choice(Axis.HEAP_SIZE, tiers, context="tier")
+
+        return HeapSizeLimit(
+            enabled=True,
+            js_heap_size_limit=tier,
+            memory_tier_limit=tier,
+            salt=salt,
+        )
+
+    def _build_media_decode(self, deriver: SeedDeriver) -> MediaDecode:
+        """Build the media-decode support surface.
+
+        ``MediaRecorder.isTypeSupported`` answers whether the platform
+        can *decode* a container/codec pair, and the answer follows the
+        media stack of the device.  Every Android build since the
+        platform shipped the common H.264 and VP9 codecs, so the set is
+        close to fixed -- but ThumbmarkJS still probes it, and a device
+        that claims a codec its build cannot play gives itself away.
+
+        The list is therefore the Android baseline.  Anything outside it
+        falls through to the real engine, so an unusual codec still
+        reports the truth.
+        """
+        salt = deriver.derive_bytes(Axis.MEDIA_DECODE, 16, context="salt").hex()
+
+        return MediaDecode(
+            enabled=True,
+            supported=[
+                'video/mp4;codecs="avc1.42E01E"',
+                'video/mp4;codecs="avc1.4D401E"',
+                'video/mp4;codecs="avc1.640028"',
+                'video/mp4;codecs="avc1.42E01F"',
+                'video/webm;codecs="vp8, vorbis"',
+                'video/webm;codecs="vp9"',
+                'video/webm;codecs="vp8"',
+                'audio/webm;codecs="opus"',
+                'audio/mp4;codecs="mp4a.40.2"',
+                'audio/ogg;codecs="vorbis"',
+            ],
+            salt=salt,
         )
 
     def _build_webrtc(self, deriver: SeedDeriver, proxy: Proxy | None = None) -> WebRtc:

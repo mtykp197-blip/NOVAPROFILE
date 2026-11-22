@@ -1034,11 +1034,94 @@ STORAGE_JS: Final[str] = r"""
 """
 
 # --------------------------------------------------------------------------
+# Floating-point precision / heap ceiling / media decode
+# --------------------------------------------------------------------------
+
+MATH_JS: Final[str] = r"""
+(function () {
+  try {
+    if (typeof Math === "undefined") {
+      return { available: false };
+    }
+    var names = ["acos", "asin", "sinh", "cosh", "tanh", "atan"];
+    var values = {};
+    for (var i = 0; i < names.length; i++) {
+      var fn = names[i];
+      if (typeof Math[fn] !== "function") {
+        values[fn] = null;
+        continue;
+      }
+      try {
+        values[fn] = Math[fn](0.5);
+      } catch (err) {
+        values[fn] = null;
+      }
+    }
+    return { available: true, values: values };
+  } catch (err) {
+    return { error: String((err && err.message) || err) };
+  }
+})()
+"""
+
+HEAP_JS: Final[str] = r"""
+(function () {
+  try {
+    if (typeof performance === "undefined" || !performance || !performance.memory) {
+      return { available: false };
+    }
+    var limit = performance.memory.jsHeapSizeLimit;
+    return {
+      available: true,
+      jsHeapSizeLimit: limit === undefined ? null : limit
+    };
+  } catch (err) {
+    return { error: String((err && err.message) || err) };
+  }
+})()
+"""
+
+MEDIA_DECODE_JS: Final[str] = r"""
+(function () {
+  try {
+    if (typeof MediaRecorder === "undefined" || !MediaRecorder ||
+        typeof MediaRecorder.isTypeSupported !== "function") {
+      return { available: false };
+    }
+    var types = [
+      'video/mp4;codecs="avc1.42E01E"',
+      'video/mp4;codecs="avc1.4D401E"',
+      'video/mp4;codecs="avc1.640028"',
+      'video/mp4;codecs="avc1.42E01F"',
+      'video/webm;codecs="vp8, vorbis"',
+      'video/webm;codecs="vp9"',
+      'video/webm;codecs="vp8"',
+      'audio/webm;codecs="opus"',
+      'audio/mp4;codecs="mp4a.40.2"',
+      'audio/ogg;codecs="vorbis"'
+    ];
+    var supported = [];
+    for (var i = 0; i < types.length; i++) {
+      try {
+        if (MediaRecorder.isTypeSupported(types[i])) {
+          supported.push(types[i]);
+        }
+      } catch (err) {
+        // A codec that throws is simply not supported.
+      }
+    }
+    return { available: true, supported: supported };
+  } catch (err) {
+    return { error: String((err && err.message) || err) };
+  }
+})()
+"""
+
+# --------------------------------------------------------------------------
 # Timezone / locale
 # --------------------------------------------------------------------------
 
-TIMEZONE_JS: Final[str] = r"""
-(function () {
+TIMEZONE_JS: Final[str] = r"""(function () {
   try {
     var resolved = Intl.DateTimeFormat().resolvedOptions();
     var localeTime = null;
@@ -1216,6 +1299,9 @@ AXIS_SNIPPETS: Final[dict[str, tuple[str, bool]]] = {
     "timezone": (TIMEZONE_JS, False),
     "iframe_sync": (IFRAME_SYNC_JS, True),
     "worker_sync": (WEBSOCKET_TO_WORKER_JS, True),
+    "math": (MATH_JS, False),
+    "heap": (HEAP_JS, False),
+    "media_decode": (MEDIA_DECODE_JS, False),
 }
 
 #: The axes the probe reports on, in a stable order.
@@ -1369,7 +1455,10 @@ __all__ = [
     "CANVAS_HASH_JS",
     "FONT_CANDIDATES",
     "FONTS_JS",
+    "HEAP_JS",
     "IFRAME_SYNC_JS",
+    "MATH_JS",
+    "MEDIA_DECODE_JS",
     "MEDIA_DEVICES_JS",
     "NAVIGATOR_JS",
     "RECTS_JS",

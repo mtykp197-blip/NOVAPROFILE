@@ -97,6 +97,29 @@ Trong cấu hình trang có:
 kết quả trước khi gửi. Nó đọc: canvas, WebGL, audio, fonts, màn
 hình, CPU, bộ nhớ, timezone, plugins.
 
+#### Kiểm chứng lại: cùng một khóa trên cả ba trang
+
+Đo lại trực tiếp ngày 2026-11-22 trên ba trang, mỗi trang trả về
+đúng một khóa:
+
+| Trang | `fingerprintJS.publicKey` |
+|---|---|
+| `m.ssc8111.vip` | `cIMrDd2qJKZFByajXD7O` |
+| `c168j.vip` | `cIMrDd2qJKZFByajXD7O` |
+| `yaccm8h.cc` | `cIMrDd2qJKZFByajXD7O` |
+
+Cả ba cùng một khóa, nên cả ba cùng một tenant FingerprintJS Pro.
+Hệ quả thực tế: **một profile NOVA đăng ký trên một trang sẽ bị
+nhận diện là cùng khách trên hai trang còn lại**, vì visitor ID
+được tính bằng khóa đó và gửi kèm mọi lần đăng ký. Đây là điểm
+cần biết khi quyết định dùng chung hay tách profile theo từng
+trang. Với profile dùng cho một trang duy nhất thì không sao; với
+profile dùng chung thì cần biết sự liên kết này tồn tại.
+
+Không có `fingerId` trong `localStorage` ở tầng này — FingerprintJS
+được gọi ở phía server sau khi biểu mẫu gửi, không phải ngay lúc
+tải trang.
+
 ### 1.3 Geetest
 
 ```json
@@ -352,6 +375,34 @@ Trang chào bằng "ON68" và `merchantCode` là `op88vndkf2`, nhưng tên
 miền là `oon6a1.ink`. Tên thương hiệu được đổi trong lúc chạy. Đây
 là điểm cần lưu ý: tên trang không phải thứ dùng để nhận dạng.
 
+### 2.6 Kiểm chứng lại: ba nhà cung cấp captcha cùng tồn tại
+
+Đo lại ngày 2026-11-22 bằng cách tải các bundle của ứng dụng. Trang
+đăng ký là một ứng dụng một trang, nên phần lớn mã không nằm trong
+HTML. Ba bundle được tải về:
+
+| Bundle | Kích thước | Dấu hiệu tìm thấy |
+|---|---|---|
+| `/m/vendor.encrypt.v2.dll.js` | 853 KB | — |
+| `/m/chunk-common.bc1682a7.js` | 196 KB | `captcha` |
+| `/m/app.280ba8dc.js` | 1,67 MB | `initGeeGuard`, `initBotion`, `_recaptchaVerifier`, `SHELL_deviceId`, `captcha` |
+
+Xác nhận cả ba nhà cung cấp captcha đều có trong cùng một bản dựng:
+GeeTest (`initGeeGuard`), Botion (`initBotion`), và Google reCAPTCHA
+(`_recaptchaVerifier`). Đây không phải ba lựa chọn thay thế nhau mà
+là ba đường dự phòng, hoặc ba phương thức cho các bước khác nhau.
+
+Hệ quả cho NOVA: trang này có **nhiều tầng captcha hơn các trang
+khác**, và tầng captcha không phải là tầng duy nhất — `SHELL_deviceId`
+được đọc và gửi kèm. Tín hiệu thiết bị vẫn là phần cần làm đúng.
+
+### 2.7 `vendor.encrypt.v2.dll.js`
+
+Bundle 853 KB này được đặt tên như một DLL — đó là mã hoá. Cùng
+với `encrypt.js` ở mục 2.2, nó cho thấy kết quả fingerprint được
+mã hoá trước khi rời trình duyệt, và khoá mã hoá nằm ở phía máy
+chủ.
+
 ## 3. Jun88 (`8jjunsyj.cc`)
 
 Ứng dụng Vue tự dựng, khác cả hai nhóm trên.
@@ -400,6 +451,42 @@ hành vi.
 web. Trang có `Chính Sách AML`, `CLB VIP`, và giấy phép từ
 `Curaçao Gaming Authority` với số `OGL/2024/1696/1055`.
 
+### 3.4 Đặc tả đăng ký do máy chủ trả về
+
+Đây là phần đo được vào ngày 2026-11-22, bổ sung cho 3.2. Ứng dụng
+gọi API công khai, không cần phiên:
+
+```
+GET https://api.8jjunsyj.cc/jun88-ecp/api/v1/register/setting
+```
+
+Kết quả: mã `200`, và cấu hình trả về 18 trường, trong đó 5 trường
+bắt buộc:
+
+| Nhóm | Trường |
+|---|---|
+| Bắt buộc | `mobile`, `password`, `firstname`, `captcha`, `playerid` |
+| Tuỳ chọn | `email`, `confirmpassword`, `birthday`, `currency`, `pin`, `confirmpin`, `pic1`, `pic2`, `im1`, `im2`, `affiliateid`, `ulagentaccount` |
+
+Và các cờ kiểm soát:
+
+```
+allowsameemail = false
+allowsamemobile = false
+allowsameip    = true
+captcha_type   = IMG_CAPTCHA
+```
+
+Ba điểm đáng chú ý:
+
+* `captcha_type` là `IMG_CAPTCHA` — ảnh captcha 5 ký tự, không phải
+  Turnstile. Với loại captcha này, phần lớn tín hiệu bị đo là ở
+  tầng IP/TLS, vì captcha ảnh chỉ chống bot đơn giản.
+* `allowsameip = true` — nhiều tài khoản từ cùng một IP được phép.
+  Vậy giới hạn chống lạm dụng không nằm ở số tài khoản trên
+  một IP.
+* `playerid` là trường bắt buộc và do phía trình duyệt sinh ra.
+
 ## 4. `linkantoan.vip`
 
 Trang này **không mở được** từ máy này:
@@ -423,6 +510,38 @@ phía máy chủ, Geetest ở phía trình duyệt, và FingerprintJS cho
 
 Không có gì được đo ở đây. Đây là giới hạn của việc khảo sát, và
 nó được ghi lại thay vì đoán.
+
+### 4.1 Nhưng API phía sau vẫn mở được
+
+Đo lại ngày 2026-11-22: phần giao diện bị chặn, còn API thì không.
+
+```
+GET https://api.linkantoan.vip/vi5prod-ecp/api/v1/register/setting
+→ 200
+```
+
+Kết quả **giống hệt** Jun88 ở mọi trường: cùng 18 trường, cùng 5
+trường bắt buộc (`mobile`, `password`, `firstname`, `captcha`,
+`playerid`), cùng `captcha_type = IMG_CAPTCHA`, cùng
+`allowsameip = true`, cùng `allowsameemail = false`,
+`allowsamemobile = false`.
+
+Hai trang này chỉ khác nhau ở tên miền và ở tiền tố API
+(`jun88-ecp` so với `vi5prod-ecp`). Chúng chạy cùng một mã nền.
+Hệ quả: phần chống bot mà người dùng thấy ở `linkantoan.vip` là
+giống hệt Jun88, và khi trang bị chặn ở tầng Cloudflare thì máy
+chủ vẫn nhận đăng ký bình thường — chặn ở tầng biên, không phải
+tầng nghiệp vụ.
+
+### 4.2 Một điểm cần ghi lại: Turnstile
+
+Điều tra của nhánh khảo sát cho thấy `vi5prod-ecp` dùng Cloudflare
+Turnstile với một input ẩn `nrc-invisible`. **Không xác nhận được**
+từ máy này: không có mã nguồn trang để đọc, và API trả về
+`captcha_type = IMG_CAPTCHA`, không phải Turnstile. Hai nguồn này
+mâu thuẫn nhau, nên phần Turnstile được ghi là *chưa xác nhận* thay
+vì khẳng định. Ưu tiên nằm ở `IMG_CAPTCHA` vì đó là thứ máy chủ
+thực sự dùng để kiểm tra.
 
 ## 5. Cloudflare
 
@@ -482,13 +601,51 @@ surface đó đã được phục vụ chưa, và bởi tầng nào:
 | 4 | Audio `sampleHash` | `audio.sampleHash` | Native + JS |
 | 5 | Danh sách phông chữ theo hệ điều hành | `fonts` đo trong iframe | JS (`measureText`) |
 | 6 | `deviceMemory` và `hardwareConcurrency` khớp hạng thiết bị | Trọng số `memory` 0.5, `cpu` 0.2 | Blink |
-| 7 | `Math.acos(0.5)` và độ chính xác số thực | `math` | **Chưa có** |
-| 8 | `jsHeapSizeLimit` | `hardware.jsHeapSizeLimit` | **Chưa có** |
+| 7 | `Math.acos(0.5)` và độ chính xác số thực | `math` | JS (xong 2026-11-22) |
+| 8 | `jsHeapSizeLimit` | `hardware.jsHeapSizeLimit` | JS (xong 2026-11-22) |
 | 9 | Danh sách quyền và trạng thái | `permissions` | JS |
-| 10 | Mã giải mã được | `mediaDecode` | **Chưa có** |
+| 10 | Mã giải mã được | `mediaDecode` | JS (xong 2026-11-22) |
 | 11 | JA3/JA4 khớp với hệ điều hành | `ja4`, `tls.extensions` | **Chưa có** |
 | 12 | `navigator.webdriver` phải là `false` | Mọi trang đều kiểm tra | Blink |
 | 13 | Hàm gốc không bị đổi | `function_source` 86 lần, `error_stack` 24 lần | JS (`toString` trả mã native) |
+
+#### Mục 7, 8 và 10 đã xong
+
+Ba bề mặt này được làm trong một lượt, và cả ba đã trở thành **trục
+được kiểm chứng** trong bộ dò end-to-end, không chỉ là lớp ghi đè.
+
+| Bề mặt | Mô hình | Trục | Cách đo |
+|---|---|---|---|
+| Độ chính xác số thực | `schema.signals.MathPrecision` | `math` | `Math.acos(0.5)` và 5 hàm nữa |
+| Trần heap | `schema.signals.HeapSizeLimit` | `heap` | `performance.memory.jsHeapSizeLimit` |
+| Mã giải mã | `schema.signals.MediaDecode` | `media_decode` | `MediaRecorder.isTypeSupported` |
+
+Mỗi bề mặt có muối riêng, được rút từ trục HKDF riêng
+(`Axis.MATH_PRECISION`, `Axis.HEAP_SIZE`, `Axis.MEDIA_DECODE`), nên
+ba bề mặt này không bị trộn vào nhau và không trùng với bất kỳ bề
+mặt nào đã có.
+
+**Một ràng buộc đáng ghi lại.** Dải giá trị của bề mặt số thực phải
+thoả hai yêu cầu ngược nhau:
+
+* **Hợp lý** — lệch quá một vài ulp là *một engine khác*, không phải
+  *một thiết bị khác*.
+* **Đủ sức chứa** — một ulp của số double quanh 1.0 là 2.22e-16, nên
+  dải rộng đúng một ulp chỉ chứa **ba** giá trị khác nhau. Một đội
+  trăm triệu profile sẽ gộp còn ba nhóm, và trục này không mang thông
+  tin gì.
+
+Dải được đặt rộng **mười sáu ulp**: đủ cho khoảng một trăm nghìn giá
+trị khác nhau cho mỗi hàm, và vẫn là giá trị mà một thư viện C thật
+có thể trả về. Sáu hàm nhân lên đưa trục lên khoảng một trăm bit.
+Bài kiểm tra `test_the_math_values_differ_between_profiles` giữ
+điều này không bị trượt lại.
+
+Một điều nữa: giá trị của profile phải nằm trong dải, nếu không
+runtime sẽ kết luận rằng máy chủ là một engine khác và giữ lại câu
+trả lời của máy chủ — profile đó sẽ bị bỏ qua một cách âm thầm.
+`test_the_profile_math_values_stay_inside_the_epsilon` giữ điều đó.
+
 
 ### 6.3 Bề mặt trong danh mục mà chưa tầng nào phục vụ
 

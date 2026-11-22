@@ -455,6 +455,27 @@ class SimulatedSession:
                 "sampleDate": "11/14/2023 UTC",
                 "supportedLocales": ["en-US", "id-ID", "vi-VN"],
             },
+            "math": {
+                "available": True,
+                "values": {
+                    "acos": _getattr_path(config, "math_precision.acos"),
+                    "asin": _getattr_path(config, "math_precision.asin"),
+                    "sinh": _getattr_path(config, "math_precision.sinh"),
+                    "cosh": _getattr_path(config, "math_precision.cosh"),
+                    "tanh": _getattr_path(config, "math_precision.tanh"),
+                    "atan": _getattr_path(config, "math_precision.atan"),
+                },
+            },
+            "heap": {
+                "available": True,
+                "jsHeapSizeLimit": _getattr_path(config, "heap_size_limit.js_heap_size_limit"),
+            },
+            "media_decode": {
+                "available": True,
+                "supported": sorted(
+                    _getattr_path(config, "media_decode.supported") or []
+                ),
+            },
             "iframe_sync": {
                 "iframe": _context_snapshot(navigator_payload, screen_payload, config),
                 "srcdocIframe": _context_snapshot(navigator_payload, screen_payload, config),

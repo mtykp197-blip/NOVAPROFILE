@@ -55,6 +55,9 @@ class Axis(str, Enum):
     BATTERY_NETWORK = "battery_network"
     GEO_TIMEZONE = "geo_timezone"
     STORAGE_QUOTA = "storage_quota"
+    MATH_PRECISION = "math_precision"
+    HEAP_SIZE = "heap_size"
+    MEDIA_DECODE = "media_decode"
 
 
 #: Domain separation strings.  These are *not* secrets -- they are protocol
@@ -77,6 +80,9 @@ DOMAIN_SALTS: dict[Axis, bytes] = {
     Axis.BATTERY_NETWORK: b"nova/v1/battery_network",
     Axis.GEO_TIMEZONE: b"nova/v1/geo_timezone",
     Axis.STORAGE_QUOTA: b"nova/v1/storage_quota",
+    Axis.MATH_PRECISION: b"nova/v1/math_precision",
+    Axis.HEAP_SIZE: b"nova/v1/heap_size",
+    Axis.MEDIA_DECODE: b"nova/v1/media_decode",
 }
 
 

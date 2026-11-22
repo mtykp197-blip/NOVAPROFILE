@@ -16,7 +16,7 @@
 <script>
 "use strict";
 (function () {
-  var AXES = ["canvas", "webgl", "navigator", "screen", "audio", "rects", "fonts", "media_devices", "sensors", "storage", "timezone", "iframe_sync", "worker_sync"];
+  var AXES = ["canvas", "webgl", "navigator", "screen", "audio", "rects", "fonts", "media_devices", "sensors", "storage", "timezone", "iframe_sync", "worker_sync", "math", "heap", "media_decode"];
 
   // ---- axis: canvas ----
   function _axis_canvas() {
@@ -1106,6 +1106,89 @@
 })();
   }
 
+  // ---- axis: math ----
+  function _axis_math() {
+    return (function () {
+  try {
+    if (typeof Math === "undefined") {
+      return { available: false };
+    }
+    var names = ["acos", "asin", "sinh", "cosh", "tanh", "atan"];
+    var values = {};
+    for (var i = 0; i < names.length; i++) {
+      var fn = names[i];
+      if (typeof Math[fn] !== "function") {
+        values[fn] = null;
+        continue;
+      }
+      try {
+        values[fn] = Math[fn](0.5);
+      } catch (err) {
+        values[fn] = null;
+      }
+    }
+    return { available: true, values: values };
+  } catch (err) {
+    return { error: String((err && err.message) || err) };
+  }
+})();
+  }
+
+  // ---- axis: heap ----
+  function _axis_heap() {
+    return (function () {
+  try {
+    if (typeof performance === "undefined" || !performance || !performance.memory) {
+      return { available: false };
+    }
+    var limit = performance.memory.jsHeapSizeLimit;
+    return {
+      available: true,
+      jsHeapSizeLimit: limit === undefined ? null : limit
+    };
+  } catch (err) {
+    return { error: String((err && err.message) || err) };
+  }
+})();
+  }
+
+  // ---- axis: media_decode ----
+  function _axis_media_decode() {
+    return (function () {
+  try {
+    if (typeof MediaRecorder === "undefined" || !MediaRecorder ||
+        typeof MediaRecorder.isTypeSupported !== "function") {
+      return { available: false };
+    }
+    var types = [
+      'video/mp4;codecs="avc1.42E01E"',
+      'video/mp4;codecs="avc1.4D401E"',
+      'video/mp4;codecs="avc1.640028"',
+      'video/mp4;codecs="avc1.42E01F"',
+      'video/webm;codecs="vp8, vorbis"',
+      'video/webm;codecs="vp9"',
+      'video/webm;codecs="vp8"',
+      'audio/webm;codecs="opus"',
+      'audio/mp4;codecs="mp4a.40.2"',
+      'audio/ogg;codecs="vorbis"'
+    ];
+    var supported = [];
+    for (var i = 0; i < types.length; i++) {
+      try {
+        if (MediaRecorder.isTypeSupported(types[i])) {
+          supported.push(types[i]);
+        }
+      } catch (err) {
+        // A codec that throws is simply not supported.
+      }
+    }
+    return { available: true, supported: supported };
+  } catch (err) {
+    return { error: String((err && err.message) || err) };
+  }
+})();
+  }
+
   var AXIS_FNS = {
     "canvas": _axis_canvas,
     "webgl": _axis_webgl,
@@ -1119,7 +1202,10 @@
     "storage": _axis_storage,
     "timezone": _axis_timezone,
     "iframe_sync": _axis_iframe_sync,
-    "worker_sync": _axis_worker_sync
+    "worker_sync": _axis_worker_sync,
+    "math": _axis_math,
+    "heap": _axis_heap,
+    "media_decode": _axis_media_decode
   };
 
   function markReady() {
