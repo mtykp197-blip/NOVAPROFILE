@@ -15,10 +15,11 @@ in Chromium 160, and it is quoted below where it matters.
 **The rounding takes the nearest power of two, not the next one up.**
 The implementation finds the most significant bit of the physical
 memory, builds the two bounds around it, and keeps the one that is
-closer.  A machine with 28 GB is exactly halfway between 16 and 32, and
-the tie goes to the lower bound, so it reports 16.  A machine with 30 GB
-reports 32.  Rounding up unconditionally would report 32 for the 28 GB
-machine, which is a value no Chromium build produces.
+closer.  A machine with 28 GB is closer to 32 than to 16, so it reports
+32; a machine with 24 GB is exactly halfway between 16 and 32, and the
+tie goes to the lower bound, so it reports 16.  Rounding up
+unconditionally would report 32 for the 24 GB machine, which is a
+value no Chromium build produces.
 
 **Android is clamped to eight gigabytes.**  The same file reads:
 
@@ -80,9 +81,9 @@ def approximate_device_memory(physical_gb: int) -> int:
     result is then clamped to the platform range, which on Android is
     one through eight gigabytes.
 
-    A handset with 3 GB therefore reports 4, one with 6 GB reports 8,
+    A handset with 3 GB therefore reports 2, one with 6 GB reports 4,
     and one with 12 GB reports 8 -- which is the whole reason a page
-    cannot tell a 6 GB phone from an 8 GB one.
+    cannot tell a 6 GB phone from a 4 GB one.
     """
 
     if physical_gb <= 0:

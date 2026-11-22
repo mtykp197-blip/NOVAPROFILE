@@ -371,8 +371,8 @@ class ProfileGenerator:
         #
         # The value that reaches the page is *not* the physical memory.
         # Chromium rounds it to the nearest power of two and clamps it to
-        # eight gigabytes on Android, so a 6 GB handset reports eight and
-        # a 12 GB handset also reports eight.
+        # eight gigabytes on Android, so a 6 GB handset reports four and
+        # a 12 GB handset reports eight.
         physical_ram_gb = int(
             deriver.derive_choice(Axis.NAVIGATOR, preset.ram_options, context="ram")
         )

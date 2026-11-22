@@ -46,7 +46,7 @@ class Navigator(BaseModel):
     # ``deviceMemory`` is the physical memory in gigabytes, rounded to
     # the nearest power of two and clamped -- the algorithm Chromium
     # itself uses in ``ApproximatedDeviceMemory``.  A handset with 6 GB
-    # reports 8, and a handset with 3 GB reports 4.
+    # reports 4, and a handset with 3 GB reports 2.
     #
     # The ceiling is eight, because Chromium clamps Android to
     # [1 GB, 8 GB]: the desktop clamp of thirty-two is what a desktop
