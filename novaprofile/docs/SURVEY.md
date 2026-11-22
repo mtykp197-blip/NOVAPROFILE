@@ -15,6 +15,57 @@ Bảng tổng hợp:
 | `linkantoan.vip` | Không mở được | Cloudflare | Cloudflare WAF | Không đo được |
 | `oon6a1.ink` | WPS/uni-app | Cloudflare | **ThumbmarkJS** + `encrypt.js` | `SHELL_deviceId` |
 
+### Số đo được trên mã trang
+
+Ba bảng dưới đây là số lần gọi API trình duyệt đếm được trong các
+tệp tập lệnh của từng trang. Chúng là số đo, không phải ước lượng;
+tệp đo nằm ở `.dataset_probe/survey/`.
+
+`m.ssc8111.vip` — 9 bề mặt:
+
+| Bề mặt | Số lần |
+|---|---|
+| `user_agent` | 8 |
+| `screen_size` | 5 |
+| `function_source` | 4 |
+| `max_touch_points` | 3 |
+| `inner_size` | 4 |
+| `local_storage` | 4 |
+| `session_storage` | 1 |
+| `pixel_ratio` | 1 |
+| `canvas_2d` | 1 |
+
+`oon6a1.ink` — 19 bề mặt, nhiều gấp bốn lần:
+
+| Bề mặt | Số lần | | Bề mặt | Số lần |
+|---|---|---|---|---|
+| `session_storage` | 326 | | `canvas_2d` | 24 |
+| `local_storage` | 166 | | `error_stack` | 24 |
+| `user_agent` | 49 | | `to_data_url` | 17 |
+| `function_source` | 86 | | `indexed_db` | 14 |
+| `inner_size` | 26 | | `performance_timing` | 6 |
+| `cookie` | 19 | | `pixel_ratio` | 5 |
+| `platform` | 4 | | `avail_size` | 2 |
+| `user_agent_data` | 4 | | `canvas_webgl` | 2 |
+| `max_touch_points` | 7 | | `screen_size` | 1 |
+| `fonts` | 1 | | | |
+
+`8jjunsyj.cc` — 11 bề mặt:
+
+| Bề mặt | Số lần | | Bề mặt | Số lần |
+|---|---|---|---|---|
+| `function_source` | 30 | | `cookie` | 3 |
+| `user_agent` | 15 | | `canvas_2d` | 2 |
+| `error_stack` | 14 | | `to_data_url` | 2 |
+| `inner_size` | 5 | | `session_storage` | 2 |
+| `local_storage` | 5 | | `performance_timing` | 4 |
+| `user_agent_data` | 4 | | | |
+
+Điểm đáng chú ý nhất trong ba bảng trên là `function_source`: 4 lần ở
+SC88, 30 lần ở Jun88 và **86 lần** ở ON68. Đây là dấu vân tay của
+`fn.toString()`, và nó xuất hiện nhiều nhất ở đúng trang dùng
+ThumbmarkJS.
+
 ## 1. Nhóm Lobby: SC88, c168j, yaccm8h
 
 Ba trang này chạy cùng một ứng dụng, nên cơ chế của chúng giống
