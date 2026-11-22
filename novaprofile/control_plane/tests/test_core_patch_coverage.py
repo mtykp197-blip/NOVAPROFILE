@@ -356,15 +356,24 @@ def test_the_process_startup_files_are_not_patched():
     The start-up code of Chromium moves from release to release; a hunk
     against it is the first thing that stops applying, and the lazy load
     makes it unnecessary.
+
+    The one exception is the process that has to read the configuration
+    from the command line before it does anything else -- the network
+    service.  Its start-up is a single function that has not moved in
+    years, and the configuration has to be in place before the first
+    handshake, so the hook is put there.
     """
 
     text = _patch_text()
     for path in (
         "content/browser/browser_main_loop.cc",
-        "content/gpu/gpu_main.cc",
         "content/browser/net/browser_context.cc",
     ):
         assert f"diff --git a/{path}" not in text, f"{path} is patched"
+
+    # The network service reads the configuration when it starts.
+    assert "diff --git a/content/utility/services.cc" in text
+    assert "nova::InitializeNetworkProcess" in text
 
 
 def test_no_accessor_is_patched_without_a_fallback():
@@ -398,6 +407,10 @@ def test_no_accessor_is_patched_without_a_fallback():
             continue
         if "ApplyPixelNoise" in body:
             # A noise hook is not a substituted accessor.
+            continue
+        if "ApplyAudioNoise" in body:
+            # The audio hook perturbs a buffer of samples; it does not
+            # substitute a value, so it has no fallback to keep.
             continue
         guarded += len(re.findall(r"nova::IsNovaCoreInitialized\(\)", body))
         # The return statements of the hunk: the ones that hand out the

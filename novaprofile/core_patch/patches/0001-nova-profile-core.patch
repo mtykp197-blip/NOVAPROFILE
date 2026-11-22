@@ -1,114 +1,83 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: NOVA Profile <nova@example.invalid>
-Date: Sat, 22 Nov 2026 00:00:00 +0000
-Subject: [PATCH 1/2] nova: serve the profile's own values to Blink
+# NOVA Profile Core -- Chromium patch series, part 1 of 3: the identity.
+#
+# Apply to a Chromium 159 checkout with:
+#
+#     git apply novaprofile/core_patch/patches/0001-nova-profile-core.patch
+#     git apply novaprofile/core_patch/patches/0002-nova-profile-hardware-surfaces.patch
+#     git apply novaprofile/core_patch/patches/0003-nova-profile-independent-surfaces-and-tls.patch
 
-Blink reports the host's values.  A page that reads
-``navigator.userAgent``, ``navigator.hardwareConcurrency``,
-``navigator.deviceMemory``, ``screen.width`` or the WebGL identity
-strings sees the machine the browser runs on, and a fleet of profiles
-that all run on the same machine collapses into a single bucket that
-any vendor can fingerprint on sight.
-
-This patch puts the NOVA configuration in front of those accessors.
-
-The shape of the change
------------------------
-
-Every substituted accessor keeps its own original body.  The original
-body *is* the fallback: when no profile configuration has been
-installed the accessor falls through to the code it always had, so a
-browser that is started without ``--nova-config`` behaves exactly like
-stock Chromium.  This is the arrangement the series depends on, and it
-has a practical consequence: the NOVA sources do not redefine a single
-accessor, so the stock behaviour and the profile's behaviour live in
-one place -- the Blink file the patch edits -- and cannot drift apart.
-
-The hook layer
---------------
-
-The layer that serves the values lives next to them, in
-
-  third_party/blink/renderer/core/nova/
-
-and is built as the target
-
-  //third_party/blink/renderer/core/nova:nova_core
-
-The target is added to the dependencies of the Blink ``core`` component,
-of the Blink ``modules`` component and of ``content/app``, so the
-patched translation units find the hooks header and the browser process
-finds the bootstrap.
-
-The hooks header is included by its bare name -- ``nova_chromium_hooks.h``
--- and the directory is put on the include path of every consumer through
-the ``nova_include_dirs`` configuration that the target exports.
-
-The configuration bootstrap
----------------------------
-
-``nova::InitializeFromCommandLine()`` is called from
-``content::ContentMainRunnerImpl::Initialize()``, right after the process
-type is read and before any child process is forked.  The renderer, the
-GPU process and the network service therefore inherit the configuration
-from the same ``--nova-config`` switch, and there is no window in which a
-page can observe the host's values.
-
-diff --git a/content/app/BUILD.gn b/content/app/BUILD.gn
-index 822b769d8c..46a34438c5 100644
---- a/content/app/BUILD.gn
-+++ b/content/app/BUILD.gn
-@@ -78,6 +78,7 @@ source_set("content_main_runner_app") {
-            "//content/renderer",
-            "//content/utility",
-            "//content/zygote",
-+           "//third_party/blink/renderer/core/nova:nova_core",
-            "//third_party/tflite:buildflags",
-            "//tools/v8_context_snapshot:buildflags",
-          ]
-diff --git a/content/app/content_main_runner_impl.cc b/content/app/content_main_runner_impl.cc
-index dd65e2cdf6..7eccd9514f 100644
---- a/content/app/content_main_runner_impl.cc
-+++ b/content/app/content_main_runner_impl.cc
-@@ -126,6 +126,7 @@
- #include "services/tracing/public/cpp/tracing_features.h"
- #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
- #include "third_party/blink/public/common/origin_trials/trial_token_validator.h"
-+#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
- #include "third_party/perfetto/include/perfetto/tracing/track.h"
- #include "third_party/tflite/buildflags.h"
- #include "tools/v8_context_snapshot/buildflags.h"
-@@ -870,6 +871,16 @@ int ContentMainRunnerImpl::Initialize(ContentMainParams params) {
-   std::string process_type =
-       command_line.GetSwitchValueASCII(switches::kProcessType);
- 
-+  // NOVA Profile Core: install the profile's configuration before anything
-+  // else happens, and in particular before any child process is forked.  The
-+  // renderer, the GPU process and the network service inherit the
-+  // configuration from the command line, so a page never sees the host's
-+  // values -- there is no window in which the real values are observable.
-+  //
-+  // The hooks also load the configuration lazily, so a process that reaches
-+  // an accessor before this point still reports the profile's values.
-+  nova::InitializeFromCommandLine(command_line);
-+
- #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-   // Must run while the process is still single-threaded, i.e. before the
-   // thread pool (and, in Chrome, the stack sampling profiler) is created below.
-diff --git a/third_party/blink/renderer/core/BUILD.gn b/third_party/blink/renderer/core/BUILD.gn
-index c1e08ec727..1d96e11d16 100644
---- a/third_party/blink/renderer/core/BUILD.gn
-+++ b/third_party/blink/renderer/core/BUILD.gn
-@@ -191,6 +191,7 @@ source_set("prerequisites") {
-     "//third_party/blink/renderer/bindings/core/v8:generated",
-     "//third_party/blink/renderer/core/animation:buildflags",
-     "//third_party/blink/renderer/core/inspector:generated",
-+    "//third_party/blink/renderer/core/nova:nova_core",
-     "//third_party/blink/renderer/core/probe:generated",
-     "//third_party/blink/renderer/platform",
-     "//third_party/icu",
+# This patch substitutes the *identity* surfaces: the User-Agent, the
+# navigator's own attributes, the client hints and the WebDriver flag.  It
+# also carries the NOVA sources that serve them, the build wiring that
+# compiles those sources into Blink, and the bootstrap that installs the
+# profile configuration in the browser process.
+#
+# Every change is a *substitution* of an existing accessor with a
+# config-backed accessor; no new DOM property is introduced, so a page
+# cannot detect the patch by enumerating the prototype.
+#
+# Every substituted accessor keeps the stock behaviour as its fallback: if
+# the profile configuration has not been loaded -- which is the case in the
+# browser's own pages and in a crash handler -- the original value is
+# returned unchanged.  A patch that replaced the fallback would make the
+# browser itself inconsistent.  The stock fallback is therefore the *body*
+# that the accessor already had, not a call to a separate helper: the
+# ``NavigatorID::Standard*`` and ``NavigatorUAData::Default*`` helpers that
+# the previous series relied on no longer exist in this tree.
+#
+# The configuration is loaded lazily by the hooks themselves
+# (``NovaConfigHolder::EnsureInitialized``), so a renderer or the GPU
+# process that reaches an accessor before the browser's own initialization
+# has run still reports the profile's values, never the host's.
+#
+#
+# Where the accessors live in this tree
+#
+# Blink was reorganised, so the paths the previous series named no longer
+# exist.  The accessors are now spread over the following files:
+#
+#   third_party/blink/renderer/core/events/navigator_events.cc
+#   third_party/blink/renderer/core/execution_context/navigator_base.cc
+#   third_party/blink/renderer/core/frame/navigator.cc
+#   third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+#   third_party/blink/renderer/core/frame/navigator_device_memory.cc
+#   third_party/blink/renderer/core/frame/navigator_id.cc
+#   third_party/blink/renderer/core/frame/navigator_language.cc
+#   third_party/blink/renderer/core/frame/navigator_ua.cc
+#   third_party/blink/renderer/core/frame/navigator_ua_data.cc
+#
+#
+# The hook layer
+#
+# The layer that serves the values lives next to them, in
+#
+#   third_party/blink/renderer/core/nova/
+#
+# and is built as the target
+#
+#   //third_party/blink/renderer/core/nova:nova_core
+#
+# The target is added to the dependencies of the Blink ``core`` component,
+# of the Blink ``modules`` component and of ``content/app``, so the patched
+# translation units find the hooks header and the browser process finds
+# the bootstrap.
+#
+# The hooks header is included by its bare name -- ``nova_chromium_hooks.h``
+# -- and the directory is put on the include path of every consumer through
+# the ``nova_include_dirs`` configuration that the target exports.
+#
+#
+# The configuration bootstrap
+#
+# ``nova::InitializeFromCommandLine()`` is called from
+# ``content::ContentMainRunnerImpl::Initialize()``, right after the process
+# type is read and before any child process is forked.  The renderer, the
+# GPU process and the network service therefore inherit the configuration
+# from the same ``--nova-config`` switch, and there is no window in which a
+# page can observe the host's values.
+#
 diff --git a/third_party/blink/renderer/core/events/navigator_events.cc b/third_party/blink/renderer/core/events/navigator_events.cc
-index a57561775c..ca65ede2e7 100644
+index a575617..ca65ede 100644
 --- a/third_party/blink/renderer/core/events/navigator_events.cc
 +++ b/third_party/blink/renderer/core/events/navigator_events.cc
 @@ -30,6 +30,8 @@
@@ -131,7 +100,7 @@ index a57561775c..ca65ede2e7 100644
    return window ? window->GetFrame()->GetSettings()->GetMaxTouchPoints() : 0;
  }
 diff --git a/third_party/blink/renderer/core/execution_context/navigator_base.cc b/third_party/blink/renderer/core/execution_context/navigator_base.cc
-index 83f427c5ec..3015949f4e 100644
+index 83f427c..3015949 100644
 --- a/third_party/blink/renderer/core/execution_context/navigator_base.cc
 +++ b/third_party/blink/renderer/core/execution_context/navigator_base.cc
 @@ -4,6 +4,8 @@
@@ -166,7 +135,7 @@ index 83f427c5ec..3015949f4e 100644
    // We need to check the ReduceUserAgentMinorVersion feature flag for
    // Android WebView, which does not currently ship a reduced User-Agent.
 diff --git a/third_party/blink/renderer/core/frame/navigator.cc b/third_party/blink/renderer/core/frame/navigator.cc
-index 72964f48db..a2fa8ce81c 100644
+index 72964f4..a2fa8ce 100644
 --- a/third_party/blink/renderer/core/frame/navigator.cc
 +++ b/third_party/blink/renderer/core/frame/navigator.cc
 @@ -23,6 +23,8 @@
@@ -190,7 +159,7 @@ index 72964f48db..a2fa8ce81c 100644
      return true;
  
 diff --git a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
-index f5c0db2d1b..b668e1d5b7 100644
+index f5c0db2..b668e1d 100644
 --- a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
 +++ b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
 @@ -4,11 +4,17 @@
@@ -212,7 +181,7 @@ index f5c0db2d1b..b668e1d5b7 100644
  }
  
 diff --git a/third_party/blink/renderer/core/frame/navigator_device_memory.cc b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
-index 05fa33e456..9a90219868 100644
+index 05fa33e..9a90219 100644
 --- a/third_party/blink/renderer/core/frame/navigator_device_memory.cc
 +++ b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
 @@ -4,6 +4,8 @@
@@ -235,7 +204,7 @@ index 05fa33e456..9a90219868 100644
  }
  
 diff --git a/third_party/blink/renderer/core/frame/navigator_id.cc b/third_party/blink/renderer/core/frame/navigator_id.cc
-index 7ff65229bd..51934505ca 100644
+index 7ff6522..5193450 100644
 --- a/third_party/blink/renderer/core/frame/navigator_id.cc
 +++ b/third_party/blink/renderer/core/frame/navigator_id.cc
 @@ -31,6 +31,8 @@
@@ -315,7 +284,7 @@ index 7ff65229bd..51934505ca 100644
  }
  
 diff --git a/third_party/blink/renderer/core/frame/navigator_language.cc b/third_party/blink/renderer/core/frame/navigator_language.cc
-index a333624eae..b2d7bab717 100644
+index a333624..b2d7bab 100644
 --- a/third_party/blink/renderer/core/frame/navigator_language.cc
 +++ b/third_party/blink/renderer/core/frame/navigator_language.cc
 @@ -4,10 +4,14 @@
@@ -363,7 +332,7 @@ index a333624eae..b2d7bab717 100644
    return languages_;
  }
 diff --git a/third_party/blink/renderer/core/frame/navigator_ua.cc b/third_party/blink/renderer/core/frame/navigator_ua.cc
-index d334ce3951..59845b2126 100644
+index d334ce3..59845b2 100644
 --- a/third_party/blink/renderer/core/frame/navigator_ua.cc
 +++ b/third_party/blink/renderer/core/frame/navigator_ua.cc
 @@ -4,6 +4,8 @@
@@ -414,7 +383,7 @@ index d334ce3951..59845b2126 100644
    ua_data->SetBrandVersionList(metadata.brand_version_list);
    ua_data->SetMobile(metadata.mobile);
 diff --git a/third_party/blink/renderer/core/frame/navigator_ua_data.cc b/third_party/blink/renderer/core/frame/navigator_ua_data.cc
-index d75832c657..060b716fe3 100644
+index d75832c..060b716 100644
 --- a/third_party/blink/renderer/core/frame/navigator_ua_data.cc
 +++ b/third_party/blink/renderer/core/frame/navigator_ua_data.cc
 @@ -4,9 +4,12 @@
@@ -548,10 +517,10 @@ index d75832c657..060b716fe3 100644
    }
 diff --git a/third_party/blink/renderer/core/nova/BUILD.gn b/third_party/blink/renderer/core/nova/BUILD.gn
 new file mode 100644
-index 0000000000..012cb7d5bc
+index 0000000000..1de72d1 100644
 --- /dev/null
 +++ b/third_party/blink/renderer/core/nova/BUILD.gn
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,59 @@
 +# Copyright 2026 The Chromium Authors
 +# Use of this source code is governed by a BSD-style license that can be
 +# found in the LICENSE file.
@@ -598,21 +567,25 @@ index 0000000000..012cb7d5bc
 +  deps = [
 +    "//base",
 +    "//third_party/boringssl",
++    "//ui/gfx/geometry",
 +  ]
 +
-+  # The core is linked into the renderer, into the GPU process and into the
-+  # browser process, so the visibility has to cover all of them.
++  # The core is linked into the renderer, into the GPU process, into the
++  # browser process and into the network service -- the network service
++  # runs the TLS handshake, so it has to be able to read the profile's
++  # own cipher suites and curves.
 +  visibility = [
 +    "//content/*",
++    "//net/*",
 +    "//third_party/blink/*",
 +  ]
 +}
 diff --git a/third_party/blink/renderer/core/nova/nova_blink_patch.cc b/third_party/blink/renderer/core/nova/nova_blink_patch.cc
 new file mode 100644
-index 0000000000..ff5ec06e91
+index 0000000000..ec532e5 100644
 --- /dev/null
 +++ b/third_party/blink/renderer/core/nova/nova_blink_patch.cc
-@@ -0,0 +1,557 @@
+@@ -0,0 +1,800 @@
 +// NOVA Profile Core -- Blink integration.
 +//
 +// This file is the *hook layer* of the NOVA profile engine.  It is
@@ -675,6 +648,9 @@ index 0000000000..ff5ec06e91
 +#include "nova_core_config.h"
 +#include "nova_pixel_noise.h"
 +
++#include <algorithm>
++#include <cstdio>
++#include <cstring>
 +#include <memory>
 +#include <string>
 +#include <vector>
@@ -684,6 +660,7 @@ index 0000000000..ff5ec06e91
 +#include "base/location.h"
 +#include "base/logging.h"
 +#include "base/synchronization/lock.h"
++#include "ui/gfx/geometry/rect_f.h"
 +
 +namespace nova {
 +
@@ -996,6 +973,60 @@ index 0000000000..ff5ec06e91
 +  return NovaConfigHolder::Get().AudioKey();
 +}
 +
++void ApplyAudioNoise(float* samples, size_t count, size_t offset) {
++  if (samples == nullptr || count == 0) {
++    return;
++  }
++  if (!IsNovaCoreInitialized()) {
++    return;
++  }
++  const ProfileConfig config = GetNovaConfig();
++  if (config.audio.mode == "native_passthrough" ||
++      config.audio.mode == "disabled") {
++    return;
++  }
++  if (config.audio.respect_core_quantization &&
++      config.audio.noise_strength <= 0.0) {
++    return;
++  }
++
++  // The perturbation is derived from the noise key, so it is stable for
++  // one profile and different for every other profile.  The magnitude is
++  // far below the resolution of the Web Audio fingerprint -- the
++  // fingerprint is a sum over the whole render, and the sum of the
++  // perturbation cancels out -- but it is enough to move the last bits of
++  // the result, which is exactly where the fingerprint lives.
++  const PixelNoiseKey key = GetAudioNoiseKey();
++  const double strength = config.audio.noise_strength > 0.0
++                              ? config.audio.noise_strength
++                              : 1.0;
++  for (size_t i = 0; i < count; ++i) {
++    const size_t index = offset + i;
++    // A cheap integer mix of the key and the sample index.  It has to be
++    // fast: this runs on every rendered quantum.
++    uint64_t hash = static_cast<uint64_t>(key.bytes[0]) |
++                    (static_cast<uint64_t>(key.bytes[1]) << 8) |
++                    (static_cast<uint64_t>(key.bytes[2]) << 16) |
++                    (static_cast<uint64_t>(key.bytes[3]) << 24) |
++                    (static_cast<uint64_t>(key.bytes[4]) << 32) |
++                    (static_cast<uint64_t>(key.bytes[5]) << 40) |
++                    (static_cast<uint64_t>(key.bytes[6]) << 48) |
++                    (static_cast<uint64_t>(key.bytes[7]) << 56);
++    hash ^= index * 0x9E3779B97F4A7C15ULL;
++    hash ^= hash >> 29;
++    hash *= 0xBF58476D1CE4E5B9ULL;
++    hash ^= hash >> 32;
++
++    // The perturbation is scaled into the twenty-fourth bit of the
++    // mantissa, which is below the level the Web Audio fingerprint
++    // resolves but above the level of the quantisation that the audio
++    // pipeline applies to a float.
++    const double unit = static_cast<double>(hash >> 40) /
++                        static_cast<double>(1ULL << 24) - 0.5;
++    samples[i] += static_cast<float>(unit * strength * 1.0e-7);
++  }
++}
++
 +// ---------------------------------------------------------------------------
 +// The geometry perturbation
 +//
@@ -1051,6 +1082,49 @@ index 0000000000..ff5ec06e91
 +    return std::string();
 +  }
 +  return holder.GetConfig().media_devices.salt;
++}
++
++std::string RewriteMediaDeviceId(const std::string& device_id,
++                                 const char* kind,
++                                 size_t index) {
++  if (!IsNovaCoreInitialized()) {
++    return device_id;
++  }
++  const ProfileConfig config = GetNovaConfig();
++  if (config.media_devices.mode == "native_passthrough" ||
++      config.media_devices.mode == "disabled") {
++    return device_id;
++  }
++  const std::string salt = config.media_devices.salt;
++  if (salt.empty()) {
++    return device_id;
++  }
++
++  // The host's identifier is mixed with the profile's own salt and the
++  // position of the device in the list.  The same host, the same device
++  // and the same position therefore produce the same identifier inside
++  // one profile and a different one in every other profile, which is
++  // exactly the property the surface needs.
++  uint64_t hash = 1469598103934665603ULL;  // the FNV-1a offset basis
++  const std::string material = salt + "|" + (kind != nullptr ? kind : "") +
++                               "|" + std::to_string(index) + "|" + device_id;
++  for (unsigned char c : material) {
++    hash ^= c;
++    hash *= 1099511628211ULL;
++  }
++
++  // The identifier keeps the shape of a UUID, because the Android camera
++  // identifiers that a page expects to see have that shape and a page
++  // that validates the format would reject anything else.
++  char buffer[37];
++  snprintf(buffer, sizeof(buffer),
++           "%08x-%04x-%04x-%04x-%012llx",
++           static_cast<unsigned int>(hash & 0xFFFFFFFFULL),
++           static_cast<unsigned int>((hash >> 32) & 0xFFFFULL),
++           static_cast<unsigned int>((hash >> 48) & 0xFFFFULL),
++           static_cast<unsigned int>((hash >> 16) & 0xFFFFULL),
++           static_cast<unsigned long long>(hash));
++  return std::string(buffer);
 +}
 +
 +// ---------------------------------------------------------------------------
@@ -1169,13 +1243,155 @@ index 0000000000..ff5ec06e91
 +  return holder.GetConfig().webgpu.salt;
 +}
 +
++// ---------------------------------------------------------------------------
++// The font inventory
++// ---------------------------------------------------------------------------
++
++bool IsFontInProfile(const std::string& family_name,
++                     const std::vector<std::string>& installed) {
++  // The generic families are always available: the CSS font matching
++  // resolves them to whatever the platform offers, and a page that asks
++  // for "sans-serif" is asking for a family, not for a file.
++  static const char* kGenericFamilies[] = {
++      "serif",      "sans-serif", "monospace",   "cursive",
++      "fantasy",    "system-ui",  "ui-serif",   "ui-sans-serif",
++      "ui-monospace", "ui-rounded", "math",       "emoji",
++      "fangsong",
++  };
++  for (const char* generic : kGenericFamilies) {
++    if (family_name.size() == strlen(generic) &&
++        strncasecmp(family_name.c_str(), generic, strlen(generic)) == 0) {
++      return true;
++    }
++  }
++
++  // The comparison is case insensitive, because the CSS font matching is
++  // case insensitive for the family names.
++  for (const std::string& candidate : installed) {
++    if (candidate.size() != family_name.size()) {
++      continue;
++    }
++    if (strcasecmp(candidate.c_str(), family_name.c_str()) == 0) {
++      return true;
++    }
++  }
++  return false;
++}
++
++// ---------------------------------------------------------------------------
++// The geometry perturbation
++//
++// The perturbation is applied only when the profile asked for it.  A
++// profile in the "noise" mode gets the deltas of its own seed; a profile
++// in the "disabled" mode gets the rectangle the layout produced, so the
++// page sees the host geometry untouched.
++// ---------------------------------------------------------------------------
++
++void ApplyRectDeltas(gfx::RectF& rect, const char* surface) {
++  if (!IsNovaCoreInitialized()) {
++    return;
++  }
++  const ProfileConfig config = GetNovaConfig();
++  if (config.rects.mode == "disabled" || config.rects.mode == "native_passthrough") {
++    return;
++  }
++  const int delta_x = GetRectDeltaX();
++  const int delta_y = GetRectDeltaY();
++  const int delta_width = GetRectDeltaWidth();
++  const int delta_height = GetRectDeltaHeight();
++  if (delta_x == 0 && delta_y == 0 && delta_width == 0 && delta_height == 0) {
++    return;
++  }
++  // The surface name keeps the element rectangle and the range rectangle
++  // from moving by exactly the same amount.  A page that compares the
++  // two -- a classic cross-surface consistency check -- must not find
++  // them trivially equal.
++  int surface_shift = 0;
++  if (surface != nullptr) {
++    for (const char* c = surface; *c != '\0'; ++c) {
++      surface_shift = (surface_shift * 31 + static_cast<unsigned char>(*c)) & 0xFF;
++    }
++  }
++  const int shift_x = (surface_shift % 3) - 1;
++  const int shift_y = ((surface_shift >> 3) % 3) - 1;
++
++  rect.Offset(delta_x * (1 + shift_x) * 0.5f, delta_y * (1 + shift_y) * 0.5f);
++  if (delta_width != 0 || delta_height != 0) {
++    rect.set_width(std::max(0.0f, rect.width() + delta_width));
++    rect.set_height(std::max(0.0f, rect.height() + delta_height));
++  }
++}
++
++// ---------------------------------------------------------------------------
++// The TLS handshake
++//
++// The lists are returned by value through a function-local static, so
++// that the caller can hold on to the reference.  The configuration is
++// read once and then never changes, so the copy is made once.
++// ---------------------------------------------------------------------------
++
++namespace {
++
++// The lists are returned through a function-local static, so that the
++// caller can hold on to the reference.  The configuration is read once
++// and then never changes, so the copy is made once.
++template <typename Reader>
++const std::vector<std::string>& TlsList(Reader reader) {
++  static const std::vector<std::string> kEmpty;
++  static thread_local std::vector<std::string> cached;
++  if (!IsNovaCoreInitialized()) {
++    return kEmpty;
++  }
++  const ProfileConfig config = GetNovaConfig();
++  cached = reader(config);
++  return cached;
++}
++
++}  // namespace
++
++const std::vector<std::string>& GetTlsCipherSuites() {
++  return TlsList(
++      [](const ProfileConfig& c) { return c.tls.cipher_suites; });
++}
++
++const std::vector<std::string>& GetTlsSupportedGroups() {
++  return TlsList(
++      [](const ProfileConfig& c) { return c.tls.supported_groups; });
++}
++
++const std::vector<std::string>& GetTlsSignatureAlgorithms() {
++  return TlsList(
++      [](const ProfileConfig& c) { return c.tls.signature_algorithms; });
++}
++
++const std::vector<std::string>& GetTlsAlpnProtocols() {
++  return TlsList(
++      [](const ProfileConfig& c) { return c.tls.alpn_protocols; });
++}
++
++const std::vector<std::string>& GetTlsVersions() {
++  return TlsList([](const ProfileConfig& c) { return c.tls.versions; });
++}
++
++const std::vector<std::string>& GetTlsExtensionOrder() {
++  return TlsList(
++      [](const ProfileConfig& c) { return c.tls.extension_order; });
++}
++
++bool GetTlsGreaseEnabled() {
++  if (!IsNovaCoreInitialized()) {
++    return true;
++  }
++  return GetNovaConfig().tls.grease_enabled;
++}
++
 +}  // namespace nova
 diff --git a/third_party/blink/renderer/core/nova/nova_chromium_hooks.h b/third_party/blink/renderer/core/nova/nova_chromium_hooks.h
 new file mode 100644
-index 0000000000..bc120bf5f0
+index 0000000000..4616dfc 100644
 --- /dev/null
 +++ b/third_party/blink/renderer/core/nova/nova_chromium_hooks.h
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,216 @@
 +// NOVA Profile Core -- the Chromium integration patches.
 +//
 +// This header is included by the Chromium source files that need to serve
@@ -1215,8 +1431,10 @@ index 0000000000..bc120bf5f0
 +
 +#include <cstdint>
 +#include <string>
++#include <vector>
 +
 +#include "base/command_line.h"
++#include "ui/gfx/geometry/rect_f.h"
 +
 +namespace nova {
 +
@@ -1271,6 +1489,18 @@ index 0000000000..bc120bf5f0
 +int GetAudioMaxChannelCount();
 +PixelNoiseKey GetAudioNoiseKey();
 +
++// Applies the profile's own perturbation to a block of rendered samples.
++// The Web Audio fingerprint is the sum of an oscillator and a
++// compressor, and the result is stable to about fifteen digits on every
++// machine that runs the same build.  Two profiles that render the same
++// graph therefore produce the same fingerprint unless the samples
++// themselves are perturbed.
++//
++// The perturbation is deterministic in the sample index and in the
++// profile's own salt, so the fingerprint of one profile never changes
++// between two reads, and the fingerprint of two profiles never collides.
++void ApplyAudioNoise(float* samples, size_t count, size_t offset);
++
 +// The geometry perturbation.
 +//
 +// The deltas are applied as integer pixel offsets, so the layout and the
@@ -1280,11 +1510,32 @@ index 0000000000..bc120bf5f0
 +int GetRectDeltaWidth();
 +int GetRectDeltaHeight();
 +
++// Applies the profile's own deltas to a rectangle.  The |surface| names
++// the readback surface, so that the element rectangle and the range
++// rectangle are perturbed by different amounts and therefore still look
++// like two independent observations of the same layout.
++void ApplyRectDeltas(gfx::RectF& rect, const char* surface);
++
 +// The media devices.
 +//
 +// The device identifiers are derived from the profile's own salt, so two
 +// profiles never expose the same device ids.
 +std::string GetMediaDeviceSalt();
++
++// Rewrites a device identifier so that it is unique to the profile.  The
++// host's identifiers are stable across every profile that runs on the
++// machine, which makes them a very effective way to link two profiles
++// that are supposed to be two different devices.  The rewrite keeps the
++// shape of the identifier -- an Android camera id looks like a UUID --
++// so that a page which validates the format does not reject it.
++//
++// |kind| names the device class ("audioinput", "audiooutput",
++// "videoinput") and |index| is the position of the device in the host's
++// list.  The pair, mixed with the profile's salt, produces the new
++// identifier.
++std::string RewriteMediaDeviceId(const std::string& device_id,
++                                 const char* kind,
++                                 size_t index);
 +
 +// The motion sensors.
 +double GetSensorAccelerometerX();
@@ -1309,20 +1560,60 @@ index 0000000000..bc120bf5f0
 +// The WebGPU adapter.
 +std::string GetWebGpuSalt();
 +
++// Whether a font family is one of the families the profile declares as
++// installed.  The comparison is case insensitive, because the CSS font
++// matching is, and the generic families -- serif, sans-serif, monospace
++// and the cursive ones -- are always available.
++bool IsFontInProfile(const std::string& family_name,
++                     const std::vector<std::string>& installed);
++
 +// The process entry points.
 +bool InitializeFromCommandLine(const base::CommandLine& command_line);
 +bool InitializeGpuProcess(const base::CommandLine& command_line);
 +bool InitializeNetworkProcess(const base::CommandLine& command_line);
++
++// ---------------------------------------------------------------------------
++// The TLS handshake.
++//
++// The network service runs in its own process, so it has to be able to
++// read the configuration on its own.  The profile is installed there
++// from the command line the same way it is in the browser.
++// ---------------------------------------------------------------------------
++
++// The cipher suites the client offers, in the order it offers them.
++// An empty list means the stock Chromium list.
++const std::vector<std::string>& GetTlsCipherSuites();
++
++// The supported groups the client offers, in the order it offers them.
++const std::vector<std::string>& GetTlsSupportedGroups();
++
++// The signature algorithms the client offers, in the order it offers
++// them.
++const std::vector<std::string>& GetTlsSignatureAlgorithms();
++
++// The ALPN protocols the client offers, in the order it offers them.
++const std::vector<std::string>& GetTlsAlpnProtocols();
++
++// The TLS versions the client offers, from the oldest to the newest.
++const std::vector<std::string>& GetTlsVersions();
++
++// The extension order.  BoringSSL permutes the extensions by default;
++// the profile fixes the order so that the handshake of two profiles can
++// be told apart.
++const std::vector<std::string>& GetTlsExtensionOrder();
++
++// Whether the handshake carries the GREASE extension.
++bool GetTlsGreaseEnabled();
 +
 +}  // namespace nova
 +
 +#endif  // NOVA_PROFILE_CORE_CHROMIUM_HOOKS_H_
 diff --git a/third_party/blink/renderer/core/nova/nova_core_config.cc b/third_party/blink/renderer/core/nova/nova_core_config.cc
 new file mode 100644
-index 0000000000..3028c20185
+index 0000000000..0187da0 100644
 --- /dev/null
 +++ b/third_party/blink/renderer/core/nova/nova_core_config.cc
-@@ -0,0 +1,1079 @@
+@@ -0,0 +1,1098 @@
 +// NOVA Profile Core -- configuration parsing (implementation).
 +
 +#include "nova_core_config.h"
@@ -1868,7 +2159,8 @@ index 0000000000..3028c20185
 +         ReadInt(dict, "channel_count", &out->channel_count, error) &&
 +         ReadInt(dict, "max_channel_count", &out->max_channel_count, error) &&
 +         ReadBool(dict, "respect_core_quantization",
-+                  &out->respect_core_quantization, error);
++                  &out->respect_core_quantization, error) &&
++         ReadDouble(dict, "noise_strength", &out->noise_strength, error);
 +}
 +
 +bool ParseRects(const base::DictValue& dict, RectsConfig* out, std::string* error) {
@@ -2168,6 +2460,20 @@ index 0000000000..3028c20185
 +         ReadBool(dict, "prevent_dns_leak", &out->prevent_dns_leak, error);
 +}
 +
++bool ParseTls(const base::DictValue& dict, TlsConfig* out, std::string* error) {
++  return ReadString(dict, "mode", &out->mode, error) &&
++         ReadStringList(dict, "cipher_suites", &out->cipher_suites, error) &&
++         ReadStringList(dict, "supported_groups", &out->supported_groups,
++                        error) &&
++         ReadStringList(dict, "signature_algorithms",
++                        &out->signature_algorithms, error) &&
++         ReadStringList(dict, "alpn_protocols", &out->alpn_protocols, error) &&
++         ReadStringList(dict, "versions", &out->versions, error) &&
++         ReadStringList(dict, "extension_order", &out->extension_order, error) &&
++         ReadString(dict, "salt", &out->salt, error) &&
++         ReadBool(dict, "grease_enabled", &out->grease_enabled, error);
++}
++
 +bool ParseHttpHeaders(const base::DictValue& dict,
 +                      HttpHeadersConfig* out,
 +                      std::string* error) {
@@ -2367,6 +2673,10 @@ index 0000000000..3028c20185
 +  if (!dns) return false;
 +  if (!ParseDns(*dns, &parsed.dns, error)) return false;
 +
++  const base::DictValue* tls = FindDict(dict, "tls", error);
++  if (!tls) return false;
++  if (!ParseTls(*tls, &parsed.tls, error)) return false;
++
 +  const base::DictValue* headers = FindDict(dict, "http_headers", error);
 +  if (!headers) return false;
 +  if (!ParseHttpHeaders(*headers, &parsed.http_headers, error))
@@ -2404,10 +2714,10 @@ index 0000000000..3028c20185
 +}  // namespace nova
 diff --git a/third_party/blink/renderer/core/nova/nova_core_config.h b/third_party/blink/renderer/core/nova/nova_core_config.h
 new file mode 100644
-index 0000000000..aeafb0a91c
+index 0000000000..9dd462e 100644
 --- /dev/null
 +++ b/third_party/blink/renderer/core/nova/nova_core_config.h
-@@ -0,0 +1,559 @@
+@@ -0,0 +1,603 @@
 +// NOVA Profile Core -- the browser-side fingerprint engine.
 +//
 +// This file defines the configuration structures that the control plane
@@ -2656,6 +2966,11 @@ index 0000000000..aeafb0a91c
 +  int channel_count = 2;
 +  int max_channel_count = 2;
 +  bool respect_core_quantization = true;
++  // The magnitude of the perturbation that is applied to the rendered
++  // samples.  Zero leaves the samples untouched, which is the right
++  // thing for a profile that only wants the sample rate and the
++  // latencies to be spoofed.
++  double noise_strength = 0.0;
 +};
 +
 +struct RectsConfig {
@@ -2873,6 +3188,44 @@ index 0000000000..aeafb0a91c
 +  bool prevent_dns_leak = true;
 +};
 +
++// The TLS handshake.
++//
++// JA3 is the MD5 of the ClientHello -- the cipher suites, the extension
++// order, the elliptic curves and the elliptic curve point formats, in the
++// order the client sent them.  JA4 is a readable form of the same thing.
++//
++// The handshake happens in the network service, before any script runs,
++// so no amount of JavaScript can change it.  The only way to change it
++// is to change the bytes the client puts on the wire, which means
++// changing the network stack.
++//
++// The order of the cipher suites and of the extensions is what a
++// fingerprint is made of, so both are lists here rather than sets.
++struct TlsConfig {
++  std::string mode = "native";
++  // The cipher suites, in the order they are offered.
++  std::vector<std::string> cipher_suites;
++  // The supported groups, in the order they are offered.
++  std::vector<std::string> supported_groups;
++  // The signature algorithms, in the order they are offered.
++  std::vector<std::string> signature_algorithms;
++  // The ALPN protocols, in the order they are offered.
++  std::vector<std::string> alpn_protocols;
++  // The TLS versions, from the oldest to the newest.
++  std::vector<std::string> versions;
++  // The extension order, by the name that BoringSSL uses for the
++  // extension.  An extension that is not listed keeps the position that
++  // BoringSSL would have given it.
++  std::vector<std::string> extension_order;
++  // The per-profile salt.  The handshake is the same for every profile
++  // that uses the same browser build unless something in the profile
++  // varies it, so the salt is what makes the handshake of two profiles
++  // differ.
++  std::string salt;
++  // Whether the GREASE extension is sent.
++  bool grease_enabled = true;
++};
++
 +struct HttpHeadersConfig {
 +  std::string accept_language;
 +  std::string dnt;
@@ -2947,6 +3300,7 @@ index 0000000000..aeafb0a91c
 +  GeoIntelligenceConfig geo_intelligence;
 +  WebRtcConfig webrtc;
 +  DnsConfig dns;
++  TlsConfig tls;
 +  HttpHeadersConfig http_headers;
 +};
 +
@@ -2969,7 +3323,7 @@ index 0000000000..aeafb0a91c
 +#endif  // NOVA_PROFILE_CORE_CONFIG_H_
 diff --git a/third_party/blink/renderer/core/nova/nova_pixel_noise.cc b/third_party/blink/renderer/core/nova/nova_pixel_noise.cc
 new file mode 100644
-index 0000000000..506cd2ea4e
+index 0000000000..506cd2e 100644
 --- /dev/null
 +++ b/third_party/blink/renderer/core/nova/nova_pixel_noise.cc
 @@ -0,0 +1,266 @@
@@ -3241,7 +3595,7 @@ index 0000000000..506cd2ea4e
 +}  // namespace nova
 diff --git a/third_party/blink/renderer/core/nova/nova_pixel_noise.h b/third_party/blink/renderer/core/nova/nova_pixel_noise.h
 new file mode 100644
-index 0000000000..e23bf17f88
+index 0000000000..e23bf17 100644
 --- /dev/null
 +++ b/third_party/blink/renderer/core/nova/nova_pixel_noise.h
 @@ -0,0 +1,93 @@
@@ -3338,8 +3692,20 @@ index 0000000000..e23bf17f88
 +}  // namespace nova
 +
 +#endif  // NOVA_PROFILE_CORE_PIXEL_NOISE_H_
+diff --git a/third_party/blink/renderer/core/BUILD.gn b/third_party/blink/renderer/core/BUILD.gn
+index c1e08ec..1d96e11 100644
+--- a/third_party/blink/renderer/core/BUILD.gn
++++ b/third_party/blink/renderer/core/BUILD.gn
+@@ -191,6 +191,7 @@ source_set("prerequisites") {
+     "//third_party/blink/renderer/bindings/core/v8:generated",
+     "//third_party/blink/renderer/core/animation:buildflags",
+     "//third_party/blink/renderer/core/inspector:generated",
++    "//third_party/blink/renderer/core/nova:nova_core",
+     "//third_party/blink/renderer/core/probe:generated",
+     "//third_party/blink/renderer/platform",
+     "//third_party/icu",
 diff --git a/third_party/blink/renderer/modules/BUILD.gn b/third_party/blink/renderer/modules/BUILD.gn
-index 208d4f9256..009d03070a 100644
+index 208d4f9..009d030 100644
 --- a/third_party/blink/renderer/modules/BUILD.gn
 +++ b/third_party/blink/renderer/modules/BUILD.gn
 @@ -212,6 +212,7 @@ component("modules") {
@@ -3350,3 +3716,44 @@ index 208d4f9256..009d03070a 100644
      "//third_party/icu",
      "//third_party/webrtc_overrides:webrtc_component",
      "//third_party/zlib",
+diff --git a/content/app/BUILD.gn b/content/app/BUILD.gn
+index 822b769..46a3443 100644
+--- a/content/app/BUILD.gn
++++ b/content/app/BUILD.gn
+@@ -78,6 +78,7 @@ source_set("content_main_runner_app") {
+            "//content/renderer",
+            "//content/utility",
+            "//content/zygote",
++           "//third_party/blink/renderer/core/nova:nova_core",
+            "//third_party/tflite:buildflags",
+            "//tools/v8_context_snapshot:buildflags",
+          ]
+diff --git a/content/app/content_main_runner_impl.cc b/content/app/content_main_runner_impl.cc
+index dd65e2c..7eccd95 100644
+--- a/content/app/content_main_runner_impl.cc
++++ b/content/app/content_main_runner_impl.cc
+@@ -126,6 +126,7 @@
+ #include "services/tracing/public/cpp/tracing_features.h"
+ #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
+ #include "third_party/blink/public/common/origin_trials/trial_token_validator.h"
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
+ #include "third_party/perfetto/include/perfetto/tracing/track.h"
+ #include "third_party/tflite/buildflags.h"
+ #include "tools/v8_context_snapshot/buildflags.h"
+@@ -870,6 +871,16 @@ int ContentMainRunnerImpl::Initialize(ContentMainParams params) {
+   std::string process_type =
+       command_line.GetSwitchValueASCII(switches::kProcessType);
+ 
++  // NOVA Profile Core: install the profile's configuration before anything
++  // else happens, and in particular before any child process is forked.  The
++  // renderer, the GPU process and the network service inherit the
++  // configuration from the command line, so a page never sees the host's
++  // values -- there is no window in which the real values are observable.
++  //
++  // The hooks also load the configuration lazily, so a process that reaches
++  // an accessor before this point still reports the profile's values.
++  nova::InitializeFromCommandLine(command_line);
++
+ #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+   // Must run while the process is still single-threaded, i.e. before the
+   // thread pool (and, in Chrome, the stack sampling profiler) is created below.

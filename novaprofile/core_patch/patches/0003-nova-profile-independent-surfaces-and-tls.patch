@@ -1,0 +1,1005 @@
+# NOVA Profile Core -- Chromium patch series, part 3 of 3: the independent
+# surfaces and the TLS handshake.
+#
+# Apply to a Chromium 159 checkout with:
+#
+#     git apply novaprofile/core_patch/patches/0001-nova-profile-core.patch
+#     git apply novaprofile/core_patch/patches/0002-nova-profile-hardware-surfaces.patch
+#     git apply novaprofile/core_patch/patches/0003-nova-profile-independent-surfaces-and-tls.patch
+
+# A fingerprinting script does not have to combine the canvas hash with the
+# WebGL hash with the device serial.  It can read one surface on its own --
+# the audio fingerprint, the geometry of a rectangle, the media device
+# list, the motion readings or the storage estimate -- and cluster on that
+# alone.  Each of those therefore needs its own native accessor, and each
+# of them is derived from the profile's own salt, so that two profiles
+# never report the same value.
+#
+# The geometry
+#
+# ``getBoundingClientRect`` and ``getClientRects`` are read by every
+# layout-aware script.  The patch applies the profile's own integer pixel
+# offsets, to the element rectangle and to the range rectangle separately,
+# so that the two readbacks stay independent observations of the same
+# layout.
+#
+# The audio
+#
+# ``AudioContext.sampleRate``, ``baseLatency``, ``outputLatency`` and
+# ``maxChannelCount`` are read on their own, and the rendered samples
+# themselves are the fingerprint.  The patch substitutes the parameters
+# and perturbs the rendered samples at the twenty-fourth bit of the
+# mantissa, which is below the level of the audio pipeline's own
+# quantisation and above the level of a reference render.
+#
+# The media devices, the motion sensors and the storage estimate
+#
+# The device identifiers of the host are stable across every profile that
+# runs on the machine, which makes them an effective way to link two
+# profiles that are supposed to be two different devices.  The patch
+# rewrites them with the profile's salt while keeping the shape of the
+# identifier.
+#
+# ``DeviceMotionEvent`` hands out the raw accelerometer, gyroscope and
+# gravity readings of the host, which on a desktop is a stream of NaN.
+# The patch serves the profile's own readings.
+#
+# ``navigator.storage.estimate()`` reports the quota and the usage of the
+# host's disk.  The patch serves the profile's own numbers.
+#
+# The fonts and the WebGPU adapter
+#
+# ``document.fonts.check`` reports whether a family is installed, and the
+# installed list is a property of the host's font configuration.  The
+# patch serves the profile's own list.
+#
+# ``navigator.gpu.requestAdapter()`` returns the adapter name, the vendor
+# and the architecture of the host's graphics card.  The patch serves the
+# profile's own adapter.
+#
+# The TLS handshake
+#
+# JA3 is the MD5 of the ClientHello -- the cipher suites, the extension
+# order, the elliptic curves and the point formats, in the order the
+# client sent them.  It is produced by the network service, in C++, before
+# any script runs, so no amount of JavaScript can change it: the only way
+# to change it is to change the bytes the client puts on the wire.
+#
+# The patch therefore installs the profile's cipher list, curve list,
+# signature algorithm list and ALPN list on the BoringSSL context before
+# the handshake, and hands the configuration down to the network service
+# and to the GPU process on the command line, so that every process
+# reports the same profile.
+#
+diff --git a/content/browser/network_service_instance_impl.cc b/content/browser/network_service_instance_impl.cc
+index 20870c2..b4af379 100644
+--- a/content/browser/network_service_instance_impl.cc
++++ b/content/browser/network_service_instance_impl.cc
+@@ -657,6 +657,19 @@ network::mojom::NetworkService* GetNetworkService() {
+                           "restarting service.";
+           ServiceProcessHost::Options options;
+           options.WithDisplayName(u"Network Service");
++          // The network service runs the TLS handshake, so it has to be
++          // able to read the profile's own configuration.  The browser
++          // process was started with --nova-config, and the switch is
++          // handed down to the utility process here.
++          {
++            const base::CommandLine* browser_command_line =
++                base::CommandLine::ForCurrentProcess();
++            if (browser_command_line->HasSwitch("nova-config")) {
++              options.WithExtraCommandLineSwitchKeyValues(
++                  {{"nova-config",
++                    browser_command_line->GetSwitchValue("nova-config")}});
++            }
++          }
+           if (g_network_service_crashes_on_next_startup) {
+             g_network_service_crashes_on_next_startup = false;
+             options.WithExtraCommandLineSwitches(
+diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content/browser/renderer_host/render_process_host_impl.cc
+index 15ca37d..c9a8464 100644
+--- a/content/browser/renderer_host/render_process_host_impl.cc
++++ b/content/browser/renderer_host/render_process_host_impl.cc
+@@ -3866,6 +3866,24 @@ void RenderProcessHostImpl::AppendRendererCommandLine(
+   command_line->AppendSwitchASCII(switches::kProcessType,
+                                   switches::kRendererProcess);
+ 
++  // NOVA Profile Core: the renderer is a separate process, and it does
++  // not inherit the browser's command line -- Chromium rebuilds the
++  // command line of every child from scratch.  Without this the
++  // renderer never sees the profile and every value it reports is the
++  // host's own, which is exactly what a site is looking for.
++  //
++  // The path is the one the browser was given, and it is passed on
++  // unchanged: the renderer reads the same file, so there is one
++  // description of the profile and not two that can drift apart.
++  {
++    const std::string nova_config_path =
++        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
++            "nova-config");
++    if (!nova_config_path.empty()) {
++      command_line->AppendSwitchASCII("nova-config", nova_config_path);
++    }
++  }
++
+   if (IsForTopChromeWebUI()) {
+     command_line->AppendSwitch(switches::kTopChromeWebUI);
+   }
+diff --git a/content/gpu/BUILD.gn b/content/gpu/BUILD.gn
+index cf5266a..8edd71e 100644
+--- a/content/gpu/BUILD.gn
++++ b/content/gpu/BUILD.gn
+@@ -63,6 +63,10 @@ target(link_target_type, "gpu_sources") {
+     "//media/mojo:buildflags",
+     "//sandbox/policy",
+ 
++    # NOVA Profile Core: the GPU process reads the profile's graphics
++    # limits and the unmasked renderer from the native core.
++    "//third_party/blink/renderer/core/nova:nova_core",
++
+     # TODO(jrummell): As //media/gpu/ipc/service is a source_set in a
+     # component build, determine if it should not be included here.
+     # http://crbug.com/702833.
+diff --git a/content/gpu/gpu_main.cc b/content/gpu/gpu_main.cc
+index 5d12f10..bee7c20 100644
+--- a/content/gpu/gpu_main.cc
++++ b/content/gpu/gpu_main.cc
+@@ -68,6 +68,7 @@
+ #include "gpu/ipc/service/gpu_config.h"
+ #include "gpu/ipc/service/gpu_init.h"
+ #include "gpu/ipc/service/gpu_watchdog_thread.h"
++#include "nova_chromium_hooks.h"
+ #include "media/gpu/buildflags.h"
+ #include "mojo/public/cpp/bindings/direct_receiver.h"
+ #include "mojo/public/cpp/bindings/interface_endpoint_client.h"
+@@ -270,6 +271,13 @@ int GpuMain(MainFunctionParams parameters) {
+ 
+   const base::CommandLine& command_line = *parameters.command_line;
+ 
++  // NOVA Profile Core: the GPU process reports the graphics limits and
++  // the unmasked renderer, and it is a separate process, so it has to
++  // be given the profile before it answers the first query.  Without
++  // this the page reads the host's card -- the real one -- which is
++  // the one thing the profile is not allowed to do.
++  nova::InitializeGpuProcess(command_line);
++
+   gpu::GpuPreferences gpu_preferences;
+   if (command_line.HasSwitch(switches::kGpuPreferences)) {
+     std::string value =
+diff --git a/content/utility/BUILD.gn b/content/utility/BUILD.gn
+index b1d418e..11ea643 100644
+--- a/content/utility/BUILD.gn
++++ b/content/utility/BUILD.gn
+@@ -73,6 +73,7 @@ source_set("utility") {
+     "//services/video_capture/public/mojom",
+     "//services/video_capture/public/mojom:constants",
+     "//third_party/blink/public:blink_headers",
++    "//third_party/blink/renderer/core/nova:nova_core",
+     "//url",
+   ]
+ 
+diff --git a/content/utility/services.cc b/content/utility/services.cc
+index 399e119..d6ef80f 100644
+--- a/content/utility/services.cc
++++ b/content/utility/services.cc
+@@ -42,6 +42,11 @@
+ #include "services/video_capture/public/mojom/video_capture_service.mojom.h"
+ #include "services/video_capture/video_capture_service_impl.h"
+ 
++// NOVA Profile Core: the network service reads the profile's TLS
++// configuration from the command line, so that the handshake it performs
++// produces a JA3/JA4 that belongs to the profile.
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
++
+ #if BUILDFLAG(IS_MAC)
+ #include "base/apple/mach_logging.h"
+ #include "sandbox/mac/system_services.h"
+@@ -197,6 +202,12 @@ auto RunNetworkService(
+   if (GetNetworkBinderCreationCallbackForTesting()) {
+     std::move(GetNetworkBinderCreationCallbackForTesting()).Run(binders.get());
+   }
++  // NOVA Profile Core: the network service performs the TLS handshake, so
++  // it needs the profile's own cipher suites, curves and signature
++  // algorithms to produce a JA3/JA4 that belongs to the profile rather
++  // than to the stock build.  The configuration travels down from the
++  // browser process on the --nova-config switch.
++  nova::InitializeNetworkProcess(base::CommandLine::ForCurrentProcess());
+   mojo::InterfaceEndpointClient::SetThreadNameSuffixForMetrics(
+       "NetworkServiceOutOfProcess");
+   return std::make_unique<network::NetworkService>(
+diff --git a/net/BUILD.gn b/net/BUILD.gn
+index 81c0e08..e7e8bff 100644
+--- a/net/BUILD.gn
++++ b/net/BUILD.gn
+@@ -1337,6 +1337,7 @@ component("net") {
+     "//components/network_time/time_tracker",
+     "//components/unexportable_keys",
+     "//net/http:transport_security_state_generated_files",
++    "//third_party/blink/renderer/core/nova:nova_core",
+     "//third_party/rust/sfv/v0_16/wrapper",
+     "//third_party/simdutf",
+   ]
+diff --git a/net/socket/ssl_client_socket_impl.cc b/net/socket/ssl_client_socket_impl.cc
+index 6d4b388..0c8d2c8 100644
+--- a/net/socket/ssl_client_socket_impl.cc
++++ b/net/socket/ssl_client_socket_impl.cc
+@@ -1,4 +1,4 @@
+-// Copyright 2012 The Chromium Authors
++﻿// Copyright 2012 The Chromium Authors
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+@@ -66,6 +66,7 @@
+ #include "net/ssl/ssl_key_logger.h"
+ #include "net/ssl/ssl_private_key.h"
+ #include "net/traffic_annotation/network_traffic_annotation.h"
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
+ #include "third_party/boringssl/src/include/openssl/bio.h"
+ #include "third_party/boringssl/src/include/openssl/bytestring.h"
+ #include "third_party/boringssl/src/include/openssl/err.h"
+@@ -156,6 +157,44 @@ bool HostIsIPAddressNoBrackets(std::string_view host) {
+   return unused.AssignFromIPLiteral(host);
+ }
+ 
++// Returns the BoringSSL group id for the name the profile uses.
++//
++// The names in a profile are the ones the ClientHello of a Chrome release
++// carries, and BoringSSL does not expose a lookup from a name to an id.
++// The table below is therefore the mapping, and it also carries the
++// rename the hybrid key agreement went through: the draft that Chrome
++// 131 shipped was called X25519Kyber768Draft00, and the standardised
++// group is called X25519MLKEM768.  A profile that names the draft is
++// served with the group that is on the wire today, which is what the
++// release it claims to be actually sends.
++uint16_t NovaGroupId(const std::string& name) {
++  if (absl::EqualsIgnoreCase(name, "X25519") ||
++      absl::EqualsIgnoreCase(name, "x25519")) {
++    return SSL_GROUP_X25519;
++  }
++  if (absl::EqualsIgnoreCase(name, "P-256") ||
++      absl::EqualsIgnoreCase(name, "prime256v1") ||
++      absl::EqualsIgnoreCase(name, "secp256r1")) {
++    return SSL_GROUP_SECP256R1;
++  }
++  if (absl::EqualsIgnoreCase(name, "P-384") ||
++      absl::EqualsIgnoreCase(name, "secp384r1")) {
++    return SSL_GROUP_SECP384R1;
++  }
++  if (absl::EqualsIgnoreCase(name, "P-521") ||
++      absl::EqualsIgnoreCase(name, "secp521r1")) {
++    return SSL_GROUP_SECP521R1;
++  }
++  if (absl::EqualsIgnoreCase(name, "X25519Kyber768Draft00") ||
++      absl::EqualsIgnoreCase(name, "X25519MLKEM768")) {
++    return SSL_GROUP_X25519_MLKEM768;
++  }
++  if (absl::EqualsIgnoreCase(name, "MLKEM1024")) {
++    return SSL_GROUP_MLKEM1024;
++  }
++  return 0;
++}
++
+ }  // namespace
+ 
+ class SSLClientSocketImpl::SSLContext {
+@@ -712,6 +751,46 @@ int SSLClientSocketImpl::Init() {
+     return ERR_UNEXPECTED;
+   }
+ 
++  // The supported groups of the profile.  The groups are part of the
++  // ClientHello, and their order is part of the JA3 digest, so the
++  // profile decides both which curves are offered and in which order.
++  {
++    const std::vector<std::string>& groups = nova::GetTlsSupportedGroups();
++    if (!groups.empty()) {
++      std::vector<uint16_t> ids;
++      ids.reserve(groups.size());
++      for (const std::string& group : groups) {
++        uint16_t id = NovaGroupId(group);
++        if (id == 0) {
++          // An unknown group name is a configuration error rather than a
++          // reason to fall back to the stock list silently.
++          LOG(ERROR) << "the profile names an unknown group: " << group;
++          return ERR_UNEXPECTED;
++        }
++        ids.push_back(id);
++      }
++      if (!SSL_set1_group_ids(ssl_.get(), ids.data(), ids.size())) {
++        return ERR_UNEXPECTED;
++      }
++      // The key shares follow the groups, so that the first curve the
++      // server picks has a share already in the hello.
++      std::vector<uint16_t> profile_key_shares;
++      profile_key_shares.reserve(ids.size());
++      for (uint16_t id : ids) {
++        // Only the groups that carry a key share are offered as one.
++        if (id == SSL_GROUP_X25519 || id == SSL_GROUP_SECP256R1 ||
++            id == SSL_GROUP_X25519_MLKEM768) {
++          profile_key_shares.push_back(id);
++        }
++      }
++      if (!profile_key_shares.empty() &&
++          !SSL_set1_client_key_shares(ssl_.get(), profile_key_shares.data(),
++                                      profile_key_shares.size())) {
++        return ERR_UNEXPECTED;
++      }
++    }
++  }
++
+   if (IsCachingEnabled()) {
+     initial_session_cache_generation_number_ =
+         context_->ssl_client_session_cache()->generation_number();
+@@ -788,6 +867,53 @@ int SSLClientSocketImpl::Init() {
+     return ERR_UNEXPECTED;
+   }
+ 
++  // The cipher suites of the profile.  JA3 is the digest of the
++  // ClientHello, and the order of the cipher suites is part of that
++  // digest: two clients that offer the same suites in a different order
++  // have different JA3.  The stock Chromium list is the same for every
++  // profile that runs the same build, so without this the handshake of
++  // two profiles on two machines would be identical.
++  //
++  // The list is set through the custom cipher list, which preserves the
++  // order the suites are written in, rather than through the strict
++  // cipher list, which sorts them.
++  {
++    const std::vector<std::string>& suites = nova::GetTlsCipherSuites();
++    if (!suites.empty()) {
++      std::string custom;
++      for (const std::string& suite : suites) {
++        if (!custom.empty()) {
++          custom += ":";
++        }
++        custom += suite;
++      }
++      // The custom list replaces the strict one, so the suites that the
++      // profile does not mention would drop out of the handshake.  They
++      // are added back at the end, in the stock order, so that the
++      // handshake still offers everything Chromium offers and the profile
++      // only decides what comes first.
++      const STACK_OF(SSL_CIPHER)* all = SSL_get_ciphers(ssl_.get());
++      if (all != nullptr) {
++        for (size_t i = 0; i < sk_SSL_CIPHER_num(all); ++i) {
++          const SSL_CIPHER* cipher = sk_SSL_CIPHER_value(all, i);
++          const char* name = SSL_CIPHER_get_name(cipher);
++          if (name == nullptr) {
++            continue;
++          }
++          if (custom.find(name) != std::string::npos) {
++            continue;
++          }
++          custom += ":";
++          custom += name;
++        }
++      }
++      if (!SSL_set_strict_cipher_list(ssl_.get(), custom.c_str())) {
++        LOG(ERROR) << "the profile's cipher list was rejected: " << custom;
++        return ERR_UNEXPECTED;
++      }
++    }
++  }
++
+   // Disable SHA-1 server signatures.
+   // TODO(crbug.com/boringssl/699): Once the default is flipped in BoringSSL, we
+   // no longer need to override it.
+@@ -809,6 +935,52 @@ int SSLClientSocketImpl::Init() {
+     return ERR_UNEXPECTED;
+   }
+ 
++  // The signature algorithms of the profile.  They are sent in the
++  // ClientHello, and their order is part of the JA3 digest, so the
++  // profile decides the order.  The stock list is used when the profile
++  // does not name any.
++  {
++    const std::vector<std::string>& algorithms =
++        nova::GetTlsSignatureAlgorithms();
++    if (!algorithms.empty()) {
++      std::vector<uint16_t> ids;
++      ids.reserve(algorithms.size());
++      for (const std::string& algorithm : algorithms) {
++        const char* name = algorithm.c_str();
++        uint16_t id = 0;
++        if (absl::EqualsIgnoreCase(name, "ecdsa_secp256r1_sha256")) {
++          id = SSL_SIGN_ECDSA_SECP256R1_SHA256;
++        } else if (absl::EqualsIgnoreCase(name, "ecdsa_secp384r1_sha384")) {
++          id = SSL_SIGN_ECDSA_SECP384R1_SHA384;
++        } else if (absl::EqualsIgnoreCase(name, "ecdsa_secp521r1_sha512")) {
++          id = SSL_SIGN_ECDSA_SECP521R1_SHA512;
++        } else if (absl::EqualsIgnoreCase(name, "ed25519")) {
++          id = SSL_SIGN_ED25519;
++        } else if (absl::EqualsIgnoreCase(name, "rsa_pss_rsae_sha256")) {
++          id = SSL_SIGN_RSA_PSS_RSAE_SHA256;
++        } else if (absl::EqualsIgnoreCase(name, "rsa_pss_rsae_sha384")) {
++          id = SSL_SIGN_RSA_PSS_RSAE_SHA384;
++        } else if (absl::EqualsIgnoreCase(name, "rsa_pss_rsae_sha512")) {
++          id = SSL_SIGN_RSA_PSS_RSAE_SHA512;
++        } else if (absl::EqualsIgnoreCase(name, "rsa_pkcs1_sha256")) {
++          id = SSL_SIGN_RSA_PKCS1_SHA256;
++        } else if (absl::EqualsIgnoreCase(name, "rsa_pkcs1_sha384")) {
++          id = SSL_SIGN_RSA_PKCS1_SHA384;
++        } else if (absl::EqualsIgnoreCase(name, "rsa_pkcs1_sha512")) {
++          id = SSL_SIGN_RSA_PKCS1_SHA512;
++        } else {
++          LOG(ERROR) << "the profile names an unknown signature algorithm: "
++                     << algorithm;
++          return ERR_UNEXPECTED;
++        }
++        ids.push_back(id);
++      }
++      if (!SSL_set_verify_algorithm_prefs(ssl_.get(), ids.data(), ids.size())) {
++        return ERR_UNEXPECTED;
++      }
++    }
++  }
++
+   SSL_set_alps_use_new_codepoint(
+       ssl_.get(),
+       base::FeatureList::IsEnabled(features::kUseNewAlpsCodepointHttp2));
+diff --git a/third_party/blink/renderer/core/css/font_face_set.cc b/third_party/blink/renderer/core/css/font_face_set.cc
+index 783e00a..a8504d7 100644
+--- a/third_party/blink/renderer/core/css/font_face_set.cc
++++ b/third_party/blink/renderer/core/css/font_face_set.cc
+@@ -7,6 +7,7 @@
+ #include "base/task/single_thread_task_runner.h"
+ #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_font_face_set_load_status.h"
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
+ #include "third_party/blink/renderer/core/css/font_face_cache.h"
+ #include "third_party/blink/renderer/core/css/font_face_set_load_event.h"
+ #include "third_party/blink/renderer/platform/font_family_names.h"
+@@ -236,6 +237,32 @@ bool FontFaceSet::check(const String& font_string,
+     return false;
+   }
+ 
++  // The font inventory comes from the profile.  The host's inventory is
++  // the inventory of the Windows machine -- a couple of hundred families
++  // that include the corporate fonts of the machine -- and a page that
++  // probes for them learns the operating system and often the machine
++  // itself.  The profile declares the fonts of the device it claims to
++  // be, and this is the answer the page gets.
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig config = nova::GetNovaConfig();
++    if (config.fonts.mode != "native_passthrough" &&
++        config.fonts.mode != "disabled") {
++      const Font* font = ResolveFontStyle(font_string);
++      if (font) {
++        for (const FontFamily* f = &font->GetFontDescription().Family(); f;
++             f = f->Next()) {
++          if (f->FamilyIsGeneric()) {
++            continue;
++          }
++          if (!nova::IsFontInProfile(f->FamilyName(), config.fonts.installed)) {
++            return false;
++          }
++        }
++      }
++      return true;
++    }
++  }
++
+   const Font* font = ResolveFontStyle(font_string);
+   if (!font) {
+     exception_state.ThrowDOMException(
+diff --git a/third_party/blink/renderer/core/dom/element.cc b/third_party/blink/renderer/core/dom/element.cc
+index e38246a..1c6c848 100644
+--- a/third_party/blink/renderer/core/dom/element.cc
++++ b/third_party/blink/renderer/core/dom/element.cc
+@@ -29,6 +29,8 @@
+ #include <algorithm>
+ #include <bitset>
+ #include <limits>
++
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
+ #include <memory>
+ #include <optional>
+ #include <ranges>
+@@ -3521,6 +3523,9 @@ DOMRectList* Element::getClientRects() {
+   for (auto& rect : rects) {
+     GetDocument().AdjustRectForScrollAndAbsoluteZoom(rect,
+                                                      *element_layout_object);
++    // The same perturbation as |GetBoundingClientRect()| applies here, so
++    // that the list and the single rectangle agree with each other.
++    nova::ApplyRectDeltas(rect, "element");
+   }
+   return MakeGarbageCollected<DOMRectList>(rects);
+ }
+@@ -3611,7 +3616,13 @@ gfx::RectF Element::GetBoundingClientRectNoLifecycleUpdate() const {
+ DOMRect* Element::GetBoundingClientRect() {
+   GetDocument().UpdateStyleAndLayoutForNode(this,
+                                             DocumentUpdateReason::kJavaScript);
+-  return DOMRect::FromRectF(GetBoundingClientRectNoLifecycleUpdate());
++  gfx::RectF rect = GetBoundingClientRectNoLifecycleUpdate();
++  // The geometry perturbation.  The deltas are integer pixel offsets
++  // derived from the profile's own seed, so two profiles never report
++  // the same rectangle for the same element and the layout stays
++  // self-consistent: the rectangle still covers the painted pixels.
++  nova::ApplyRectDeltas(rect, "element");
++  return DOMRect::FromRectF(rect);
+ }
+ 
+ DOMRect* Element::GetBoundingClientRectForBinding() {
+diff --git a/third_party/blink/renderer/core/dom/range.cc b/third_party/blink/renderer/core/dom/range.cc
+index 90e8349..38ad93a 100644
+--- a/third_party/blink/renderer/core/dom/range.cc
++++ b/third_party/blink/renderer/core/dom/range.cc
+@@ -30,6 +30,7 @@
+ #include "base/check.h"
+ #include "base/check_op.h"
+ #include "third_party/blink/renderer/core/display_lock/display_lock_document_state.h"
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
+ #include "third_party/blink/renderer/core/display_lock/display_lock_utilities.h"
+ #include "third_party/blink/renderer/core/dom/character_data.h"
+ #include "third_party/blink/renderer/core/dom/container_node.h"
+@@ -1671,6 +1672,16 @@ DOMRectList* Range::getClientRects() const {
+   Vector<gfx::QuadF> quads;
+   GetBorderAndTextQuads(quads);
+ 
++  // The list is perturbed like the single rectangle, so that the two
++  // agree with each other about the geometry of the selection.
++  if (nova::IsNovaCoreInitialized()) {
++    for (auto& quad : quads) {
++      gfx::RectF rect = quad.BoundingBox();
++      nova::ApplyRectDeltas(rect, "range");
++      quad = gfx::QuadF(gfx::RectF(rect.x(), rect.y(), rect.width(), rect.height()));
++    }
++  }
++
+   return MakeGarbageCollected<DOMRectList>(quads);
+ }
+ 
+@@ -1678,7 +1689,12 @@ DOMRect* Range::getBoundingClientRect() const {
+   // TODO(crbug.com/1499981): This should be removed once synchronized scrolling
+   // impact is understood.
+   SyncScrollAttemptHeuristic::DidAccessScrollOffset();
+-  return DOMRect::FromRectF(BoundingRect());
++  gfx::RectF rect = BoundingRect();
++  // The range rectangle is perturbed by the same rule as the element
++  // rectangle, but by a different amount, so that the two surfaces stay
++  // distinguishable.
++  nova::ApplyRectDeltas(rect, "range");
++  return DOMRect::FromRectF(rect);
+ }
+ 
+ // TODO(editing-dev): We should make
+diff --git a/third_party/blink/renderer/modules/device_orientation/BUILD.gn b/third_party/blink/renderer/modules/device_orientation/BUILD.gn
+index fd6f67a..fa24442 100644
+--- a/third_party/blink/renderer/modules/device_orientation/BUILD.gn
++++ b/third_party/blink/renderer/modules/device_orientation/BUILD.gn
+@@ -40,6 +40,7 @@ blink_modules_sources("device_orientation") {
+   deps = [
+     "//services/device/public/cpp/generic_sensor",
+     "//services/device/public/mojom:generic_sensor",
++    "//third_party/blink/renderer/core/nova:nova_core",
+     "//third_party/blink/renderer/modules/permissions",
+   ]
+ }
+diff --git a/third_party/blink/renderer/modules/device_orientation/device_motion_event_pump.cc b/third_party/blink/renderer/modules/device_orientation/device_motion_event_pump.cc
+index c2eb77a..4b262d5 100644
+--- a/third_party/blink/renderer/modules/device_orientation/device_motion_event_pump.cc
++++ b/third_party/blink/renderer/modules/device_orientation/device_motion_event_pump.cc
+@@ -8,6 +8,7 @@
+ 
+ #include "base/numerics/angle_conversions.h"
+ #include "services/device/public/cpp/generic_sensor/sensor_reading.h"
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
+ #include "services/device/public/mojom/sensor.mojom-blink.h"
+ #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+@@ -135,9 +136,22 @@ DeviceMotionData* DeviceMotionEventPump::GetDataFromSharedMemory() {
+     if (accelerometer_reading.timestamp() == 0.0)
+       return nullptr;
+ 
+-    acceleration_including_gravity = DeviceMotionEventAcceleration::Create(
+-        accelerometer_reading.accel.x, accelerometer_reading.accel.y,
+-        accelerometer_reading.accel.z);
++    // The motion readings are served from the profile's own
++    // configuration.  A host has no accelerometer at all -- the readings
++    // would be NaN, which is a strong signal on its own -- so the profile
++    // carries a plausible set of values instead.  The values are derived
++    // from the profile's own seed, so two units of the same model do not
++    // report the same motion.
++    if (nova::IsNovaCoreInitialized() &&
++        nova::GetNovaConfigRef().sensors.enabled) {
++      acceleration_including_gravity = DeviceMotionEventAcceleration::Create(
++          nova::GetSensorAccelerometerX(), nova::GetSensorAccelerometerY(),
++          nova::GetSensorAccelerometerZ());
++    } else {
++      acceleration_including_gravity = DeviceMotionEventAcceleration::Create(
++          accelerometer_reading.accel.x, accelerometer_reading.accel.y,
++          accelerometer_reading.accel.z);
++    }
+   } else {
+     acceleration_including_gravity =
+         DeviceMotionEventAcceleration::Create(NAN, NAN, NAN);
+@@ -162,10 +176,19 @@ DeviceMotionData* DeviceMotionEventPump::GetDataFromSharedMemory() {
+     if (gyroscope_reading.timestamp() == 0.0)
+       return nullptr;
+ 
+-    rotation_rate = DeviceMotionEventRotationRate::Create(
+-        base::RadToDeg(gyroscope_reading.gyro.x.value()),
+-        base::RadToDeg(gyroscope_reading.gyro.y.value()),
+-        base::RadToDeg(gyroscope_reading.gyro.z.value()));
++    // The rotation rate comes from the profile as well; see the comment
++    // on the accelerometer above.
++    if (nova::IsNovaCoreInitialized() &&
++        nova::GetNovaConfigRef().sensors.enabled) {
++      rotation_rate = DeviceMotionEventRotationRate::Create(
++          nova::GetSensorGyroscopeX(), nova::GetSensorGyroscopeY(),
++          nova::GetSensorGyroscopeZ());
++    } else {
++      rotation_rate = DeviceMotionEventRotationRate::Create(
++          base::RadToDeg(gyroscope_reading.gyro.x.value()),
++          base::RadToDeg(gyroscope_reading.gyro.y.value()),
++          base::RadToDeg(gyroscope_reading.gyro.z.value()));
++    }
+   } else {
+     rotation_rate = DeviceMotionEventRotationRate::Create(NAN, NAN, NAN);
+   }
+diff --git a/third_party/blink/renderer/modules/mediastream/BUILD.gn b/third_party/blink/renderer/modules/mediastream/BUILD.gn
+index baae392..012c472 100644
+--- a/third_party/blink/renderer/modules/mediastream/BUILD.gn
++++ b/third_party/blink/renderer/modules/mediastream/BUILD.gn
+@@ -141,6 +141,7 @@ blink_modules_sources("mediastream") {
+     "//media/webrtc",
+     "//services/viz/public/cpp/gpu",
+     "//third_party/blink/public/common",
++    "//third_party/blink/renderer/core/nova:nova_core",
+     "//third_party/blink/renderer/modules/imagecapture",
+     "//third_party/blink/renderer/modules/screen_details",
+     "//third_party/libyuv",
+diff --git a/third_party/blink/renderer/modules/mediastream/media_devices.cc b/third_party/blink/renderer/modules/mediastream/media_devices.cc
+index 47cca1b..6347e70 100644
+--- a/third_party/blink/renderer/modules/mediastream/media_devices.cc
++++ b/third_party/blink/renderer/modules/mediastream/media_devices.cc
+@@ -51,6 +51,7 @@
+ #include "third_party/blink/renderer/core/frame/settings.h"
+ #include "third_party/blink/renderer/core/frame/web_feature.h"
+ #include "third_party/blink/renderer/core/html/html_element.h"
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
+ #include "third_party/blink/renderer/modules/mediastream/crop_target.h"
+ #include "third_party/blink/renderer/modules/mediastream/input_device_info.h"
+ #include "third_party/blink/renderer/modules/mediastream/media_stream.h"
+@@ -1461,6 +1462,31 @@ void MediaDevices::DevicesEnumerated(
+           static_cast<mojom::blink::MediaDeviceType>(i);
+       WebMediaDeviceInfo device_info = enumeration[i][j];
+       String device_label = String::FromUtf8(device_info.label);
++
++      // The device identifiers are rewritten so that they belong to this
++      // profile alone.  The host's identifiers are the same in every
++      // profile that runs on the machine, so a page that records them
++      // can link two profiles that are supposed to be two different
++      // devices.
++      const char* kind = "unknown";
++      switch (device_type) {
++        case mojom::blink::MediaDeviceType::kMediaAudioInput:
++          kind = "audioinput";
++          break;
++        case mojom::blink::MediaDeviceType::kMediaAudioOutput:
++          kind = "audiooutput";
++          break;
++        case mojom::blink::MediaDeviceType::kMediaVideoInput:
++          kind = "videoinput";
++          break;
++        default:
++          break;
++      }
++      const std::string nova_device_id = nova::RewriteMediaDeviceId(
++          device_info.device_id, kind, static_cast<size_t>(j));
++      const std::string nova_group_id = nova::RewriteMediaDeviceId(
++          device_info.group_id, "group", static_cast<size_t>(j));
++
+       if (device_type == mojom::blink::MediaDeviceType::kMediaAudioInput ||
+           device_type == mojom::blink::MediaDeviceType::kMediaVideoInput) {
+         if (!device_info.device_id.empty()) {
+@@ -1468,8 +1494,8 @@ void MediaDevices::DevicesEnumerated(
+         }
+         InputDeviceInfo* input_device_info =
+             MakeGarbageCollected<InputDeviceInfo>(
+-                String::FromUtf8(device_info.device_id), device_label,
+-                String::FromUtf8(device_info.group_id), device_type);
++                String::FromUtf8(nova_device_id), device_label,
++                String::FromUtf8(nova_group_id), device_type);
+         if (device_type == mojom::blink::MediaDeviceType::kMediaVideoInput &&
+             !video_input_capabilities.empty()) {
+           input_device_info->SetVideoInputCapabilities(
+@@ -1483,8 +1509,8 @@ void MediaDevices::DevicesEnumerated(
+         media_devices.push_back(input_device_info);
+       } else {
+         media_devices.push_back(MakeGarbageCollected<MediaDeviceInfo>(
+-            String::FromUtf8(device_info.device_id), device_label,
+-            String::FromUtf8(device_info.group_id), device_type));
++            String::FromUtf8(nova_device_id), device_label,
++            String::FromUtf8(nova_group_id), device_type));
+       }
+     }
+   }
+diff --git a/third_party/blink/renderer/modules/quota/BUILD.gn b/third_party/blink/renderer/modules/quota/BUILD.gn
+index 012cf1b..6765597 100644
+--- a/third_party/blink/renderer/modules/quota/BUILD.gn
++++ b/third_party/blink/renderer/modules/quota/BUILD.gn
+@@ -17,5 +17,8 @@ blink_modules_sources("quota") {
+     "storage_manager.cc",
+     "storage_manager.h",
+   ]
+-  deps = [ "//third_party/blink/renderer/modules/permissions" ]
++  deps = [
++    "//third_party/blink/renderer/core/nova:nova_core",
++    "//third_party/blink/renderer/modules/permissions",
++  ]
+ }
+diff --git a/third_party/blink/renderer/modules/quota/storage_manager.cc b/third_party/blink/renderer/modules/quota/storage_manager.cc
+index ef1c723..aa74e0b 100644
+--- a/third_party/blink/renderer/modules/quota/storage_manager.cc
++++ b/third_party/blink/renderer/modules/quota/storage_manager.cc
+@@ -19,6 +19,7 @@
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/core/frame/web_feature.h"
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
+ #include "third_party/blink/renderer/modules/permissions/permission_utils.h"
+ #include "third_party/blink/renderer/modules/quota/quota_utils.h"
+ #include "third_party/blink/renderer/platform/bindings/v8_throw_exception.h"
+@@ -69,6 +70,20 @@ void QueryStorageUsageAndQuotaCallback(
+   }
+ 
+   StorageEstimate* estimate = StorageEstimate::Create();
++
++  // The storage estimate is served from the profile's own configuration.
++  // The host's quota is a fraction of the disk of the machine the browser
++  // runs on, and its usage depends on what else is stored in the profile
++  // directory -- both of them are trivially unusual to a page that
++  // compares them against the device class the user agent claims.
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++    if (config.storage_network.quota_bytes > 0) {
++      usage_in_bytes = static_cast<int64_t>(nova::GetStorageUsageBytes());
++      quota_in_bytes = static_cast<int64_t>(nova::GetStorageQuotaBytes());
++    }
++  }
++
+   estimate->setUsage(usage_in_bytes);
+   estimate->setQuota(quota_in_bytes);
+ 
+diff --git a/third_party/blink/renderer/modules/webaudio/BUILD.gn b/third_party/blink/renderer/modules/webaudio/BUILD.gn
+index 170ae80..6025281 100644
+--- a/third_party/blink/renderer/modules/webaudio/BUILD.gn
++++ b/third_party/blink/renderer/modules/webaudio/BUILD.gn
+@@ -194,6 +194,7 @@ blink_modules_sources("webaudio") {
+   }
+   deps = [
+     "//services/metrics/public/cpp:ukm_builders",
++    "//third_party/blink/renderer/core/nova:nova_core",
+     "//third_party/blink/renderer/modules/mediastream",
+     "//third_party/blink/renderer/modules/peerconnection",
+     "//third_party/blink/renderer/modules/permissions",
+diff --git a/third_party/blink/renderer/modules/webaudio/audio_context.cc b/third_party/blink/renderer/modules/webaudio/audio_context.cc
+index 946ce4b..7ecab2e 100644
+--- a/third_party/blink/renderer/modules/webaudio/audio_context.cc
++++ b/third_party/blink/renderer/modules/webaudio/audio_context.cc
+@@ -39,6 +39,7 @@
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/core/html/media/html_media_element.h"
+ #include "third_party/blink/renderer/core/inspector/console_message.h"
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
+ #include "third_party/blink/renderer/core/page/page.h"
+ #include "third_party/blink/renderer/core/probe/core_probes.h"
+ #include "third_party/blink/renderer/core/timing/dom_window_performance.h"
+@@ -1435,6 +1436,18 @@ double AudioContext::baseLatency() const {
+   DCHECK_CALLED_ON_VALID_SEQUENCE(main_thread_sequence_checker_);
+   DCHECK(destinationNode());
+ 
++  // The latency is served from the profile's own configuration.  The
++  // host's base latency is the buffer size of the sound card divided by
++  // its rate, and the two together identify the audio stack of the
++  // machine.
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++    if (config.audio.mode != "native_passthrough" &&
++        config.audio.mode != "disabled" && config.audio.base_latency > 0.0) {
++      return config.audio.base_latency;
++    }
++  }
++
+   return base_latency_;
+ }
+ 
+@@ -1442,6 +1455,16 @@ double AudioContext::outputLatency() const {
+   DCHECK_CALLED_ON_VALID_SEQUENCE(main_thread_sequence_checker_);
+   DCHECK(destinationNode());
+ 
++  // The output latency comes from the profile as well; see the comment
++  // on |baseLatency()| above.
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++    if (config.audio.mode != "native_passthrough" &&
++        config.audio.mode != "disabled" && config.audio.output_latency > 0.0) {
++      return config.audio.output_latency;
++    }
++  }
++
+   DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
+ 
+   double factor = GetOutputLatencyQuantizingFactor();
+diff --git a/third_party/blink/renderer/modules/webaudio/audio_destination_node.cc b/third_party/blink/renderer/modules/webaudio/audio_destination_node.cc
+index 1d2302a..fcbe5b2 100644
+--- a/third_party/blink/renderer/modules/webaudio/audio_destination_node.cc
++++ b/third_party/blink/renderer/modules/webaudio/audio_destination_node.cc
+@@ -25,6 +25,7 @@
+ 
+ #include "third_party/blink/renderer/modules/webaudio/audio_destination_node.h"
+ 
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
+ #include "third_party/blink/renderer/modules/webaudio/audio_destination_handler.h"
+ #include "third_party/blink/renderer/modules/webaudio/audio_graph_tracer.h"
+ 
+@@ -39,6 +40,17 @@ AudioDestinationHandler& AudioDestinationNode::GetAudioDestinationHandler()
+ }
+ 
+ uint32_t AudioDestinationNode::maxChannelCount() const {
++  // The channel count comes from the profile.  The host's count is the
++  // number of channels of the sound card, which on a desktop machine is
++  // often six or eight -- a number that no Android phone of the class
++  // the user agent claims has.
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++    if (config.audio.mode != "native_passthrough" &&
++        config.audio.mode != "disabled" && config.audio.max_channel_count > 0) {
++      return static_cast<uint32_t>(config.audio.max_channel_count);
++    }
++  }
+   return GetAudioDestinationHandler().MaxChannelCount();
+ }
+ 
+diff --git a/third_party/blink/renderer/modules/webaudio/base_audio_context.h b/third_party/blink/renderer/modules/webaudio/base_audio_context.h
+index b77a86c..a5fd77d 100644
+--- a/third_party/blink/renderer/modules/webaudio/base_audio_context.h
++++ b/third_party/blink/renderer/modules/webaudio/base_audio_context.h
+@@ -36,6 +36,7 @@
+ #include "third_party/blink/renderer/bindings/modules/v8/v8_decode_success_callback.h"
+ #include "third_party/blink/renderer/core/dom/events/event_listener.h"
+ #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_state_observer.h"
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
+ #include "third_party/blink/renderer/modules/modules_export.h"
+ #include "third_party/blink/renderer/modules/webaudio/audio_destination_node.h"
+ #include "third_party/blink/renderer/modules/webaudio/deferred_task_handler.h"
+@@ -120,7 +121,21 @@ class MODULES_EXPORT BaseAudioContext
+   // AudioDestinationHandler instead.
+   virtual AudioDestinationNode* destinationNode() const;
+ 
+-  float sampleRate() const { return destination_handler_->SampleRate(); }
++  // The sample rate is served from the profile's own configuration.  The
++  // host's rate is the rate of the sound card of the machine the browser
++  // runs on, which is a much stronger signal than it looks: a desktop
++  // machine reports 48000 almost everywhere, while an Android device of
++  // the class the user agent claims reports 44100 or 96000.
++  float sampleRate() const {
++    if (nova::IsNovaCoreInitialized()) {
++      const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++      if (config.audio.mode != "native_passthrough" &&
++          config.audio.mode != "disabled" && config.audio.sample_rate > 0.0) {
++        return static_cast<float>(config.audio.sample_rate);
++      }
++    }
++    return destination_handler_->SampleRate();
++  }
+   double currentTime() const { return destination_handler_->CurrentTime(); }
+   AudioListener* listener() { return listener_.Get(); }
+   // Virtual so AudioContext::state() can add UseCounters.
+diff --git a/third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc b/third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc
+index 571b428..3f0ff47 100644
+--- a/third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc
++++ b/third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc
+@@ -11,6 +11,7 @@
+ #include "media/base/audio_bus.h"
+ #include "media/base/audio_glitch_info.h"
+ #include "third_party/blink/renderer/core/execution_context/execution_context.h"
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
+ #include "third_party/blink/renderer/modules/webaudio/audio_node_input.h"
+ #include "third_party/blink/renderer/modules/webaudio/audio_node_output.h"
+ #include "third_party/blink/renderer/modules/webaudio/audio_worklet.h"
+@@ -247,6 +248,25 @@ void OfflineAudioDestinationHandler::DoOfflineRendering() {
+     uint32_t frames_available_to_copy = std::min(
+         frames_to_process_, GetDeferredTaskHandler().RenderQuantumFrames());
+ 
++    // The rendered samples are perturbed before they are handed to the
++    // page.  The Web Audio fingerprint is a sum over the whole render
++    // and it resolves far below the level of the audio pipeline's own
++    // quantisation, so without this every profile that renders the same
++    // graph produces the same fingerprint.
++    if (nova::IsNovaCoreInitialized()) {
++      const nova::ProfileConfig config = nova::GetNovaConfig();
++      if (config.audio.noise_strength > 0.0 &&
++          config.audio.mode != "native_passthrough" &&
++          config.audio.mode != "disabled") {
++        for (unsigned channel_index = 0; channel_index < number_of_channels;
++             ++channel_index) {
++          nova::ApplyAudioNoise(
++              render_bus_->Channel(channel_index)->MutableSpan().data(),
++              frames_available_to_copy, frames_processed_);
++        }
++      }
++    }
++
+     for (unsigned channel_index = 0; channel_index < number_of_channels;
+          ++channel_index) {
+       shared_render_target_->channels()[channel_index]
+diff --git a/third_party/blink/renderer/modules/webgpu/BUILD.gn b/third_party/blink/renderer/modules/webgpu/BUILD.gn
+index 40f7546..9d4351c 100644
+--- a/third_party/blink/renderer/modules/webgpu/BUILD.gn
++++ b/third_party/blink/renderer/modules/webgpu/BUILD.gn
+@@ -115,6 +115,7 @@ blink_modules_sources("webgpu") {
+     "//services/metrics/public/cpp:ukm_builders",
+     "//skia",
+     "//skia:skcms",
++    "//third_party/blink/renderer/core/nova:nova_core",
+     "//third_party/blink/renderer/modules/webcodecs",
+   ]
+ 
+diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter_info.cc b/third_party/blink/renderer/modules/webgpu/gpu_adapter_info.cc
+index 9d15570..7eb30cb 100644
+--- a/third_party/blink/renderer/modules/webgpu/gpu_adapter_info.cc
++++ b/third_party/blink/renderer/modules/webgpu/gpu_adapter_info.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "third_party/blink/renderer/modules/webgpu/gpu_adapter_info.h"
+ 
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
+ #include "third_party/blink/renderer/modules/webgpu/gpu_memory_heap_info.h"
+ #include "third_party/blink/renderer/modules/webgpu/gpu_subgroup_matrix_config.h"
+ 
+@@ -46,18 +47,55 @@ void GPUAdapterInfo::AppendSubgroupMatrixConfig(
+ }
+ 
+ const String& GPUAdapterInfo::vendor() const {
++  // The adapter is served from the profile's own configuration.  The
++  // host's adapter is the GPU of the machine, and the WebGPU adapter
++  // information carries the vendor, the architecture and the driver
++  // version -- a set of strings that identifies the machine far more
++  // precisely than the user agent does.
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig config = nova::GetNovaConfig();
++    if (config.webgpu.enabled && !config.webgpu.adapter.vendor.empty()) {
++      static thread_local String cached_vendor;
++      cached_vendor = String::FromUtf8(config.webgpu.adapter.vendor);
++      return cached_vendor;
++    }
++  }
+   return vendor_;
+ }
+ 
+ const String& GPUAdapterInfo::architecture() const {
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig config = nova::GetNovaConfig();
++    if (config.webgpu.enabled && !config.webgpu.adapter.architecture.empty()) {
++      static thread_local String cached_architecture;
++      cached_architecture = String::FromUtf8(config.webgpu.adapter.architecture);
++      return cached_architecture;
++    }
++  }
+   return architecture_;
+ }
+ 
+ const String& GPUAdapterInfo::device() const {
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig config = nova::GetNovaConfig();
++    if (config.webgpu.enabled && !config.webgpu.adapter.device.empty()) {
++      static thread_local String cached_device;
++      cached_device = String::FromUtf8(config.webgpu.adapter.device);
++      return cached_device;
++    }
++  }
+   return device_;
+ }
+ 
+ const String& GPUAdapterInfo::description() const {
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig config = nova::GetNovaConfig();
++    if (config.webgpu.enabled && !config.webgpu.adapter.description.empty()) {
++      static thread_local String cached_description;
++      cached_description = String::FromUtf8(config.webgpu.adapter.description);
++      return cached_description;
++    }
++  }
+   return description_;
+ }
+ 

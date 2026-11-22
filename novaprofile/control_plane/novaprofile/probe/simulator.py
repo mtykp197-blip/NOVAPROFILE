@@ -369,10 +369,10 @@ class SimulatedSession:
                 "widths": {},
                 "genericWidths": {},
                 "installed": sorted(
-                    _getattr_path(config, "fonts.families") or ["Roboto", "Noto Sans", "Arial"]
+                    _getattr_path(config, "fonts.installed") or ["Roboto", "Noto Sans", "Arial"]
                 ),
                 "notInstalled": ["Helvetica", "Times New Roman", "Courier New"],
-                "installedCount": len(_getattr_path(config, "fonts.families") or []),
+                "installedCount": len(_getattr_path(config, "fonts.installed") or []),
                 "probed": 16,
             },
             "media_devices": {
@@ -418,7 +418,7 @@ class SimulatedSession:
             "storage": {
                 "storage": {
                     "available": True,
-                    "quota": _getattr_path(config, "storage_network.storage_quota_bytes")
+                    "quota": _getattr_path(config, "storage_network.quota_bytes")
                     or 3_221_225_472,
                     "usage": _digest_int(config, "storage.usage", 8),
                     "usageDetails": None,
@@ -433,8 +433,8 @@ class SimulatedSession:
                 "connection": {
                     "effectiveType": _getattr_path(config, "storage_network.effective_type")
                     or "4g",
-                    "rtt": _getattr_path(config, "storage_network.rtt_ms") or 50,
-                    "downlink": _getattr_path(config, "storage_network.downlink_mbps") or 10.0,
+                    "rtt": _getattr_path(config, "storage_network.rtt") or 50,
+                    "downlink": _getattr_path(config, "storage_network.downlink") or 10.0,
                     "saveData": False,
                     "type": "wifi",
                     "effectiveTypeSet": True,

@@ -97,6 +97,15 @@ class Axis(str, Enum):
     #: fleet does not report one identical parameter set on every
     #: machine it was built on.
     GPU_PARAMS = "gpu_params"
+    #: The TLS handshake.
+    #:
+    #: The ClientHello is the one fingerprint that is produced before any
+    #: script runs, in the network service, and that no amount of
+    #: JavaScript can reach.  JA3 is the MD5 of that message, so two
+    #: profiles with the same cipher order are the same client as far as
+    #: a TLS-fingerprinting site is concerned.  This axis carries the
+    #: per-unit salt that separates them.
+    TLS_HANDSHAKE = "tls_handshake"
 
 
 #: Domain separation strings.  These are *not* secrets -- they are protocol
@@ -125,6 +134,7 @@ DOMAIN_SALTS: dict[Axis, bytes] = {
     Axis.CANVAS_TIMING: b"nova/v1/canvas_timing",
     Axis.FONT_TIMING: b"nova/v1/font_timing",
     Axis.GPU_PARAMS: b"nova/v1/gpu_params",
+    Axis.TLS_HANDSHAKE: b"nova/v1/tls_handshake",
 }
 
 

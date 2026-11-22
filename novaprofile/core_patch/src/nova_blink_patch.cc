@@ -60,6 +60,9 @@
 #include "nova_core_config.h"
 #include "nova_pixel_noise.h"
 
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -68,7 +71,9 @@
 #include "base/files/file_path.h"
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/strings/string_util.h"
 #include "base/synchronization/lock.h"
+#include "ui/gfx/geometry/rect_f.h"
 
 namespace nova {
 
@@ -381,6 +386,60 @@ PixelNoiseKey GetAudioNoiseKey() {
   return NovaConfigHolder::Get().AudioKey();
 }
 
+void ApplyAudioNoise(float* samples, size_t count, size_t offset) {
+  if (samples == nullptr || count == 0) {
+    return;
+  }
+  if (!IsNovaCoreInitialized()) {
+    return;
+  }
+  const ProfileConfig config = GetNovaConfig();
+  if (config.audio.mode == "native_passthrough" ||
+      config.audio.mode == "disabled") {
+    return;
+  }
+  if (config.audio.respect_core_quantization &&
+      config.audio.noise_strength <= 0.0) {
+    return;
+  }
+
+  // The perturbation is derived from the noise key, so it is stable for
+  // one profile and different for every other profile.  The magnitude is
+  // far below the resolution of the Web Audio fingerprint -- the
+  // fingerprint is a sum over the whole render, and the sum of the
+  // perturbation cancels out -- but it is enough to move the last bits of
+  // the result, which is exactly where the fingerprint lives.
+  const PixelNoiseKey key = GetAudioNoiseKey();
+  const double strength = config.audio.noise_strength > 0.0
+                              ? config.audio.noise_strength
+                              : 1.0;
+  for (size_t i = 0; i < count; ++i) {
+    const size_t index = offset + i;
+    // A cheap integer mix of the key and the sample index.  It has to be
+    // fast: this runs on every rendered quantum.
+    uint64_t hash = static_cast<uint64_t>(key.bytes[0]) |
+                    (static_cast<uint64_t>(key.bytes[1]) << 8) |
+                    (static_cast<uint64_t>(key.bytes[2]) << 16) |
+                    (static_cast<uint64_t>(key.bytes[3]) << 24) |
+                    (static_cast<uint64_t>(key.bytes[4]) << 32) |
+                    (static_cast<uint64_t>(key.bytes[5]) << 40) |
+                    (static_cast<uint64_t>(key.bytes[6]) << 48) |
+                    (static_cast<uint64_t>(key.bytes[7]) << 56);
+    hash ^= index * 0x9E3779B97F4A7C15ULL;
+    hash ^= hash >> 29;
+    hash *= 0xBF58476D1CE4E5B9ULL;
+    hash ^= hash >> 32;
+
+    // The perturbation is scaled into the twenty-fourth bit of the
+    // mantissa, which is below the level the Web Audio fingerprint
+    // resolves but above the level of the quantisation that the audio
+    // pipeline applies to a float.
+    const double unit = static_cast<double>(hash >> 40) /
+                        static_cast<double>(1ULL << 24) - 0.5;
+    samples[i] += static_cast<float>(unit * strength * 1.0e-7);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The geometry perturbation
 //
@@ -436,6 +495,49 @@ std::string GetMediaDeviceSalt() {
     return std::string();
   }
   return holder.GetConfig().media_devices.salt;
+}
+
+std::string RewriteMediaDeviceId(const std::string& device_id,
+                                 const char* kind,
+                                 size_t index) {
+  if (!IsNovaCoreInitialized()) {
+    return device_id;
+  }
+  const ProfileConfig config = GetNovaConfig();
+  if (config.media_devices.mode == "native_passthrough" ||
+      config.media_devices.mode == "disabled") {
+    return device_id;
+  }
+  const std::string salt = config.media_devices.salt;
+  if (salt.empty()) {
+    return device_id;
+  }
+
+  // The host's identifier is mixed with the profile's own salt and the
+  // position of the device in the list.  The same host, the same device
+  // and the same position therefore produce the same identifier inside
+  // one profile and a different one in every other profile, which is
+  // exactly the property the surface needs.
+  uint64_t hash = 1469598103934665603ULL;  // the FNV-1a offset basis
+  const std::string material = salt + "|" + (kind != nullptr ? kind : "") +
+                               "|" + std::to_string(index) + "|" + device_id;
+  for (unsigned char c : material) {
+    hash ^= c;
+    hash *= 1099511628211ULL;
+  }
+
+  // The identifier keeps the shape of a UUID, because the Android camera
+  // identifiers that a page expects to see have that shape and a page
+  // that validates the format would reject anything else.
+  char buffer[37];
+  snprintf(buffer, sizeof(buffer),
+           "%08x-%04x-%04x-%04x-%012llx",
+           static_cast<unsigned int>(hash & 0xFFFFFFFFULL),
+           static_cast<unsigned int>((hash >> 32) & 0xFFFFULL),
+           static_cast<unsigned int>((hash >> 48) & 0xFFFFULL),
+           static_cast<unsigned int>((hash >> 16) & 0xFFFFULL),
+           static_cast<unsigned long long>(hash));
+  return std::string(buffer);
 }
 
 // ---------------------------------------------------------------------------
@@ -552,6 +654,144 @@ std::string GetWebGpuSalt() {
     return std::string();
   }
   return holder.GetConfig().webgpu.salt;
+}
+
+// ---------------------------------------------------------------------------
+// The font inventory
+// ---------------------------------------------------------------------------
+
+bool IsFontInProfile(const std::string& family_name,
+                     const std::vector<std::string>& installed) {
+  // The generic families are always available: the CSS font matching
+  // resolves them to whatever the platform offers, and a page that asks
+  // for "sans-serif" is asking for a family, not for a file.
+  static const char* kGenericFamilies[] = {
+      "serif",      "sans-serif", "monospace",   "cursive",
+      "fantasy",    "system-ui",  "ui-serif",   "ui-sans-serif",
+      "ui-monospace", "ui-rounded", "math",       "emoji",
+      "fangsong",
+  };
+  for (const char* generic : kGenericFamilies) {
+    if (base::EqualsCaseInsensitiveASCII(family_name, generic)) {
+      return true;
+    }
+  }
+
+  // The comparison is case insensitive, because the CSS font matching is
+  // case insensitive for the family names.
+  for (const std::string& candidate : installed) {
+    if (base::EqualsCaseInsensitiveASCII(candidate, family_name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// The geometry perturbation
+//
+// The perturbation is applied only when the profile asked for it.  A
+// profile in the "noise" mode gets the deltas of its own seed; a profile
+// in the "disabled" mode gets the rectangle the layout produced, so the
+// page sees the host geometry untouched.
+// ---------------------------------------------------------------------------
+
+void ApplyRectDeltas(gfx::RectF& rect, const char* surface) {
+  if (!IsNovaCoreInitialized()) {
+    return;
+  }
+  const ProfileConfig config = GetNovaConfig();
+  if (config.rects.mode == "disabled" || config.rects.mode == "native_passthrough") {
+    return;
+  }
+  const int delta_x = GetRectDeltaX();
+  const int delta_y = GetRectDeltaY();
+  const int delta_width = GetRectDeltaWidth();
+  const int delta_height = GetRectDeltaHeight();
+  if (delta_x == 0 && delta_y == 0 && delta_width == 0 && delta_height == 0) {
+    return;
+  }
+  // The surface name keeps the element rectangle and the range rectangle
+  // from moving by exactly the same amount.  A page that compares the
+  // two -- a classic cross-surface consistency check -- must not find
+  // them trivially equal.
+  int surface_shift = 0;
+  if (surface != nullptr) {
+    for (const char* c = surface; *c != '\0'; ++c) {
+      surface_shift = (surface_shift * 31 + static_cast<unsigned char>(*c)) & 0xFF;
+    }
+  }
+  const int shift_x = (surface_shift % 3) - 1;
+  const int shift_y = ((surface_shift >> 3) % 3) - 1;
+
+  rect.Offset(delta_x * (1 + shift_x) * 0.5f, delta_y * (1 + shift_y) * 0.5f);
+  if (delta_width != 0 || delta_height != 0) {
+    rect.set_width(std::max(0.0f, rect.width() + delta_width));
+    rect.set_height(std::max(0.0f, rect.height() + delta_height));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The TLS handshake
+//
+// The lists are returned by value through a function-local static, so
+// that the caller can hold on to the reference.  The configuration is
+// read once and then never changes, so the copy is made once.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The lists are returned through a function-local static, so that the
+// caller can hold on to the reference.  The configuration is read once
+// and then never changes, so the copy is made once.
+template <typename Reader>
+const std::vector<std::string>& TlsList(Reader reader) {
+  static const std::vector<std::string> kEmpty;
+  static thread_local std::vector<std::string> cached;
+  if (!IsNovaCoreInitialized()) {
+    return kEmpty;
+  }
+  const ProfileConfig config = GetNovaConfig();
+  cached = reader(config);
+  return cached;
+}
+
+}  // namespace
+
+const std::vector<std::string>& GetTlsCipherSuites() {
+  return TlsList(
+      [](const ProfileConfig& c) { return c.tls.cipher_suites; });
+}
+
+const std::vector<std::string>& GetTlsSupportedGroups() {
+  return TlsList(
+      [](const ProfileConfig& c) { return c.tls.supported_groups; });
+}
+
+const std::vector<std::string>& GetTlsSignatureAlgorithms() {
+  return TlsList(
+      [](const ProfileConfig& c) { return c.tls.signature_algorithms; });
+}
+
+const std::vector<std::string>& GetTlsAlpnProtocols() {
+  return TlsList(
+      [](const ProfileConfig& c) { return c.tls.alpn_protocols; });
+}
+
+const std::vector<std::string>& GetTlsVersions() {
+  return TlsList([](const ProfileConfig& c) { return c.tls.versions; });
+}
+
+const std::vector<std::string>& GetTlsExtensionOrder() {
+  return TlsList(
+      [](const ProfileConfig& c) { return c.tls.extension_order; });
+}
+
+bool GetTlsGreaseEnabled() {
+  if (!IsNovaCoreInitialized()) {
+    return true;
+  }
+  return GetNovaConfig().tls.grease_enabled;
 }
 
 }  // namespace nova

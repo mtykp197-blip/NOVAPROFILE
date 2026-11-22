@@ -17,9 +17,9 @@ và mỗi việc cần bao lâu**.
 | JS runtime (navigator/screen/canvas/webgl/audio) | ✅ Xong |
 | Chromium build trên Windows | 🔄 Đang build — ~8.600/9.570 step (~90%) |
 | Chromium patch anti-detect (tầng C++) | ✅ **Đã có** — 3.048 dòng, 24 file |
-| Chromium: `chrome.exe` hoàn chỉnh | ⏳ Chưa có |
+| Chromium: `chrome.exe` hoàn chỉnh | 🔄 Đang build — `out/nova-win`, ninja còn chạy |
 | Installer / gói cài đặt Windows | ⏳ Chưa đóng gói |
-| JA3/JA4 (TLS fingerprint) | ❌ Chưa — cần tầng mạng, không làm được bằng JS |
+| JA3/JA4 (TLS fingerprint) | ✅ **Đã làm** — hook BoringSSL trong Network Service, patch `0003` |
 | Bảng font theo hạng thiết bị | 🟡 Có `measureText`, thiếu bảng font đầy đủ |
 
 ---
@@ -79,6 +79,99 @@ generator set đồng nhất cả 4 trường theo cùng một giá trị.
 `_generated_gpu_variants` (có tiền tố `_`). Import sửa, `_GPU_CATALOGUE` giờ có
 313 renderer, `_GPU_VARIANTS` có 8.954 preset.
 
+### 1.6 Chu kỳ phụ thuộc GN — nguyên nhân build im lặng dừng
+
+Đây là lỗi âm thầm đáng kể nhất của lượt này, và nó đã làm mất **6 giờ
+build**. Ghi lại để không phải tìm lại.
+
+**Triệu chứng.** `ninja` báo `[0/1] Regenerating ninja files` rồi **không
+làm gì cả** — không compile, không báo lỗi, exit code 0. Người ta tưởng
+build đã xong. Nhưng `ninja -d explain` nói ra sự thật:
+
+```
+ninja explain: build.ninja.stamp is dirty
+```
+
+**Nguyên nhân.** `gn gen` thất bại với chu kỳ phụ thuộc:
+
+```
+ERROR Dependency cycle:
+  //net:net ->
+  //third_party/blink/renderer/core/nova:nova_core ->
+  //ui/gfx:gfx ->
+  //ui/base:ui_data_pack ->
+  //net:net
+```
+
+Vòng tròn này do patch `0003`: hook TLS làm cho `//net` phụ thuộc
+`//nova_core`, mà `//nova_core` lại phụ thuộc `//ui/gfx`.
+
+**Cách sửa.** `nova_core` chỉ cần `gfx::RectF` — dùng target hẹp hơn là được:
+
+```gn
+deps = [
+  "//base",
+  "//third_party/boringssl",
+  "//ui/gfx/geometry",   # thay vì "//ui/gfx"
+]
+```
+
+`//ui/gfx/geometry:geometry` chỉ phụ thuộc `//base`, nên vòng tròn đứt.
+
+**Bài học.** `gn gen` phải chạy thành công **trước khi** tin build. Lệnh
+kiểm tra là:
+
+```bash
+cd C:/chromium/src/out/nova-win
+gn gen .          # phải in "Done. Made N targets"
+ninja -d explain -n chrome   # phải không còn "build.ninja.stamp is dirty"
+```
+
+Nếu `ninja` in `Regenerating ninja files` rồi dừng, thì `gn gen` đang lỗi —
+đọc log `gn gen`, đừng đợi build.
+
+### 1.7 Bốn đường dẫn sai trong simulator
+
+Simulator dựng giá trị *kỳ vọng* từ profile. Một đường dẫn tên một field
+schema không có thì đọc thành "thiết bị không biết", và simulator **rơi về
+một hằng số viết cứng** — rồi hai bên của phép so sánh lệch nhau về một giá
+trị mà cả hai đều đang giữ đúng. Trông như hook hỏng.
+
+Bốn đường dẫn đó:
+
+| Sai | Đúng |
+|---|---|
+| `storage_network.storage_quota_bytes` | `storage_network.quota_bytes` |
+| `storage_network.rtt_ms` | `storage_network.rtt` |
+| `storage_network.downlink_mbps` | `storage_network.downlink` |
+| `fonts.families` | `fonts.installed` |
+
+Đã có test chặn: `tests/test_core_document_handover.py` quét mọi đường dẫn
+`_getattr_path(config, ...)` trong simulator và đòi mọi cái phải resolve được
+trên profile thật.
+
+### 1.8 Số thực bị cắt cụt khi bàn giao cho browser core
+
+Core đọc phần lớn số bằng **reader 32-bit nguyên**, nên một float ở chỗ cần
+số nguyên là lỗi kiểu và bị ép về số nguyên. Đúng cho các field core đọc
+bằng `ReadInt`, **sai** cho các field core đọc bằng `ReadDouble`:
+
+| Field | Reader của core | Bị cắt trước đây |
+|---|---|---|
+| `device_pixel_ratio` | `ReadDouble` | 2.625 → 2 ❌ |
+| `visual_viewport_scale` | `ReadDouble` | ❌ |
+| `downlink` | `ReadDouble` | ❌ |
+| `base_latency`, `output_latency` | `ReadDouble` | ❌ |
+| `noise_strength` | `ReadDouble` | ❌ |
+| `x`, `y`, `z`, `alpha`, `beta`, `gamma` | `ReadDouble` | ❌ |
+
+`device_pixel_ratio` bị cắt là ví dụ đắn nhất: 2.625 và 2 là **hai thiết bị
+khác nhau**, và site đọc ratio cùng density sẽ thấy mâu thuẫn ngay.
+
+Đã thêm `FRACTIONAL_FIELDS` vào `launcher/core_document.py` — danh sách này
+phải khớp với các `ReadDouble` của core. Nếu core đổi reader, danh sách này
+phải đổi theo.
+
 ---
 
 ## 2. Việc còn lại — theo thứ tự nên làm
@@ -134,29 +227,52 @@ profile dir riêng cho mỗi profile, copy `chrome.exe` và patch sang từng b�
 Ưu tiên phụ: `.ico` / `.icns` cho installer — đã làm xong, cần rebuild sau khi
 core xong.
 
-### Ưu tiên 3 — JA3 / JA4 (tầng mạng, không làm được bằng JS)
+### Ưu tiên 3 — JA3 / JA4 (tầng mạng) — ✅ ĐÃ LÀM
 
 Đây là **giới hạn kiến trúc**, không phải việc chưa làm. JA3/JA4 là fingerprint
 của **TLS ClientHello** — nằm ở tầng network, trước cả khi JS chạy. `navigator`
 không đụng tới TLS, nên không có cách nào làm bằng JS.
 
-Cách làm: sửa `net/ssl/ssl_client_socket_impl.cc` để ép `ClientHello` ra đúng
-cipher suite / extension order / elliptic curve của profile → build lại Chromium.
+**Đã làm xong**, trong patch `0003`:
 
-**Thuận lợi:** `nova_core_config.h` đã có sẵn cấu trúc cấu hình, và
-`nova_core_config.cc` đã đọc JSON + suy luận HKDF. Việc cần làm là:
+1. `nova_core_config.h` có struct `TlsConfig` (cipher suites, supported groups,
+   signature algorithms, ALPN, versions, extension order, salt).
+2. `ProfileConfig` mang theo nó, và `profile.py` đưa `sig_tls` vào
+   `signature_parts()` để chống trùng bao gồm cả trục TLS.
+3. `net/socket/ssl_client_socket_impl.cc` ép `ClientHello` theo cấu hình:
+   `SSL_set_strict_cipher_list` cho cipher suite, `SSL_set1_group_ids` cho
+   curve, `SSL_set_verify_algorithm_prefs` cho thuật toán chữ ký.
+4. `content/utility/services.cc` gọi `nova::InitializeNetworkProcess` khi
+   network service khởi động, nên cấu hình có mặt **trước** handshake đầu
+   tiên. `content/browser/network_service_instance_impl.cc` chuyển tiếp
+   `--nova-config` sang tiến trình network.
 
-1. Thêm struct `TlsConfig` (cipher suites, extensions, curves, ALPN,
-   signature algorithms) vào `nova_core_config.h`.
-2. Thêm nó vào `ProfileConfig`.
-3. Trong `ssl_client_socket_impl.cc`, đọc `nova::core_config()` và ép
-   ClientHello theo đó.
-4. Build lại — **cùng một lần build** với Ưu tiên 1 nếu làm song song.
+**Bảng cipher theo bản Chrome** (`core/tls_profiles.py`):
 
-**Ước lượng:** 2–3 ngày, không tính thời gian build.
+| Chrome | Cipher suite | Curve |
+|---|---|---|
+| 100–106 | Có CBC (`AES128-SHA`, `AES256-SHA`) | X25519, P-256, P-384 |
+| 107–130 | Bỏ CBC | X25519, P-256, P-384 |
+| 131+ | Bỏ CBC + hybrid PQ | X25519MLKEM768, X25519, P-256, P-384 |
+
+**Đã tìm ra ba lỗi thật khi build** — ghi lại vì chúng đều im lặng:
+
+1. `SSL_CTX_set_custom_cipher_list` **không tồn tại** trong BoringSSL. Tên
+   đúng là `SSL_set_strict_cipher_list` (chỉ có một hàm, và nó *sắp xếp* —
+   nên thứ tự cipher phải do danh sách profile quyết định).
+2. `SSL_GROUP_get_id_by_group_name` **không tồn tại**. BoringSSL không có
+   lookup từ tên sang id; phải tự map. Và bản Chromium 160 **đã đổi tên**
+   hybrid group: `X25519Kyber768Draft00` (bản Chrome 131) → `X25519MLKEM768`.
+   `NovaGroupId()` trong patch là bảng map này.
+3. `SSL_SIGN_ED448` **không tồn tại**; và `base::EqualsIgnoreCase` cũng không
+   có — phải dùng `absl::EqualsIgnoreCase`.
 
 **Ghi chú thêm:** nếu profile đi qua proxy, JA3 của client vẫn do Chromium tạo
 ra (proxy chỉ ký chứng thực sau TLS), nên **proxy không cứu được trục này**.
+
+**Còn lại:** trục TLS **chưa được đo** trên browser thật. Cần một probe đọc
+JA3/JA4 từ phía server (tls.peet.ws hoặc tương tự) và so với bảng
+`tls_profiles.py`. Đây là việc cần mạng, không làm được offline.
 
 ### Ưu tiên 4 — Bảng font theo hạng thiết bị
 

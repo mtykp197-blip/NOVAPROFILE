@@ -1,37 +1,44 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: NOVA Profile <nova@example.invalid>
-Date: Sat, 22 Nov 2026 00:00:00 +0000
-Subject: [PATCH 2/2] nova: substitute the screen and the WebGL / canvas surfaces
+# NOVA Profile Core -- Chromium patch series, part 2 of 3: the surfaces.
+#
+# Apply to a Chromium 159 checkout with:
+#
+#     git apply novaprofile/core_patch/patches/0001-nova-profile-core.patch
+#     git apply novaprofile/core_patch/patches/0002-nova-profile-hardware-surfaces.patch
+#     git apply novaprofile/core_patch/patches/0003-nova-profile-independent-surfaces-and-tls.patch
 
-The first patch covers the values a page reads out of the navigator.
-This one covers the surfaces that are read on their own.
-
-The screen
----------
-
-``screen.width``, ``screen.height``, ``screen.availWidth``,
-``screen.availHeight``, ``screen.availLeft``, ``screen.availTop``,
-``screen.colorDepth``, ``screen.pixelDepth`` and
-``window.devicePixelRatio`` describe the display the browser runs on.
-Every profile that runs on the same machine reports the same display,
-so the screen alone is enough to tell a profile from a real device.
-
-The canvas and the WebGL surfaces
----------------------------------
-
-A canvas readback and a WebGL readback are hashed by the page, and the
-hash is stable across runs, so two profiles that differ in nothing but
-their configuration produce the same canvas hash.  The WebGL identity
-strings -- ``UNMASKED_VENDOR_WEBGL`` and ``UNMASKED_RENDERER_WEBGL`` --
-are the same story: they name the graphics stack of the host.
-
-The patch therefore substitutes the values of those surfaces and
-perturbs the readback buffers with a deterministic noise that is derived
-from the profile, so that the hashes are stable for a profile and
-different between profiles.
-
+# This patch substitutes the surfaces that a fingerprinting script can read
+# on their own:
+#
+#   third_party/blink/renderer/core/frame/local_dom_window.cc
+#   third_party/blink/renderer/core/frame/screen.cc
+#   third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
+#   third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+#
+# The screen metrics are served from the profile's own configuration.  The
+# canvas and the WebGL readback pixels are perturbed with a key that is
+# derived from the profile's own seed, so that two profiles never collapse
+# into the same canvas bucket and so that the canvas hash and the WebGL
+# hash cannot be linked to each other.  The WebGL identity strings are
+# served through the same configuration.
+#
+# The viewport -- ``innerWidth``, ``innerHeight``, ``outerWidth``,
+# ``outerHeight``, ``screenX`` and ``screenY`` -- is served from the
+# profile as well: on a desktop those are the size the user dragged the
+# window to, which has no relation to the handset the user agent claims.
+#
+# The noise hooks are not substitutions: they do not replace a value, they
+# perturb a buffer, and their fallback is "do nothing".  A browser that
+# was started without a configuration therefore returns the pixels the
+# renderer produced, which is exactly what an unpatched browser does.
+#
+# The geometry perturbation is applied as an integer pixel offset, so the
+# layout, the painting and the hit testing stay consistent with each other.
+#
+# Part 1 of 3 carries the identity surfaces, the NOVA sources and the build
+# wiring; it has to be applied first.
+#
 diff --git a/third_party/blink/renderer/core/frame/local_dom_window.cc b/third_party/blink/renderer/core/frame/local_dom_window.cc
-index 36beb12a2f..fa14b40e91 100644
+index 36beb12..9e7130d 100644
 --- a/third_party/blink/renderer/core/frame/local_dom_window.cc
 +++ b/third_party/blink/renderer/core/frame/local_dom_window.cc
 @@ -26,6 +26,8 @@
@@ -43,7 +50,100 @@ index 36beb12a2f..fa14b40e91 100644
  #include <memory>
  #include <optional>
  #include <utility>
-@@ -1961,6 +1963,9 @@ CSSStyleDeclaration* LocalDOMWindow::getComputedStyle(
+@@ -1698,6 +1700,15 @@ int LocalDOMWindow::outerHeight() const {
+     return 0;
+   }
+ 
++  // The outer size comes from the profile; see the comment on
++  // |innerHeight()| about why the host's window size is not usable.
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++    if (config.viewport.outer_height > 0) {
++      return config.viewport.outer_height;
++    }
++  }
++
+   LocalFrame* frame = GetFrame();
+ 
+   // FencedFrames should return innerHeight to prevent passing
+@@ -1730,6 +1741,15 @@ int LocalDOMWindow::outerWidth() const {
+     return 0;
+   }
+ 
++  // The outer size comes from the profile; see the comment on
++  // |innerHeight()| about why the host's window size is not usable.
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++    if (config.viewport.outer_width > 0) {
++      return config.viewport.outer_width;
++    }
++  }
++
+   LocalFrame* frame = GetFrame();
+ 
+   // FencedFrames should return innerWidth to prevent passing
+@@ -1795,6 +1815,17 @@ int LocalDOMWindow::innerHeight() const {
+     return 0;
+   }
+ 
++  // The viewport is served from the profile's own configuration.  The
++  // host's viewport is the size of the window on the desktop, which is
++  // what the user resized it to -- a value that a page can read straight
++  // off and that has no relation to the device the user agent claims.
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++    if (config.viewport.inner_height > 0) {
++      return config.viewport.inner_height;
++    }
++  }
++
+   return AdjustForAbsoluteZoom::AdjustInt(GetViewportSize().height(),
+                                           GetFrame()->LayoutZoomFactor());
+ }
+@@ -1804,6 +1835,14 @@ int LocalDOMWindow::innerWidth() const {
+     return 0;
+   }
+ 
++  // See the comment on |innerHeight()| above.
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++    if (config.viewport.inner_width > 0) {
++      return config.viewport.inner_width;
++    }
++  }
++
+   return AdjustForAbsoluteZoom::AdjustInt(GetViewportSize().width(),
+                                           GetFrame()->LayoutZoomFactor());
+ }
+@@ -1814,6 +1853,14 @@ int LocalDOMWindow::screenX() const {
+     return 0;
+   }
+ 
++  // The position of the window on the host's desktop comes from the
++  // profile; a window that sits at an arbitrary position on a multi
++  // monitor desktop is a signal that the browser is not a phone.
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++    return config.viewport.screen_x;
++  }
++
+   Page* page = frame->GetPage();
+   if (!page) {
+     return 0;
+@@ -1839,6 +1886,12 @@ int LocalDOMWindow::screenY() const {
+     return 0;
+   }
+ 
++  // See the comment on |screenX()| above.
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++    return config.viewport.screen_y;
++  }
++
+   Page* page = frame->GetPage();
+   if (!page) {
+     return 0;
+@@ -1961,6 +2014,9 @@ CSSStyleDeclaration* LocalDOMWindow::getComputedStyle(
  }
  
  double LocalDOMWindow::devicePixelRatio() const {
@@ -54,7 +154,7 @@ index 36beb12a2f..fa14b40e91 100644
      return 0.0;
    }
 diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink/renderer/core/frame/screen.cc
-index 8bc2c67f4b..23af02db5a 100644
+index 8bc2c67..23af02d 100644
 --- a/third_party/blink/renderer/core/frame/screen.cc
 +++ b/third_party/blink/renderer/core/frame/screen.cc
 @@ -28,6 +28,8 @@
@@ -139,7 +239,7 @@ index 8bc2c67f4b..23af02db5a 100644
      return 0;
    return GetRect(/*available=*/true).width();
 diff --git a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
-index 7741973677..598c2f1000 100644
+index 7741973..598c2f1 100644
 --- a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
 +++ b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
 @@ -4,6 +4,8 @@
@@ -183,7 +283,7 @@ index 7741973677..598c2f1000 100644
  
    return image_data;
 diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
-index c110f3816f..f0326307cd 100644
+index c110f38..f032630 100644
 --- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 +++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 @@ -25,6 +25,8 @@

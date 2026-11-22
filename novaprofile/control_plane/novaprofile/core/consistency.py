@@ -304,6 +304,7 @@ class ConsistencyResolver:
         self._check_geo(config, errors, warnings)
         self._check_webrtc(config, errors, warnings)
         self._check_headers(config, errors, warnings)
+        self._check_tls(config, errors, warnings)
         self._check_privacy(config, errors, warnings)
         self._check_hardware_surfaces(config, errors, warnings)
 
@@ -1443,6 +1444,136 @@ class ConsistencyResolver:
                     axis="client_hints",
                     message='Sec-CH-UA-Platform must be "Android"',
                     fields=["http_headers.sec_ch_ua_platform"],
+                )
+            )
+
+    def _check_tls(
+        self,
+        config: ProfileConfig,
+        errors: list[ConsistencyIssue],
+        warnings: list[ConsistencyIssue],
+    ) -> None:
+        """Check that the handshake belongs to the claimed Chrome.
+
+        The ClientHello is the fingerprint that is produced before any
+        script runs, so it is the one a site can read without the
+        page's cooperation.  Two things about it have to agree with the
+        rest of the profile: the release it belongs to, and the fact
+        that it is a Chrome handshake at all.
+
+        The release check is the cheap one.  The ClientHello of Chrome
+        131 offers the hybrid key agreement; the ClientHello of Chrome
+        120 does not.  A profile that claims 131 in its user agent and
+        in its client hints but sends the handshake of 120 is
+        contradictory in the two places that are cheapest to
+        cross-check, and the contradiction is worth more to a vendor
+        than either surface on its own.
+        """
+
+        tls = config.tls
+        version = config.browser_version
+
+        if tls.mode != "spoof":
+            warnings.append(
+                ConsistencyIssue(
+                    severity="warning",
+                    axis="tls_handshake",
+                    message=(
+                        "the TLS handshake is not spoofed: the profile reports the "
+                        "host's own JA3, which every profile on this machine shares"
+                    ),
+                    fields=["tls.mode"],
+                )
+            )
+            return
+
+        if not tls.cipher_suites:
+            errors.append(
+                ConsistencyIssue(
+                    severity="error",
+                    axis="tls_handshake",
+                    message=(
+                        "the TLS handshake is spoofed but declares no cipher suites: "
+                        "the native core would fall back to the host's own list"
+                    ),
+                    fields=["tls.cipher_suites"],
+                )
+            )
+            return
+
+        if not tls.salt:
+            errors.append(
+                ConsistencyIssue(
+                    severity="error",
+                    axis="tls_handshake",
+                    message=(
+                        "the TLS handshake is spoofed but has no per-unit salt: every "
+                        "profile of this release would send an identical ClientHello"
+                    ),
+                    fields=["tls.salt"],
+                )
+            )
+
+        # The hybrid key agreement is the cheapest cross-check there is:
+        # it appears in the ClientHello of Chrome 131 and later and in no
+        # earlier release.
+        try:
+            from .tls_profiles import profile_for_major
+
+            expected = profile_for_major(version.major)
+        except Exception:  # noqa: BLE001 - an unknown major is not fatal here
+            return
+
+        hybrid = any("Kyber" in group for group in tls.supported_groups)
+        expected_hybrid = any("Kyber" in group for group in expected.supported_groups)
+        if hybrid != expected_hybrid:
+            errors.append(
+                ConsistencyIssue(
+                    severity="error",
+                    axis="tls_handshake",
+                    message=(
+                        f"the ClientHello offers the hybrid key agreement "
+                        f"{hybrid}, but Chromium {version.major} offers it: "
+                        f"{expected_hybrid}"
+                    ),
+                    fields=["tls.supported_groups"],
+                )
+            )
+
+        # The TLS 1.3 ciphers are the ones Chrome has offered since 81.
+        # A profile that omits them cannot be that release.
+        has_tls13 = any(
+            name.startswith("TLS_AES_") or name.startswith("TLS_CHACHA20")
+            for name in tls.cipher_suites
+        )
+        if not has_tls13:
+            warnings.append(
+                ConsistencyIssue(
+                    severity="warning",
+                    axis="tls_handshake",
+                    message=(
+                        "the ClientHello offers no TLS 1.3 cipher suite: Chromium "
+                        f"{version.major} always offers them"
+                    ),
+                    fields=["tls.cipher_suites"],
+                )
+            )
+
+        # The list of curves has to be one that a Chrome actually sends.
+        # An empty list means the host's own, which is a Windows list --
+        # and a Windows curve list on an Android profile is a loud
+        # signal.
+        if not tls.supported_groups:
+            errors.append(
+                ConsistencyIssue(
+                    severity="error",
+                    axis="tls_handshake",
+                    message=(
+                        "the ClientHello declares no supported groups: the native "
+                        "core would offer the host's own, which are not the ones "
+                        "Chrome on Android offers"
+                    ),
+                    fields=["tls.supported_groups"],
                 )
             )
 

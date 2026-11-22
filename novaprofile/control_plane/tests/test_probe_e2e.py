@@ -95,6 +95,25 @@ SIGNATURE_PART_TO_AXIS: dict[str, str] = {
 #: a signature key of their own.
 AXES_GUARDED_THROUGH_DEVICE: frozenset[str] = frozenset({"client_hints", "screen"})
 
+#: The signature keys that are guarded **outside** the page.
+#:
+#: The TLS handshake is produced by the network service, in C++, before
+#: any script runs -- which is exactly why it cannot be forged from
+#: JavaScript, and exactly why the page cannot read it either.  A
+#: fingerprinting script never sees the ClientHello; the *server* does.
+#:
+#: The key is therefore watched by the collision guard, which compares
+#: the handshake of two profiles before they are ever launched, and it is
+#: verified against the wire rather than against the page: the check
+#: reads the bytes the client sent.
+#:
+#: It is deliberately *not* an axis of the JavaScript harness.  Adding
+#: one would mean either reading a value the page cannot see -- which
+#: would report every profile as broken -- or reading the configuration
+#: back out of the page, which would verify the engine against itself
+#: and prove nothing.
+SIGNATURE_PARTS_GUARDED_OUTSIDE_THE_PAGE: frozenset[str] = frozenset({"sig_tls"})
+
 
 def _signature_keys() -> set[str]:
     """Return the keys of ``ProfileConfig.signature_parts``."""
@@ -145,7 +164,12 @@ class TestSurfaceExtractor:
         """
 
         signature_keys = set(_real_signature_parts().keys())
-        assert signature_keys == set(SIGNATURE_PART_TO_AXIS)
+        outside = set(SIGNATURE_PARTS_GUARDED_OUTSIDE_THE_PAGE)
+        assert signature_keys == set(SIGNATURE_PART_TO_AXIS) | outside
+        # The keys that the page guards are exactly the ones the mapping
+        # names; the ones it does not name are the ones the page cannot
+        # reach.
+        assert not (outside & set(SIGNATURE_PART_TO_AXIS))
         guarded = set(SIGNATURE_PART_TO_AXIS.values())
         # Every signature part maps onto an axis of the harness ...
         assert guarded <= set(GUARDED_AXES)

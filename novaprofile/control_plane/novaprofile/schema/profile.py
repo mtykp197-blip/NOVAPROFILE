@@ -36,6 +36,7 @@ from .identity import (
 )
 from .network import (
     Dns,
+    Tls,
     GeoIntelligence,
     GeoSync,
     HttpHeaders,
@@ -222,6 +223,7 @@ class ProfileConfig(BaseModel):
     geo_sync: GeoSync
     webrtc: WebRtc
     dns: Dns
+    tls: Tls = Field(default_factory=Tls)
     http_headers: HttpHeaders
 
     @property
@@ -403,6 +405,26 @@ class ProfileConfig(BaseModel):
                 # is a signal.
                 self.heap_size_limit.salt,
                 str(self.heap_size_limit.js_heap_size_limit),
+            ],
+            "sig_tls": [
+                # The TLS handshake.  JA3 is the MD5 of the ClientHello,
+                # so the cipher list, the curve list and the extension
+                # order are the fingerprint -- and a site that sees two
+                # profiles with the same JA3 has linked them, whatever
+                # the canvas says.
+                #
+                # The salt comes first because it is what carries the
+                # uniqueness: the cipher list is shared by every unit of
+                # a Chrome build, and the order within it is a handful
+                # of permutations.
+                self.tls.salt,
+                self.tls.mode,
+                ",".join(self.tls.cipher_suites),
+                ",".join(self.tls.supported_groups),
+                ",".join(self.tls.signature_algorithms),
+                ",".join(self.tls.alpn_protocols),
+                ",".join(self.tls.extension_order),
+                str(self.tls.grease_enabled),
             ],
             "sig_media_decode": [
                 # The media codecs the platform claims to decode.  A

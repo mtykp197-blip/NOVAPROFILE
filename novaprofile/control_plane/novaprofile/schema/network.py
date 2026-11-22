@@ -165,8 +165,67 @@ class Dns(BaseModel):
 
 
 # --------------------------------------------------------------------------
-# 2.7 HTTP headers
+# 2.7 TLS handshake
 # --------------------------------------------------------------------------
+
+
+class Tls(BaseModel):
+    """The shape of the TLS ClientHello.
+
+    JA3 is the MD5 of the ClientHello -- the cipher suites, the extension
+    order, the elliptic curves and the point formats, in the order the
+    client sent them.  JA4 is the readable form of the same handshake.
+
+    The handshake happens in the network service, before any script runs,
+    so no amount of JavaScript can change it.  The only way to change it
+    is to change the bytes the client puts on the wire, which means
+    changing the network stack.  The native core does that: it installs
+    the profile's cipher list, curve list, signature algorithm list and
+    ALPN list on the BoringSSL context before the handshake.
+
+    The order of the cipher suites and of the extensions is what a
+    fingerprint is made of, so both are lists here rather than sets.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    mode: Literal["native", "spoof"] = "native"
+    # The cipher suites, in the order they are offered.  The names are
+    # the IANA names, e.g. "TLS_AES_128_GCM_SHA256".
+    cipher_suites: list[str] = Field(default_factory=list)
+    # The supported groups, in the order they are offered.  The names
+    # are the ones BoringSSL uses, e.g. "X25519" or "P-256".
+    supported_groups: list[str] = Field(default_factory=list)
+    # The signature algorithms, in the order they are offered.
+    signature_algorithms: list[str] = Field(default_factory=list)
+    # The ALPN protocols, in the order they are offered.
+    alpn_protocols: list[str] = Field(default_factory=list)
+    # The TLS versions, from the oldest to the newest.
+    versions: list[str] = Field(default_factory=list)
+    # The extension order, by the name that BoringSSL uses.  An
+    # extension that is not listed keeps the position that BoringSSL
+    # would have given it.
+    extension_order: list[str] = Field(default_factory=list)
+    # The per-profile salt.  The handshake is the same for every profile
+    # that uses the same browser build unless something in the profile
+    # varies it, so the salt is what makes the handshake of two profiles
+    # differ.
+    salt: str = Field(default="", min_length=8, max_length=128)
+    # Whether the GREASE extension is sent.
+    grease_enabled: bool = True
+
+    @field_validator("cipher_suites", "supported_groups", "signature_algorithms")
+    @classmethod
+    def _no_duplicates(cls, v: list[str]) -> list[str]:
+        if len(v) != len(set(v)):
+            raise ValueError("the TLS lists must not repeat an entry")
+        return v
+
+
+# --------------------------------------------------------------------------
+# 2.8 HTTP headers
+# --------------------------------------------------------------------------
+
 
 
 class HttpHeaders(BaseModel):
@@ -198,5 +257,6 @@ __all__ = [
     "GeoSync",
     "WebRtc",
     "Dns",
+    "Tls",
     "HttpHeaders",
 ]

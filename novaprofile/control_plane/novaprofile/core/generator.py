@@ -53,6 +53,7 @@ from ..schema.network import (
     HttpHeaders,
     Proxy,
     ProxyRotation,
+    Tls,
     WebRtc,
 )
 from ..schema.profile import ProfileConfig, ProfileIdentity, SeedConfig
@@ -94,6 +95,7 @@ from .hardware_approximation import (
 )
 from .identity import DeviceIdentity, DeviceIdentityFactory, panel_space
 from .seed import Axis, SeedDeriver, new_master_seed
+from .tls_profiles import profile_for_major
 from .versions import (
     DEFAULT_REGISTRY,
     MAX_SUPPORTED_MAJOR,
@@ -1231,6 +1233,7 @@ class ProfileGenerator:
             geo_sync=GeoSync(),
             webrtc=self._build_webrtc(deriver, proxy),
             dns=Dns(),
+            tls=self._build_tls(deriver, version.major),
             http_headers=self._build_headers(navigator, uad, geo_target, caps),
         )
         return config
@@ -1987,6 +1990,15 @@ class ProfileGenerator:
         )
         channel_count = deriver.derive_choice(Axis.AUDIO, (1, 2), context="channels")
         max_channel_count = 2 if channel_count == 2 else 2
+        # The perturbation of the rendered samples.  It has to be small
+        # enough to stay inside the tolerance of the vendors that compare
+        # a render against a reference render, and large enough to move the
+        # last bits of the fingerprint, which is where it lives.
+        noise_strength = deriver.derive_choice(
+            Axis.AUDIO,
+            (0.0, 0.25, 0.5, 0.75, 1.0),
+            context="noise-strength",
+        )
         return Audio(
             mode="native_quantized",
             salt=salt,
@@ -1996,6 +2008,37 @@ class ProfileGenerator:
             channel_count=channel_count,
             max_channel_count=max_channel_count,
             respect_core_quantization=True,
+            noise_strength=noise_strength,
+        )
+
+    def _build_tls(self, deriver: SeedDeriver, major: int) -> Tls:
+        """The TLS ClientHello of the profile.
+
+        The handshake is produced by the network service, in C++, before
+        any script runs.  It is therefore the one surface that a
+        JavaScript-level defence cannot reach at all -- and the one that
+        a TLS-fingerprinting site reads first.
+
+        The shape of the handshake is taken from the table of the Chrome
+        release the profile claims to be, so that the JA3 the site sees
+        belongs to the same Chrome as the user agent string and the
+        client hints.  A profile that claimed Chrome 131 but sent the
+        handshake of Chrome 100 would disagree with itself in the two
+        places that are cheapest to cross-check.
+
+        The salt is the per-unit part.  Two units of the same Chrome
+        release send the *same* ClientHello on a real device -- the
+        handshake is a property of the build, not of the handset -- so
+        the salt is what separates them here.  It is the axis that the
+        collision guard watches.
+        """
+        salt = deriver.derive_bytes(Axis.TLS_HANDSHAKE, 16, context="salt").hex()
+        table = profile_for_major(major)
+        data = table.as_dict()
+        return Tls(
+            mode="spoof",
+            salt=salt,
+            **data,  # type: ignore[arg-type]
         )
 
     def _build_rects(self, deriver: SeedDeriver) -> Rects:

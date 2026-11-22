@@ -246,6 +246,11 @@ struct AudioConfig {
   int channel_count = 2;
   int max_channel_count = 2;
   bool respect_core_quantization = true;
+  // The magnitude of the perturbation that is applied to the rendered
+  // samples.  Zero leaves the samples untouched, which is the right
+  // thing for a profile that only wants the sample rate and the
+  // latencies to be spoofed.
+  double noise_strength = 0.0;
 };
 
 struct RectsConfig {
@@ -463,6 +468,44 @@ struct DnsConfig {
   bool prevent_dns_leak = true;
 };
 
+// The TLS handshake.
+//
+// JA3 is the MD5 of the ClientHello -- the cipher suites, the extension
+// order, the elliptic curves and the elliptic curve point formats, in the
+// order the client sent them.  JA4 is a readable form of the same thing.
+//
+// The handshake happens in the network service, before any script runs,
+// so no amount of JavaScript can change it.  The only way to change it
+// is to change the bytes the client puts on the wire, which means
+// changing the network stack.
+//
+// The order of the cipher suites and of the extensions is what a
+// fingerprint is made of, so both are lists here rather than sets.
+struct TlsConfig {
+  std::string mode = "native";
+  // The cipher suites, in the order they are offered.
+  std::vector<std::string> cipher_suites;
+  // The supported groups, in the order they are offered.
+  std::vector<std::string> supported_groups;
+  // The signature algorithms, in the order they are offered.
+  std::vector<std::string> signature_algorithms;
+  // The ALPN protocols, in the order they are offered.
+  std::vector<std::string> alpn_protocols;
+  // The TLS versions, from the oldest to the newest.
+  std::vector<std::string> versions;
+  // The extension order, by the name that BoringSSL uses for the
+  // extension.  An extension that is not listed keeps the position that
+  // BoringSSL would have given it.
+  std::vector<std::string> extension_order;
+  // The per-profile salt.  The handshake is the same for every profile
+  // that uses the same browser build unless something in the profile
+  // varies it, so the salt is what makes the handshake of two profiles
+  // differ.
+  std::string salt;
+  // Whether the GREASE extension is sent.
+  bool grease_enabled = true;
+};
+
 struct HttpHeadersConfig {
   std::string accept_language;
   std::string dnt;
@@ -537,6 +580,7 @@ struct ProfileConfig {
   GeoIntelligenceConfig geo_intelligence;
   WebRtcConfig webrtc;
   DnsConfig dns;
+  TlsConfig tls;
   HttpHeadersConfig http_headers;
 };
 

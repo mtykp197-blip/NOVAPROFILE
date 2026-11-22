@@ -543,7 +543,8 @@ bool ParseAudio(const base::DictValue& dict, AudioConfig* out, std::string* erro
          ReadInt(dict, "channel_count", &out->channel_count, error) &&
          ReadInt(dict, "max_channel_count", &out->max_channel_count, error) &&
          ReadBool(dict, "respect_core_quantization",
-                  &out->respect_core_quantization, error);
+                  &out->respect_core_quantization, error) &&
+         ReadDouble(dict, "noise_strength", &out->noise_strength, error);
 }
 
 bool ParseRects(const base::DictValue& dict, RectsConfig* out, std::string* error) {
@@ -843,6 +844,20 @@ bool ParseDns(const base::DictValue& dict, DnsConfig* out, std::string* error) {
          ReadBool(dict, "prevent_dns_leak", &out->prevent_dns_leak, error);
 }
 
+bool ParseTls(const base::DictValue& dict, TlsConfig* out, std::string* error) {
+  return ReadString(dict, "mode", &out->mode, error) &&
+         ReadStringList(dict, "cipher_suites", &out->cipher_suites, error) &&
+         ReadStringList(dict, "supported_groups", &out->supported_groups,
+                        error) &&
+         ReadStringList(dict, "signature_algorithms",
+                        &out->signature_algorithms, error) &&
+         ReadStringList(dict, "alpn_protocols", &out->alpn_protocols, error) &&
+         ReadStringList(dict, "versions", &out->versions, error) &&
+         ReadStringList(dict, "extension_order", &out->extension_order, error) &&
+         ReadString(dict, "salt", &out->salt, error) &&
+         ReadBool(dict, "grease_enabled", &out->grease_enabled, error);
+}
+
 bool ParseHttpHeaders(const base::DictValue& dict,
                       HttpHeadersConfig* out,
                       std::string* error) {
@@ -1041,6 +1056,10 @@ bool ParseProfileConfig(const std::string& json,
   const base::DictValue* dns = FindDict(dict, "dns", error);
   if (!dns) return false;
   if (!ParseDns(*dns, &parsed.dns, error)) return false;
+
+  const base::DictValue* tls = FindDict(dict, "tls", error);
+  if (!tls) return false;
+  if (!ParseTls(*tls, &parsed.tls, error)) return false;
 
   const base::DictValue* headers = FindDict(dict, "http_headers", error);
   if (!headers) return false;

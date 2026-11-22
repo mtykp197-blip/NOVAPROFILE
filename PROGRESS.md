@@ -1373,10 +1373,104 @@ Viết `NEXT_STEPS.md` — roadmap đầy đủ: ưu tiên, ước lượng th�
 Chromium cần patch, quy trình Git LFS cho `chrome.exe`, xử lý file nhạy cảm, và
 mục "bẫy đã gặp — đừng lặp lại".
 
+## 6f. Lượt 23:00 — 23:59 — TLS ClientHello + sáu lỗi thật, một trong đó giấu build 6 giờ
+
+### A. Chu kỳ phụ thuộc GN — build đã **dừng im lặng** từ 17:32
+
+Triệu chứng: `ninja` in `[0/1] Regenerating ninja files` rồi **thoát với code 0**,
+không compile gì. Ai cũng tưởng build xong. `ninja -d explain` mới nói ra:
+
+```
+ninja explain: build.ninja.stamp is dirty
+```
+
+`gn gen` lỗi với chu kỳ phụ thuộc:
+
+```
+ERROR Dependency cycle:
+  //net:net -> //third_party/blink/renderer/core/nova:nova_core ->
+  //ui/gfx:gfx -> //ui/base:ui_data_pack -> //net:net
+```
+
+Vòng tròn do patch `0003`: hook TLS làm `//net` phụ thuộc `//nova_core`, mà
+`//nova_core` phụ thuộc `//ui/gfx`. Sửa bằng cách dùng target hẹp hơn — core chỉ
+cần `gfx::RectF`:
+
+```gn
+"//ui/gfx/geometry",   # thay vì "//ui/gfx"
+```
+
+`//ui/gfx/geometry:geometry` chỉ phụ thuộc `//base` → vòng tròn đứt, `gn gen` in
+`Done. Made 37523 targets`, và build chạy tiếp được.
+
+**Hệ quả:** 6 giờ sửa code (patch `0002`, `0003`, TLS) **chưa từng được compile**.
+`chrome.dll` link lúc 22:11, còn source sửa lúc 22:54 — nên mọi hook của
+patch `0002`/`0003` trong binary là bản cũ. Đó là lý do probe báo 12/15 trục
+mismatch trong khi trục identity (patch `0001`, đã vào binary) khớp tuyệt đối.
+
+### B. Ba API BoringSSL không tồn tại
+
+Hook TLS dùng ba hàm mà BoringSSL **không có**:
+
+| Dùng sai | Thực tế | Ghi chú |
+|---|---|---|
+| `SSL_CTX_set_custom_cipher_list` | `SSL_set_strict_cipher_list` | chỉ có một hàm, và nó *sắp xếp* |
+| `SSL_GROUP_get_id_by_group_name` | không có | phải tự map |
+| `SSL_SIGN_ED448` | không có | BoringSSL chỉ có ED25519 |
+
+Ngoài ra `base::EqualsIgnoreCase` không tồn tại — phải dùng
+`absl::EqualsIgnoreCase`.
+
+**Và Chromium 160 đã đổi tên hybrid group.** Bản Chrome 131 gửi
+`X25519Kyber768Draft00`; group đã chuẩn hoá là `X25519MLKEM768`. Profile tên
+bản draft, BoringSSL 160 chỉ biết bản mới — nên `NovaGroupId()` trong patch là
+bảng map tên→id, và nhận cả hai tên.
+
+### C. Bốn đường dẫn sai trong simulator
+
+Simulator dựng giá trị kỳ vọng từ profile. Đường dẫn tên field không tồn tại
+→ đọc thành "thiết bị không biết" → **rơi về hằng số viết cứng** → hai bên
+lệch nhau về một giá trị cả hai đều giữ đúng. Trông như hook hỏng.
+
+`storage_network.storage_quota_bytes` → `quota_bytes`; `rtt_ms` → `rtt`;
+`downlink_mbps` → `downlink`; `fonts.families` → `fonts.installed`.
+
+Đã có test chặn: `tests/test_core_document_handover.py` quét mọi đường dẫn
+`_getattr_path(config, ...)` và đòi resolve được trên profile thật.
+
+### D. Số thực bị cắt cụt lúc bàn giao
+
+Core đọc phần lớn số bằng reader 32-bit nguyên, nên float bị ép về nguyên.
+Đúng cho `ReadInt`, **sai** cho `ReadDouble` — và `device_pixel_ratio` là ví dụ
+đắn nhất: 2.625 → 2 là **hai thiết bị khác nhau**.
+
+Đã thêm `FRACTIONAL_FIELDS` vào `launcher/core_document.py`, khớp với từng
+`ReadDouble` của core (`device_pixel_ratio`, `visual_viewport_scale`,
+`downlink`, `base_latency`, `output_latency`, `noise_strength`, và
+`x`/`y`/`z`/`alpha`/`beta`/`gamma`).
+
+### E. Đường dẫn patch viết sai kiểu Windows
+
+`tools/regenerate_patch_series.py` sinh diff bằng `git diff --no-index` trên
+Windows, nên path ra là `"a/base\\third_party\\..."` — có dấu nháy kép và
+backslash. Patch đó **không apply** trên checkout POSIX, và test coverage tìm
+file theo đường dẫn forward-slash nên không thấy.
+
+Đã viết `_normalise_patch_paths()`: bỏ dấu nháy, giải mã `\\`, đổi `\` thành
+`/`, bỏ tên scratch tree (`base`/`one`/`two`/`three`), bỏ tiền tố `a/`/`b/`.
+
+### F. Xác minh ba bước trước khi tin
+
+1. **Ba patch apply sạch** trên worktree pristine: `git apply` exit 0 cho cả ba.
+2. **Khớp byte-for-byte** với cây đang build: 41 file sửa + 7 file tạo = 48
+   file, **0 khác biệt**.
+3. **`gn gen` thành công** trên cây đã patch.
+
 ## 7. Lịch sử cập nhật
 
 | Thời điểm | Nội dung |
 |---|---|
+| **23/11 00:05** | **Lượt 8 — TLS ClientHello + sáu lỗi thật.** (1) **Chu kỳ phụ thuộc GN** làm build dừng im lặng 6 giờ: `//net → //nova_core → //ui/gfx → //ui/base → //net`. Sửa bằng `//ui/gfx/geometry`. Hệ quả: patch `0002`/`0003` **chưa từng được compile** — đó là lý do probe báo 12/15 mismatch. (2) **Ba API BoringSSL không tồn tại**: `SSL_CTX_set_custom_cipher_list` → `SSL_set_strict_cipher_list`; `SSL_GROUP_get_id_by_group_name` không có → tự viết `NovaGroupId()`; `SSL_SIGN_ED448` không có. Thêm: Chromium 160 đổi tên hybrid group `X25519Kyber768Draft00` → `X25519MLKEM768`. `base::EqualsIgnoreCase` → `absl::EqualsIgnoreCase`. (3) **Bốn đường dẫn sai** trong simulator → rơi về hằng số viết cứng. (4) **Số thực bị cắt** khi bàn giao: `device_pixel_ratio` 2.625 → 2. Thêm `FRACTIONAL_FIELDS`. (5) **Path patch kiểu Windows** → sửa qua `_normalise_patch_paths()`. (6) Xác minh: 3 patch apply sạch, 48 file khớp byte-for-byte, `gn gen` OK. |
 | **22/11 21:15** | **Lượt 7 — mở rộng catalog lên 8.954 preset + sửa suy luận GPU + bàn giao.** (1) **Lỗi gốc:** generator tra `GPU_TABLE` (38 dòng) trong khi catalogue có 194 renderer → 163 renderer rơi về `DEFAULT_GPU`, mọi handset dùng GPU lạ đều báo cùng kiến trúc. Đã thay bằng `clean_renderer()` (làm sạch renderer scraper ghép: `Adreno (TM) 3064002`→`Adreno (TM) 306`, `PowerVR GE8300POWERVR`→`PowerVR GE8300`) + `gpu_facts()` (suy từ tên part qua `_gpu_classes()`) → `gpu_architecture` khớp 100% renderer. (2) Sửa `max_renderbuffer_size`/`max_viewport_dims` lệch `max_texture_size` trên cùng `GpuProfile`. (3) Thêm 4 GPU thật vào bảng phân loại: Immortalis-G925 (Dimensity 9200), Immortalis-G710 (Dimensity 1300), Xclipse 550 (Exynos 1580), Xclipse 950 (Exynos 2500). (4) Sửa 2 lỗi *của test*: thiếu mapping Android 16 (SDK 36), và marker `"ipad"` khớp substring trong `"MultiPad"` → word-boundary. (5) Fix import `_generated_gpu_*`. **Phân bố:** board max 0.10%, device 0.12%, model 0.07%, gpu.renderer 11.47% (giới hạn vật lý đúng). Viết **`NEXT_STEPS.md`** — roadmap đầy đủ + bảng file Chromium cần patch + quy trình Git LFS + xử lý file nhạy cảm. |
 | **22/11 20:30** | **Lượt 6 — vá lỗi chống trùng ở tầng seed + mở rộng band Chrome + bỏ ATL để build `chrome.exe`.** (1) **Lỗi gốc:** `derive_bytes`/`derive_int` không gấp `stratum` vào HKDF `info` → **mọi profile cùng seed có cùng serial, cùng fingerprint, cùng mọi salt** (1/300). Đã vá bằng cách gấp stratum vào deriver → **300/300 unique** trên tất cả trường đó. (2) **Band Chrome Android 16** đặt nhầm ở 156; đã kiểm chứng Chrome 137 là milestone đầu tiên hỗ trợ API 36 → sửa thành 137 → **UA max nhóm 35 → 8**; tổ hợp UA+fullver+tz+screen vẫn 1/1 tuyệt đối. (3) Vá leak `OfflineAudioContext.sampleRate` trong JS runtime. (4) `maxTouchPoints` theo digitiser phần cứng thay vì random. (5) **Bỏ ATL khỏi tầng nguồn** (`base/win/atl.h` + `service.cc` dùng SDDL) để build không cần component tùy chọn của VS. **1.791 test pass**, ruff sạch. |
 

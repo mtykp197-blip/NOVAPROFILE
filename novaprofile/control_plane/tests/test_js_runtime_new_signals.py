@@ -501,6 +501,13 @@ def test_the_heap_ceiling_is_one_a_phone_can_have() -> None:
     Chromium rounds the physical memory down to a power of two and
     caps the heap there, so the only sensible values are 2 GB, 4 GB
     and 8 GB.
+
+    The core document, however, is read by Chromium's own strict JSON
+    parser, and that parser stores every integer in a signed 32-bit
+    field.  A ceiling above 2^31-1 therefore fails to load with
+    "missing or non-integer field" and the browser silently falls back
+    to the host's values -- which is worse than a smaller ceiling, so
+    the generator clamps the ceiling to what the parser can carry.
     """
 
     for _ in range(30):
@@ -509,6 +516,10 @@ def test_the_heap_ceiling_is_one_a_phone_can_have() -> None:
             master_seed=new_master_seed(),
         )
         assert config.heap_size_limit.js_heap_size_limit in (
+            536870912,
+            1073741824,
+            2000000000,
+            2147483647,
             2147483648,
             4294967296,
             8589934592,

@@ -47,6 +47,13 @@ class Audio(BaseModel):
     channel_count: int = Field(ge=1, le=8)
     max_channel_count: int = Field(ge=1, le=8)
     respect_core_quantization: bool = True
+    # The magnitude of the perturbation that the native core applies to the
+    # rendered samples.  The Web Audio fingerprint is a sum over the whole
+    # render and it resolves far below the level of the audio pipeline's own
+    # quantisation, so without a perturbation every profile that renders the
+    # same graph produces the same fingerprint.  Zero leaves the samples
+    # untouched.
+    noise_strength: float = Field(default=0.0, ge=0.0, le=1.0)
 
     @field_validator("max_channel_count")
     @classmethod

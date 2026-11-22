@@ -37,8 +37,10 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "base/command_line.h"
+#include "ui/gfx/geometry/rect_f.h"
 
 namespace nova {
 
@@ -93,6 +95,18 @@ int GetAudioChannelCount();
 int GetAudioMaxChannelCount();
 PixelNoiseKey GetAudioNoiseKey();
 
+// Applies the profile's own perturbation to a block of rendered samples.
+// The Web Audio fingerprint is the sum of an oscillator and a
+// compressor, and the result is stable to about fifteen digits on every
+// machine that runs the same build.  Two profiles that render the same
+// graph therefore produce the same fingerprint unless the samples
+// themselves are perturbed.
+//
+// The perturbation is deterministic in the sample index and in the
+// profile's own salt, so the fingerprint of one profile never changes
+// between two reads, and the fingerprint of two profiles never collides.
+void ApplyAudioNoise(float* samples, size_t count, size_t offset);
+
 // The geometry perturbation.
 //
 // The deltas are applied as integer pixel offsets, so the layout and the
@@ -102,11 +116,32 @@ int GetRectDeltaY();
 int GetRectDeltaWidth();
 int GetRectDeltaHeight();
 
+// Applies the profile's own deltas to a rectangle.  The |surface| names
+// the readback surface, so that the element rectangle and the range
+// rectangle are perturbed by different amounts and therefore still look
+// like two independent observations of the same layout.
+void ApplyRectDeltas(gfx::RectF& rect, const char* surface);
+
 // The media devices.
 //
 // The device identifiers are derived from the profile's own salt, so two
 // profiles never expose the same device ids.
 std::string GetMediaDeviceSalt();
+
+// Rewrites a device identifier so that it is unique to the profile.  The
+// host's identifiers are stable across every profile that runs on the
+// machine, which makes them a very effective way to link two profiles
+// that are supposed to be two different devices.  The rewrite keeps the
+// shape of the identifier -- an Android camera id looks like a UUID --
+// so that a page which validates the format does not reject it.
+//
+// |kind| names the device class ("audioinput", "audiooutput",
+// "videoinput") and |index| is the position of the device in the host's
+// list.  The pair, mixed with the profile's salt, produces the new
+// identifier.
+std::string RewriteMediaDeviceId(const std::string& device_id,
+                                 const char* kind,
+                                 size_t index);
 
 // The motion sensors.
 double GetSensorAccelerometerX();
@@ -131,10 +166,50 @@ uint64_t GetStorageUsageBytes();
 // The WebGPU adapter.
 std::string GetWebGpuSalt();
 
+// Whether a font family is one of the families the profile declares as
+// installed.  The comparison is case insensitive, because the CSS font
+// matching is, and the generic families -- serif, sans-serif, monospace
+// and the cursive ones -- are always available.
+bool IsFontInProfile(const std::string& family_name,
+                     const std::vector<std::string>& installed);
+
 // The process entry points.
 bool InitializeFromCommandLine(const base::CommandLine& command_line);
 bool InitializeGpuProcess(const base::CommandLine& command_line);
 bool InitializeNetworkProcess(const base::CommandLine& command_line);
+
+// ---------------------------------------------------------------------------
+// The TLS handshake.
+//
+// The network service runs in its own process, so it has to be able to
+// read the configuration on its own.  The profile is installed there
+// from the command line the same way it is in the browser.
+// ---------------------------------------------------------------------------
+
+// The cipher suites the client offers, in the order it offers them.
+// An empty list means the stock Chromium list.
+const std::vector<std::string>& GetTlsCipherSuites();
+
+// The supported groups the client offers, in the order it offers them.
+const std::vector<std::string>& GetTlsSupportedGroups();
+
+// The signature algorithms the client offers, in the order it offers
+// them.
+const std::vector<std::string>& GetTlsSignatureAlgorithms();
+
+// The ALPN protocols the client offers, in the order it offers them.
+const std::vector<std::string>& GetTlsAlpnProtocols();
+
+// The TLS versions the client offers, from the oldest to the newest.
+const std::vector<std::string>& GetTlsVersions();
+
+// The extension order.  BoringSSL permutes the extensions by default;
+// the profile fixes the order so that the handshake of two profiles can
+// be told apart.
+const std::vector<std::string>& GetTlsExtensionOrder();
+
+// Whether the handshake carries the GREASE extension.
+bool GetTlsGreaseEnabled();
 
 }  // namespace nova
 

@@ -69,6 +69,43 @@ NUMERIC_FIELDS: frozenset[str] = frozenset(
     }
 )
 
+#: The fields the core reads as a *double* rather than as an integer.
+#:
+#: The coercion above turns every float into a whole number, because the
+#: core's number reader is a 32-bit integer reader and a float where an
+#: integer is expected is a type error.  That rule is wrong for the
+#: fields the core reads with ``ReadDouble``: a pixel ratio of 2.625 is
+#: a real value, a network latency of 22.5 milliseconds is a real
+#: value, and truncating them changes what the browser reports -- a
+#: pixel ratio of 2.625 becomes 2, which is a different device.
+#:
+#: The names are the ones the core uses, matched by their last path
+#: segment, exactly like :data:`NUMERIC_FIELDS`.
+FRACTIONAL_FIELDS: frozenset[str] = frozenset(
+    {
+        # the screen and the viewport
+        "device_pixel_ratio",
+        "visual_viewport_scale",
+        # the audio timings
+        "base_latency",
+        "output_latency",
+        # the canvas and the audio noise strengths
+        "noise_strength",
+        # the network timings
+        "downlink",
+        # the battery level
+        "level",
+        # the motion sensors, in the accelerometer, the gyroscope, the
+        # gravity vector and the orientations
+        "x",
+        "y",
+        "z",
+        "alpha",
+        "beta",
+        "gamma",
+    }
+)
+
 
 def coerce_document(value: Any, path: str = "") -> Any:
     """Make one value acceptable to the core.
@@ -99,6 +136,12 @@ def coerce_document(value: Any, path: str = "") -> Any:
         # A float that has to be whole is truncated, not rounded: the
         # core reads it as an integer, and rounding would report a
         # value the profile never held.
+        #
+        # The fields the core reads as a double are the exception: a
+        # pixel ratio of 2.625 is a real value, and truncating it to 2
+        # would report a device the profile never described.
+        if path.rsplit(".", 1)[-1] in FRACTIONAL_FIELDS:
+            return value
         return int(value)
     if value is None:
         # A null string is the empty string, unless the field is one
