@@ -137,15 +137,40 @@ def test_the_runtime_installs_on_the_prototype(profile) -> None:
 
 
 def test_the_runtime_stands_down_for_the_native_core(profile) -> None:
-    """When the native core is present, the JavaScript layer does nothing.
+    """The native core and the JavaScript layer do not both answer.
 
     Two mechanisms reporting different values would be a contradiction the
     page could see, so only one of them may be active.
+
+    The stand-down is per surface, not global.  The native core reaches
+    some surfaces and not others -- it patches the navigator and the
+    screen from inside the process, but the timezone and the fonts are
+    left to the JavaScript layer.  A global stand-down would leave the
+    surfaces the native core does not reach reporting the host's values,
+    which is worse than either mechanism on its own.
     """
 
     script = build_script(profile)
-    assert "__NOVA_NATIVE__" in script
-    assert "if (window.__NOVA_NATIVE__) { return; }" in script
+    assert "__NOVA_NATIVE_SURFACES__" in script
+    assert "function nativeOwns(surface)" in script
+
+    # Every surface the native core owns is guarded.
+    for surface in (
+        "navigator",
+        "screen",
+        "viewport",
+        "user_agent_data",
+        "canvas",
+        "webgl",
+        "audio",
+        "fonts",
+        "rects",
+        "media_devices",
+        "sensors",
+        "storage",
+        "webgpu",
+    ):
+        assert f"nativeOwns('{surface}')" in script, surface
 
 
 def test_the_runtime_marks_itself_once(profile) -> None:

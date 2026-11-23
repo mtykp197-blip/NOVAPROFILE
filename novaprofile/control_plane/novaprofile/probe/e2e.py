@@ -2631,6 +2631,40 @@ class E2ERunner:
 
         return build_core_document(self._config)
 
+    def _write_js_runtime(self, user_data_dir: Path) -> Path | None:
+        """Write the JavaScript layer into ``user_data_dir``.
+
+        The layer carries the values that only JavaScript can see -- the
+        heap limit, the maths, the codec list -- into the page.  The
+        renderer reads it from the path given on ``--nova-js-runtime``
+        and runs it at document start.
+
+        Without it the native core is the only layer, and every axis that
+        JavaScript owns reports the host's values.  That is a real
+        failure of the product, not of the measurement, so the runner
+        writes the file rather than skipping the axis.
+        """
+
+        from ..js_runtime.builder import JSRuntimeBuilder
+        from ..js_runtime.injector import InjectionPoint, write_runtime
+        from ..schema.profile import ProfileConfig
+
+        try:
+            profile = ProfileConfig.model_validate(
+                self._config.model_dump(mode="python")
+            )
+            written = write_runtime(
+                profile,
+                user_data_dir,
+                injection_point=InjectionPoint.DOCUMENT_START,
+                builder=JSRuntimeBuilder(),
+            )
+            return written.path
+        except Exception:
+            # The layer is an enhancement.  The run goes on without it and
+            # the axes it owns report a mismatch, which is honest.
+            return None
+
     def _launch(self, browser_path: str) -> _BrowserProcess:
         """Launch the browser and return the process and its DevTools port."""
 
@@ -2647,6 +2681,13 @@ class E2ERunner:
         config_path = self._write_core_config(user_data_dir)
         if config_path is not None:
             command.append(f"--nova-config={config_path}")
+        # The JavaScript layer is handed over the same way: the path goes
+        # on the command line, the payload stays in the user data
+        # directory, where the command line of the process cannot be read
+        # by another process.
+        runtime_path = self._write_js_runtime(user_data_dir)
+        if runtime_path is not None:
+            command.append(f"--nova-js-runtime={runtime_path}")
         command.append("--no-first-run")
         command.append("--no-default-browser-check")
         command.append("--disable-background-networking")

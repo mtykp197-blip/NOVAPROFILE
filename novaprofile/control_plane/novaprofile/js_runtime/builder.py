@@ -1,4 +1,4 @@
-"""The page-context JavaScript layer.
+﻿"""The page-context JavaScript layer.
 
 The native Chromium core is the primary mechanism: the fingerprint lives
 inside the browser process, so every frame, worker and realm sees the
@@ -85,11 +85,26 @@ RUNTIME_JS = r"""
   });
 
   // -- the native marker ------------------------------------------------
-  // The native core leaves a marker on the window.  When it is there,
-  // the native values are authoritative and this layer stands down:
-  // two mechanisms reporting different values would be a contradiction
-  // that the page could see.
-  if (window.__NOVA_NATIVE__) { return; }
+  // The native core publishes the list of surfaces it owns.  Where it
+  // owns a surface, its value is the authoritative one: the browser
+  // reports it from inside the process, with the stock descriptor
+  // shape, and no page can tell that anything was done at all.
+  //
+  // A JavaScript override on top of that would be strictly worse.  It
+  // would replace a value the page cannot detect having been replaced
+  // with one it can, and if the two ever disagreed the page would see
+  // the disagreement -- which is exactly the kind of inconsistency that
+  // gives a fingerprinting script something to key on.
+  //
+  // So the layer stands down on exactly the surfaces the native core
+  // owns, and only on those.  A surface the native core does not reach
+  // is still the layer's job.
+  var nativeSurfaces = window.__NOVA_NATIVE_SURFACES__;
+  if (nativeSurfaces && !nativeSurfaces.length) { nativeSurfaces = null; }
+  function nativeOwns(surface) {
+    if (!nativeSurfaces) { return false; }
+    return nativeSurfaces.indexOf(surface) !== -1;
+  }
 
   var P = window.__NOVA_PROFILE__;
   if (!P) { return; }
@@ -428,7 +443,7 @@ RUNTIME_JS = r"""
   // here stops every override after it.  The guard below is only
   // useful if the read above it cannot throw.
   var nav = (typeof navigator !== 'undefined') ? navigator : null;
-  if (nav) {
+  if (nav && !nativeOwns('navigator')) {
     var navValues = P.navigator || {};
     var navKeys = Object.keys(navValues);
     for (var i = 0; i < navKeys.length; i++) {
@@ -461,7 +476,7 @@ RUNTIME_JS = r"""
   }
 
   // -- the screen surface ------------------------------------------------
-  if (typeof Screen !== 'undefined' && P.screen) {
+  if (typeof Screen !== 'undefined' && P.screen && !nativeOwns('screen')) {
     var screenValues = P.screen;
     Object.keys(screenValues).forEach(function (key) {
       var value = screenValues[key];
@@ -477,7 +492,7 @@ RUNTIME_JS = r"""
   }
 
   // -- the window geometry ------------------------------------------------
-  if (P.viewport) {
+  if (P.viewport && !nativeOwns('viewport')) {
     var vp = P.viewport;
     var windowValues = {
       innerWidth: vp.inner_width,
@@ -499,7 +514,7 @@ RUNTIME_JS = r"""
   }
 
   // -- the client hints ----------------------------------------------------
-  if (typeof navigator !== 'undefined' && 'userAgentData' in navigator && P.user_agent_data) {
+  if (typeof navigator !== 'undefined' && 'userAgentData' in navigator && P.user_agent_data && !nativeOwns('user_agent_data')) {
     var uad = P.user_agent_data;
     var uadValues = {
       brands: uad.brands,
@@ -741,7 +756,7 @@ RUNTIME_JS = r"""
   }
 
   // -- the network information ------------------------------------------------
-  if (typeof navigator !== 'undefined' && navigator.connection && P.storage_network) {
+  if (typeof navigator !== 'undefined' && navigator.connection && P.storage_network && !nativeOwns('storage')) {
     var sn = P.storage_network;
     var connectionValues = {
       effectiveType: sn.effective_type,
@@ -760,7 +775,7 @@ RUNTIME_JS = r"""
   }
 
   // -- the storage estimate ------------------------------------------------------
-  if (typeof navigator !== 'undefined' && navigator.storage && P.storage_network) {
+  if (typeof navigator !== 'undefined' && navigator.storage && P.storage_network && !nativeOwns('storage')) {
     var st = P.storage_network;
     try {
       navigator.storage.estimate = function () {
@@ -773,7 +788,7 @@ RUNTIME_JS = r"""
   }
 
   // -- the media devices ---------------------------------------------------------
-  if (typeof navigator !== 'undefined' && navigator.mediaDevices && P.media_devices) {
+  if (typeof navigator !== 'undefined' && navigator.mediaDevices && P.media_devices && !nativeOwns('media_devices')) {
     var md = P.media_devices;
     try {
       var mdList = []
@@ -815,7 +830,7 @@ RUNTIME_JS = r"""
   }
 
   // -- the canvas ------------------------------------------------------------------
-  if (typeof CanvasRenderingContext2D !== 'undefined' && P.canvas_2d) {
+  if (typeof CanvasRenderingContext2D !== 'undefined' && P.canvas_2d && !nativeOwns('canvas')) {
     var cv = P.canvas_2d;
     var targets = cv.targets || [];
     var strength = cv.noise_strength || 0;
@@ -1001,7 +1016,7 @@ RUNTIME_JS = r"""
   // the geometry stays consistent with the layout and with hit-testing:
   // a rectangle that is off by a fraction of a pixel is a different
   // kind of anomaly than one that is off by a pixel.
-  if (typeof Element !== 'undefined' && P.rects) {
+  if (typeof Element !== 'undefined' && P.rects && !nativeOwns('rects')) {
     var rc = P.rects;
     var rectTargets = rc.targets || [];
     if (rc.mode !== 'off') {
@@ -1072,7 +1087,7 @@ RUNTIME_JS = r"""
   // are properties of the audio stack -- not of the profile.  So the
   // values are reported as they are, and only the ones the profile
   // describes are substituted.
-  if (typeof AudioContext !== 'undefined' && P.audio) {
+  if (typeof AudioContext !== 'undefined' && P.audio && !nativeOwns('audio')) {
     var au = P.audio;
     try {
       var AudioCtor = window.AudioContext || window.webkitAudioContext;
@@ -1118,7 +1133,7 @@ RUNTIME_JS = r"""
   //
   // The channel count is forced the same way, for the same reason: the
   // rendered buffer's channel count is the one a site reads.
-  if (typeof OfflineAudioContext !== 'undefined' && P.audio) {
+  if (typeof OfflineAudioContext !== 'undefined' && P.audio && !nativeOwns('audio')) {
     try {
       var NativeOffline = window.OfflineAudioContext;
       var OfflineProxy = function (numberOfChannels, length, sampleRate) {
@@ -1170,7 +1185,7 @@ RUNTIME_JS = r"""
   }
 
   // -- the WebGL --------------------------------------------------------------------
-  if (typeof WebGLRenderingContext !== 'undefined' && P.webgl) {
+  if (typeof WebGLRenderingContext !== 'undefined' && P.webgl && !nativeOwns('webgl')) {
     var gl = P.webgl;
     var params = gl.parameters || {};
     var paramKeys = Object.keys(params);
@@ -1330,7 +1345,7 @@ RUNTIME_JS = r"""
   }
 
   // -- the WebGPU ---------------------------------------------------------------------
-  if (typeof navigator !== 'undefined' && navigator.gpu && P.webgpu) {
+  if (typeof navigator !== 'undefined' && navigator.gpu && P.webgpu && !nativeOwns('webgpu')) {
     var gpu = P.webgpu;
     if (gpu.enabled) {
       try {
@@ -1565,7 +1580,8 @@ RUNTIME_JS = r"""
   }
 
   // -- the fonts ----------------------------------------------------------------------------
-  if (P.fonts && P.fonts.installed && typeof document !== 'undefined' && document.fonts) {
+  if (P.fonts && P.fonts.installed && !nativeOwns('fonts')
+      && typeof document !== 'undefined' && document.fonts) {
     try {
       var installed = P.fonts.installed;
       var nativeCheck = document.fonts.check.bind(document.fonts);
@@ -1604,7 +1620,8 @@ RUNTIME_JS = r"""
   }
 
   // -- the sensors ----------------------------------------------------------------------------
-  if (P.sensors && P.sensors.enabled && typeof DeviceMotionEvent !== 'undefined') {
+  if (P.sensors && P.sensors.enabled && !nativeOwns('sensors')
+      && typeof DeviceMotionEvent !== 'undefined') {
     try {
       var sensors = P.sensors;
       var nativeMotion = DeviceMotionEvent.prototype;
@@ -1839,7 +1856,7 @@ RUNTIME_JS = r"""
   }
 
   // -- the user agent data brands ----------------------------------------
-  if (typeof navigator !== 'undefined' && 'userAgentData' in navigator && P.user_agent_data) {
+  if (typeof navigator !== 'undefined' && 'userAgentData' in navigator && P.user_agent_data && !nativeOwns('user_agent_data')) {
     var uad = navigator.userAgentData;
     try {
       Object.defineProperty(uad, 'brands', {
