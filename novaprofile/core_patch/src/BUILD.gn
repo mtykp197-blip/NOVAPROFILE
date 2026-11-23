@@ -1,0 +1,60 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The NOVA Profile Core -- the hook layer that serves the profile's own
+# values to Blink.
+#
+# The sources live here rather than in //content because the accessors they
+# support live in Blink: the patched translation units include
+# "nova_chromium_hooks.h", and the header is found through the include
+# directory this target exports (see :nova_include_dirs below).
+#
+# The target is a source_set so that it can be linked into both the Blink
+# core component and the Blink modules component without pulling the whole
+# of Blink into the browser process.
+#
+# The public interface of the target is the hooks header; everything else is
+# private to the core.
+
+config("nova_include_dirs") {
+  # The patched Blink translation units include the hooks header by its bare
+  # name, so the directory that holds it has to be on the include path of
+  # every target that calls into the core.
+  include_dirs = [ "." ]
+}
+
+source_set("nova_core") {
+  sources = [
+    "nova_blink_patch.cc",
+    "nova_core_config.cc",
+    "nova_js_runtime_code.cc",
+    "nova_pixel_noise.cc",
+  ]
+
+  public = [
+    "nova_chromium_hooks.h",
+    "nova_core_config.h",
+    "nova_pixel_noise.h",
+  ]
+
+  # The header is included by name rather than by path, so the directory
+  # has to be exported to every consumer.
+  public_configs = [ ":nova_include_dirs" ]
+
+  deps = [
+    "//base",
+    "//third_party/boringssl",
+    "//ui/gfx/geometry",
+  ]
+
+  # The core is linked into the renderer, into the GPU process, into the
+  # browser process and into the network service -- the network service
+  # runs the TLS handshake, so it has to be able to read the profile's
+  # own cipher suites and curves.
+  visibility = [
+    "//content/*",
+    "//net/*",
+    "//third_party/blink/*",
+  ]
+}

@@ -8,7 +8,9 @@
 #include <utility>
 #include <vector>
 
+#include "base/base64.h"
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/json/json_reader.h"
@@ -1071,8 +1073,40 @@ bool ParseProfileConfig(const std::string& json,
 }
 
 bool LoadProfileConfigFromCommandLine(ProfileConfig* config, std::string* error) {
-  const std::string path = base::CommandLine::ForCurrentProcess()
-                               ->GetSwitchValueASCII("nova-config");
+  const base::CommandLine* command_line =
+      base::CommandLine::ForCurrentProcess();
+
+  // The configuration is handed to the renderer as the document itself,
+  // not as a path.  The renderer is sandboxed and cannot open a file in
+  // the user data directory, so a path would reach a process that cannot
+  // use it -- and a process that cannot read the profile reports the
+  // host's values, which is exactly what a site is looking for.
+  //
+  // The browser process, which is not sandboxed, reads the file and
+  // puts the document on the command line of the renderer.
+  //
+  // The document is base64 encoded before it goes on the command line.
+  // A Windows command line is a single string that the system splits
+  // into arguments, and the quoting rules it uses cannot describe a
+  // document that itself contains quotes, spaces and newlines: the
+  // renderer would receive a fragment of the JSON, parse it, and fall
+  // back to the host's values.  Base64 has no spaces, no quotes and no
+  // newlines, so the argument survives the trip intact.
+  const std::string inline_encoded =
+      command_line->GetSwitchValueASCII(kConfigSourceSwitchName);
+  if (!inline_encoded.empty()) {
+    const std::optional<std::vector<uint8_t>> decoded =
+        base::Base64Decode(inline_encoded);
+    if (!decoded.has_value()) {
+      *error = "the --" + std::string(kConfigSourceSwitchName) +
+               " switch is not valid base64";
+      return false;
+    }
+    return ParseProfileConfig(std::string(decoded->begin(), decoded->end()),
+                              config, error);
+  }
+
+  const std::string path = command_line->GetSwitchValueASCII("nova-config");
   if (path.empty()) {
     *error = "the --nova-config switch is missing";
     return false;
@@ -1088,11 +1122,86 @@ bool LoadProfileConfigFromCommandLine(ProfileConfig* config, std::string* error)
 
   std::string json;
   if (!base::ReadFileToStringWithMaxSize(file_path, &json, 8 * 1024 * 1024)) {
-    *error = "the configuration file could not be read: " + path;
+    // The reason matters: a file that is not there and a file that the
+    // sandbox will not let the process open look the same from here, and
+    // they have different fixes.
+    //
+    // NOTE: the diagnostics below must not touch the filesystem.  This
+    // runs inside the renderer, on a thread that has been marked as
+    // non-blocking; a stat() here trips the
+    // "tls_blocking_disallowed" DCHECK and takes the whole browser down.
+    // The error code that the failed read already left behind is enough.
+    *error = "the configuration file could not be read: " + path +
+             " (last error: " +
+             logging::SystemErrorCodeToString(logging::GetLastSystemErrorCode()) +
+             ")";
     return false;
   }
 
   return ParseProfileConfig(json, config, error);
 }
 
+const char kConfigSourceSwitchName[] = "nova-config-source";
+
+// ---------------------------------------------------------------------------
+// The browser-side hand-over cache (configuration)
+// ---------------------------------------------------------------------------
+//
+// The browser process reads the profile from disk and puts it on the
+// command line of every renderer it spawns.  The renderer cannot do that
+// read itself: it is sandboxed and the user data directory is not among
+// the paths it may open.
+//
+// The catch is *where* the browser-side read happens.  The renderer command
+// line is built on the browser's IO thread, and a thread that has been
+// marked as non-blocking must not wait on the disk: a read() there trips
+// the "tls_blocking_disallowed" DCHECK and takes the whole browser down.
+//
+// So the read happens exactly once, on the main thread, during startup --
+// before any renderer exists and therefore before anything a page can
+// observe.  The result is cached here, and the IO thread only ever copies
+// a string that is already in memory.
+
+namespace {
+
+// The cached document.  Written once on the main thread during startup
+// and only read afterwards.
+std::string* const g_cached_config_source = new std::string();
+
+}  // namespace
+
+// Called on the main thread during startup, before the first renderer is
+// spawned.  From here on the IO thread never touches the disk.
+void PrimeConfigHandover(const base::CommandLine& command_line) {
+  const std::string config_path =
+      command_line.GetSwitchValueASCII("nova-config");
+  if (config_path.empty()) {
+    return;
+  }
+  base::FilePath file_path(base::FilePath::FromUTF8Unsafe(config_path));
+  std::string contents;
+  if (base::ReadFileToStringWithMaxSize(file_path, &contents, 8 * 1024 * 1024)) {
+    // The document goes on the command line of the renderer, and a
+    // Windows command line cannot describe a document that contains
+    // quotes, spaces and newlines.  Base64 can: it has none of them,
+    // so the argument survives the trip intact.
+    //
+    // The early-startup variant is used because this runs before the
+    // feature list is registered: the ordinary encoder consults a
+    // feature flag, and asking for a flag that does not exist yet is a
+    // fatal error.
+    *g_cached_config_source = base::Base64EncodeEarlyStartup(
+        base::as_byte_span(std::string_view(contents)));
+  } else {
+    LOG(ERROR) << "NOVA: the profile configuration could not be read: "
+               << config_path << " ("
+               << logging::SystemErrorCodeToString(
+                      logging::GetLastSystemErrorCode())
+               << ")";
+  }
+}
+
+std::string ReadConfigSourceForBrowser() {
+  return *g_cached_config_source;
+}
 }  // namespace nova

@@ -96,10 +96,19 @@ index 20870c2..36df110 100644
              g_network_service_crashes_on_next_startup = false;
              options.WithExtraCommandLineSwitches(
 diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content/browser/renderer_host/render_process_host_impl.cc
-index 15ca37d..c9a8464 100644
+index 15ca37d..43da0eb 100644
 --- a/content/browser/renderer_host/render_process_host_impl.cc
 +++ b/content/browser/renderer_host/render_process_host_impl.cc
-@@ -3866,6 +3866,24 @@ void RenderProcessHostImpl::AppendRendererCommandLine(
+@@ -218,6 +218,8 @@
+ #include "third_party/blink/public/mojom/disk_allocator.mojom.h"
+ #include "third_party/blink/public/mojom/origin_trials/origin_trials_settings.mojom.h"
+ #include "third_party/blink/public/mojom/plugins/plugin_registry.mojom.h"
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
++#include "third_party/blink/renderer/core/nova/nova_core_config.h"
+ #include "third_party/blink/public/public_buildflags.h"
+ #include "third_party/perfetto/include/perfetto/tracing/traced_proto.h"
+ #include "ui/accessibility/accessibility_switches.h"
+@@ -3866,6 +3868,57 @@ void RenderProcessHostImpl::AppendRendererCommandLine(
    command_line->AppendSwitchASCII(switches::kProcessType,
                                    switches::kRendererProcess);
  
@@ -113,11 +122,44 @@ index 15ca37d..c9a8464 100644
 +  // unchanged: the renderer reads the same file, so there is one
 +  // description of the profile and not two that can drift apart.
 +  {
-+    const std::string nova_config_path =
-+        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-+            "nova-config");
-+    if (!nova_config_path.empty()) {
-+      command_line->AppendSwitchASCII("nova-config", nova_config_path);
++    // The renderer is sandboxed and cannot open a file in the user data
++    // directory, so neither the configuration nor the JavaScript layer
++    // can be handed to it as a path: a path would reach a process that
++    // cannot use it, and a process that cannot read the profile reports
++    // the host's values -- which is exactly what a site is looking for.
++    //
++    // The browser process is not sandboxed.  It reads both and puts the
++    // documents on the command line of the renderer.
++    //
++    // The trade is made deliberately.  A fingerprint that another process
++    // on the machine can read out of the command line has leaked; but a
++    // fingerprint that never reaches the renderer is not a fingerprint at
++    // all.  The renderer is short lived, and the arguments die with it.
++    const std::string nova_config_source = nova::ReadConfigSourceForBrowser();
++    if (!nova_config_source.empty()) {
++      command_line->AppendSwitchASCII(nova::kConfigSourceSwitchName,
++                                      nova_config_source);
++    }
++
++    // The payload goes on the command line as well, base64 encoded.
++    //
++    // The command line is the *primary* transport, not a fallback.  The
++    // Mojo channel carries the payload too, and it has no length limit,
++    // but the renderer has to connect before that channel can deliver
++    // anything -- and a navigation can begin before it does.  A
++    // renderer whose first navigation has no payload reports the host's
++    // values for every axis, which is the one thing the engine exists
++    // to prevent.  The command line is built when the process is
++    // created, so the payload is there before the renderer runs.
++    //
++    // Only the payload travels.  The layer's code is compiled into the
++    // browser: it is the same for every profile, and it is seventy-five
++    // kilobytes, which does not fit on a command line next to the
++    // payload.
++    const std::string nova_js_payload = nova::ReadJsRuntimeForBrowser();
++    if (!nova_js_payload.empty()) {
++      command_line->AppendSwitchASCII(nova::kJsPayloadSwitchName,
++                                      nova_js_payload);
 +    }
 +  }
 +

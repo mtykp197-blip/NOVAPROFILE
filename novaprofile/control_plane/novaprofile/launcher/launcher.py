@@ -40,10 +40,9 @@ from typing import Any
 from ..core.cores import CoreManager, CoreSelector
 from ..core.versions import CoreFallbackPolicy, CoreSelection
 from ..js_runtime.injector import (
-    JS_RUNTIME_FILENAME,
-    InjectionPoint,
+    JS_PAYLOAD_FILENAME,
     remove_runtime,
-    write_runtime,
+    write_payload,
 )
 from .isolation import ProfileIsolation
 from .leak_guard import (
@@ -63,7 +62,7 @@ CORE_CONFIG_FILENAME: str = "nova_core.json"
 #: the payload never appears in the process arguments -- those are
 #: readable by every process on the machine, the user data directory is
 #: not.
-JS_RUNTIME_FLAG: str = "--nova-js-runtime"
+JS_PAYLOAD_FLAG: str = "--nova-js-payload"
 
 #: Default Chromium locations on Windows / POSIX.
 DEFAULT_CHROME_PATHS: tuple[str, ...] = (
@@ -399,10 +398,14 @@ class BrowserLauncher:
         # When it is absent -- a stock Chromium, or a build of the patch
         # series that has not been compiled yet -- the script is what
         # carries the fingerprint into the page.
+        #
+        # Only the payload is handed over.  The layer's code is compiled
+        # into the browser: it is the same for every profile and it does
+        # not fit on a command line next to the payload.
         if self._js_runtime_enabled:
-            runtime_path = user_data_dir / JS_RUNTIME_FILENAME
-            if runtime_path.exists():
-                args.append(f"{JS_RUNTIME_FLAG}={runtime_path}")
+            payload_path = user_data_dir / JS_PAYLOAD_FILENAME
+            if payload_path.exists():
+                args.append(f"{JS_PAYLOAD_FLAG}={payload_path}")
 
         # -- user supplied extras --------------------------------------------
         args.extend(self._extra_args)
@@ -502,14 +505,18 @@ class BrowserLauncher:
 
     # -- the JavaScript fallback layer ---------------------------------------
 
-    def _write_js_runtime(self, config: Any, user_data_dir: Path) -> Path | None:
-        """Write the JavaScript runtime for ``config`` into ``user_data_dir``.
+    def _write_js_payload(self, config: Any, user_data_dir: Path) -> Path | None:
+        """Write the JavaScript layer's payload for ``config``.
 
-        The runtime is the fallback layer: it carries the fingerprint into
-        the page when the native core is not there.  It is written next to
-        the core config and removed again when the browser exits -- a
-        fingerprint left on disk in the clear is a liability, because the
-        next profile in the same directory would be able to read it.
+        The payload is the profile's values without the code that
+        installs them.  The code is compiled into the browser, so only
+        the payload travels: the code is the same for every profile and
+        it does not fit on a Windows command line next to the payload.
+
+        The payload is written next to the core config and removed again
+        when the browser exits -- a fingerprint left on disk in the clear
+        is a liability, because the next profile in the same directory
+        would be able to read it.
 
         A failure here is not fatal.  A profile without the JavaScript
         layer still runs, it just reports the host's real values, and the
@@ -524,14 +531,10 @@ class BrowserLauncher:
             from ..schema.profile import ProfileConfig
 
             profile = ProfileConfig.model_validate(config.model_dump(mode="python"))
-            written = write_runtime(
-                profile,
-                user_data_dir,
-                injection_point=InjectionPoint.DOCUMENT_START,
-            )
+            written = write_payload(profile, user_data_dir)
             return written.path
         except Exception:
-            # The runtime is an enhancement.  The launch proceeds without
+            # The layer is an enhancement.  The launch proceeds without
             # it, and the reason is recorded rather than raised.
             return None
 
@@ -550,11 +553,11 @@ class BrowserLauncher:
 
         config_path = self.write_core_config(config, user_data_dir)
 
-        # The JavaScript fallback layer is written next to the core
-        # config.  It is written *before* the command line is built,
-        # because the command line refers to it by path.
+        # The JavaScript fallback layer's payload is written next to the
+        # core config.  It is written *before* the command line is
+        # built, because the command line refers to it by path.
         if self._js_runtime_enabled:
-            self._write_js_runtime(config, user_data_dir)
+            self._write_js_payload(config, user_data_dir)
 
         args = self.build_args(config, user_data_dir)
         if extra_args:

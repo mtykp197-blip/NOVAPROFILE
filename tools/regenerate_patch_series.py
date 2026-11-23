@@ -54,6 +54,17 @@ CHROMIUM = Path(os.environ.get("NOVA_CHROMIUM_SRC", r"C:\chromium\src"))
 #: The scratch directory the four trees are built in.
 SCRATCH = Path(os.environ.get("NOVA_SCRATCH_DIR", r"C:\chromium\_series_tmp"))
 
+#: The commit the upstream side of the diff is taken from.
+#:
+#: The Chromium checkout holds the NOVA changes and they are committed
+#: there, so the head of the checkout is not upstream.  The series is
+#: the difference between the upstream release and the checkout, and
+#: the upstream release is this commit.
+#:
+#: The environment variable wins, so the same script works on every
+#: machine.
+BASELINE = os.environ.get("NOVA_CHROMIUM_BASELINE", "339b0817fb")
+
 #: Where the generated patches are written.
 #:
 #: The default is resolved from the location of this file rather than
@@ -74,6 +85,7 @@ CREATED = {
     "third_party/blink/renderer/core/nova/nova_chromium_hooks.h",
     "third_party/blink/renderer/core/nova/nova_core_config.cc",
     "third_party/blink/renderer/core/nova/nova_core_config.h",
+    "third_party/blink/renderer/core/nova/nova_js_runtime_code.cc",
     "third_party/blink/renderer/core/nova/nova_pixel_noise.cc",
     "third_party/blink/renderer/core/nova/nova_pixel_noise.h",
 }
@@ -447,6 +459,12 @@ def build_trees() -> dict[str, dict[str, str]]:
 
     ``base`` is the upstream release, and each of the other three holds
     the release plus the part it is named after.
+
+    The upstream side comes from a *baseline* commit rather than from
+    the head of the checkout.  The checkout holds the NOVA changes and
+    they are committed there, so the head of it is not upstream: diffing
+    against it would produce an empty patch for every file the series
+    touches.
     """
 
     upstream: dict[str, str] = {}
@@ -454,7 +472,7 @@ def build_trees() -> dict[str, dict[str, str]]:
         if rel in CREATED:
             upstream[rel] = ""
         else:
-            upstream[rel] = git("show", f"HEAD:{rel}")
+            upstream[rel] = git("show", f"{BASELINE}:{rel}")
 
     current: dict[str, str] = {
         rel: (CHROMIUM / rel).read_text(encoding="utf-8") for rel in ALL_FILES

@@ -2675,32 +2675,35 @@ class E2ERunner:
 
         return build_core_document(self._config)
 
-    def _write_js_runtime(self, user_data_dir: Path) -> Path | None:
-        """Write the JavaScript layer into ``user_data_dir``.
+    def _write_js_payload(self, user_data_dir: Path) -> Path | None:
+        """Write the JavaScript layer's payload into ``user_data_dir``.
 
         The layer carries the values that only JavaScript can see -- the
         heap limit, the maths, the codec list -- into the page.  The
-        renderer reads it from the path given on ``--nova-js-runtime``
-        and runs it at document start.
+        renderer reads the payload from the path given on
+        ``--nova-js-payload`` and runs the layer at document start.
 
-        Without it the native core is the only layer, and every axis that
-        JavaScript owns reports the host's values.  That is a real
-        failure of the product, not of the measurement, so the runner
-        writes the file rather than skipping the axis.
+        Only the payload travels.  The layer's code is compiled into the
+        browser: it is the same for every profile and it does not fit
+        on a command line next to the payload.
+
+        Without the payload the native core is the only layer, and every
+        axis that JavaScript owns reports the host's values.  That is a
+        real failure of the product, not of the measurement, so the
+        runner writes the file rather than skipping the axis.
         """
 
         from ..js_runtime.builder import JSRuntimeBuilder
-        from ..js_runtime.injector import InjectionPoint, write_runtime
+        from ..js_runtime.injector import write_payload
         from ..schema.profile import ProfileConfig
 
         try:
             profile = ProfileConfig.model_validate(
                 self._config.model_dump(mode="python")
             )
-            written = write_runtime(
+            written = write_payload(
                 profile,
                 user_data_dir,
-                injection_point=InjectionPoint.DOCUMENT_START,
                 builder=JSRuntimeBuilder(),
             )
             return written.path
@@ -2725,13 +2728,13 @@ class E2ERunner:
         config_path = self._write_core_config(user_data_dir)
         if config_path is not None:
             command.append(f"--nova-config={config_path}")
-        # The JavaScript layer is handed over the same way: the path goes
-        # on the command line, the payload stays in the user data
-        # directory, where the command line of the process cannot be read
-        # by another process.
-        runtime_path = self._write_js_runtime(user_data_dir)
-        if runtime_path is not None:
-            command.append(f"--nova-js-runtime={runtime_path}")
+        # The JavaScript layer's payload is handed over the same way: the
+        # path goes on the command line, the payload stays in the user
+        # data directory, where the command line of the process cannot be
+        # read by another process.
+        payload_path = self._write_js_payload(user_data_dir)
+        if payload_path is not None:
+            command.append(f"--nova-js-payload={payload_path}")
         command.append("--no-first-run")
         command.append("--no-default-browser-check")
         command.append("--disable-background-networking")

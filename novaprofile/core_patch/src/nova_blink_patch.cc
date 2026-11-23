@@ -67,8 +67,11 @@
 #include <string>
 #include <vector>
 
+#include "base/base64.h"
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
+#include "base/files/file_util.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/strings/string_util.h"
@@ -76,6 +79,11 @@
 #include "ui/gfx/geometry/rect_f.h"
 
 namespace nova {
+
+// The name of the switch that carries the JavaScript runtime to the
+// renderer.  The switch carries the script itself, not a path: the
+// renderer is sandboxed and cannot open a file.
+extern const char kJsRuntimeSwitchName[];
 
 namespace {
 
@@ -118,8 +126,16 @@ class NovaConfigHolder {
     // audio fingerprint is independent of the canvas one.  A script that
     // compares the two hashes therefore learns nothing about the link
     // between the surfaces.
+    //
+    // The unmasked renderer goes into the key as well, for the same
+    // reason the canvas key carries it: two profiles that differ only
+    // in their GPU would otherwise carry the same audio fingerprint,
+    // and the pair of them -- the GPU string and the audio hash -- is
+    // a stronger identifier than either is on its own.
     audio_key_ = DerivePixelNoiseKey(config.seed_config, "audio",
-                                     config.audio.salt, config.audio.mode);
+                                     config.audio.salt,
+                                     config.audio.mode + "|" +
+                                         config.webgl.unmasked_renderer);
     initialized_ = true;
     return true;
   }
@@ -220,8 +236,24 @@ class NovaConfigHolder {
 // happened at that point, so there is no window in which the page could
 // see the real values.
 bool InitializeNovaCore(const base::CommandLine& command_line) {
+  // The profile reaches this process in one of two ways.
+  //
+  // The browser process is given a path: --nova-config.  It reads the
+  // file and hands the document to the renderers.
+  //
+  // The renderer is given the document itself: --nova-config-source.
+  // It is sandboxed and cannot open a file in the user data directory,
+  // so a path would reach a process that cannot use it -- and a process
+  // that cannot read the profile reports the host's values, which is
+  // exactly what a site is looking for.
+  //
+  // Both are accepted here.  Checking only for the path would make the
+  // renderer skip the configuration entirely, because the path is not
+  // what it was given.
   const std::string path = command_line.GetSwitchValueASCII("nova-config");
-  if (path.empty()) {
+  const std::string inline_source =
+      command_line.GetSwitchValueASCII(kConfigSourceSwitchName);
+  if (path.empty() && inline_source.empty()) {
     return false;
   }
 
@@ -280,6 +312,120 @@ const ProfileConfig& GetNovaConfigRef() {
   NovaConfigHolder& holder = NovaConfigHolder::Get();
   holder.EnsureInitialized();
   return holder.GetConfigRef();
+}
+
+// ---------------------------------------------------------------------------
+// The surfaces the native core owns
+// ---------------------------------------------------------------------------
+//
+// The JavaScript layer is the fallback for the surfaces the native core
+// does not reach.  Where the native core *does* reach a surface, the
+// native value is the authoritative one: the browser reports it from
+// inside the process, with the stock descriptor shape, and no page can
+// tell that anything was done at all.
+//
+// A JavaScript override on top of that would be strictly worse.  It
+// would replace a value the page cannot detect having been replaced
+// with one it can, and if the two ever disagreed the page would see
+// the disagreement -- which is exactly the kind of inconsistency that
+// gives a fingerprinting script something to key on.
+//
+// So the native core publishes the list of surfaces it owns, and the
+// JavaScript layer stands down on exactly those.
+//
+// The list is derived from what the configuration actually carries,
+// not from a fixed set: a profile that does not describe a surface
+// leaves that surface to the JavaScript layer, and a profile that does
+// describe it hands it to the native core.
+std::vector<std::string> GetNativeOwnedSurfaces() {
+  std::vector<std::string> surfaces;
+  if (!IsNovaCoreInitialized())
+    return surfaces;
+
+  const ProfileConfig& config = GetNovaConfigRef();
+
+  // The navigator surface.
+  if (!config.navigator.user_agent.empty() ||
+      !config.navigator.platform.empty() ||
+      !config.navigator.languages.empty()) {
+    surfaces.push_back("navigator");
+  }
+
+  // The screen surface and the window geometry.
+  if (config.screen.width > 0 || config.screen.height > 0) {
+    surfaces.push_back("screen");
+    surfaces.push_back("viewport");
+  }
+
+  // The client hints, which the native core builds in one place so that
+  // the low- and the high-entropy values cannot disagree.
+  if (!config.user_agent_data.brands.empty()) {
+    surfaces.push_back("user_agent_data");
+  }
+
+  // The surfaces the native core reads back with noise.
+  //
+  // Only the surfaces the native core actually patches are named here.
+  // A surface it does not patch must not be named: the JavaScript
+  // layer stands down on the surfaces that are named, so naming one
+  // it does not patch would leave that surface reporting the host's
+  // values.
+  //
+  // The WebGL identity strings are patched at the WebGLContext level,
+  // so that the unmasked renderer is identical in every context and
+  // cannot be told apart from a real GPU by its lifetime or by the way
+  // it is exposed.
+  if (!config.webgl.unmasked_vendor.empty() ||
+      !config.webgl.unmasked_renderer.empty()) {
+    surfaces.push_back("webgl");
+  }
+
+  // The font list is served from the font face set, so that a page
+  // cannot tell it from the host's by the way it is enumerated.
+  if (!config.fonts.installed.empty()) {
+    surfaces.push_back("fonts");
+  }
+
+  return surfaces;
+}
+
+// The declaration the JavaScript layer reads to learn which surfaces the
+// native core owns.
+//
+// It is a plain assignment to a property on the window that does not
+// exist otherwise.  A page that does not know about it sees one more
+// own property on the window -- which the JavaScript layer would have
+// added anyway with its own marker.
+//
+// The property is only written when the browser was started with the
+// expose switch.  Without it the declaration is empty, and the layer
+// has to assume that the native core owns nothing: it then patches
+// every surface itself, which is what a browser that was not patched at
+// all needs.
+//
+// The switch exists because the property is a fingerprint of its own.
+// A script that looks for names like this one finds it with a single
+// property enumeration, and a browser that carries the profile's
+// fingerprint must not carry a marker that says it does.
+std::string BuildNativeSurfaceDeclaration() {
+  // The switch is read once.  It is a debugging aid, and it is read on
+  // a path that runs once per document.
+  static const bool expose = base::CommandLine::ForCurrentProcess()
+                                 ->HasSwitch("nova-expose-surfaces");
+
+  if (!expose)
+    return std::string();
+
+  const std::vector<std::string> surfaces = GetNativeOwnedSurfaces();
+  std::string json = "[";
+  for (size_t i = 0; i < surfaces.size(); ++i) {
+    if (i)
+      json += ",";
+    json += "\"" + surfaces[i] + "\"";
+  }
+  json += "]";
+
+  return "window.__NOVA_NATIVE_SURFACES__ = " + json + ";\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -393,7 +539,7 @@ void ApplyAudioNoise(float* samples, size_t count, size_t offset) {
   if (!IsNovaCoreInitialized()) {
     return;
   }
-  const ProfileConfig config = GetNovaConfig();
+  const ProfileConfig& config = GetNovaConfigRef();
   if (config.audio.mode == "native_passthrough" ||
       config.audio.mode == "disabled") {
     return;
@@ -503,7 +649,7 @@ std::string RewriteMediaDeviceId(const std::string& device_id,
   if (!IsNovaCoreInitialized()) {
     return device_id;
   }
-  const ProfileConfig config = GetNovaConfig();
+  const ProfileConfig& config = GetNovaConfigRef();
   if (config.media_devices.mode == "native_passthrough" ||
       config.media_devices.mode == "disabled") {
     return device_id;
@@ -700,7 +846,7 @@ void ApplyRectDeltas(gfx::RectF& rect, const char* surface) {
   if (!IsNovaCoreInitialized()) {
     return;
   }
-  const ProfileConfig config = GetNovaConfig();
+  const ProfileConfig& config = GetNovaConfigRef();
   if (config.rects.mode == "disabled" || config.rects.mode == "native_passthrough") {
     return;
   }
@@ -744,6 +890,11 @@ namespace {
 // The lists are returned through a function-local static, so that the
 // caller can hold on to the reference.  The configuration is read once
 // and then never changes, so the copy is made once.
+//
+// The reference is taken rather than a copy.  The TLS handshake reads
+// these lists on every connection, and a copy of the whole
+// configuration -- which carries the font list, the codec list and the
+// device catalogue -- is far more than the handshake needs.
 template <typename Reader>
 const std::vector<std::string>& TlsList(Reader reader) {
   static const std::vector<std::string> kEmpty;
@@ -751,8 +902,7 @@ const std::vector<std::string>& TlsList(Reader reader) {
   if (!IsNovaCoreInitialized()) {
     return kEmpty;
   }
-  const ProfileConfig config = GetNovaConfig();
-  cached = reader(config);
+  cached = reader(GetNovaConfigRef());
   return cached;
 }
 
@@ -791,7 +941,244 @@ bool GetTlsGreaseEnabled() {
   if (!IsNovaCoreInitialized()) {
     return true;
   }
-  return GetNovaConfig().tls.grease_enabled;
+  return GetNovaConfigRef().tls.grease_enabled;
+}
+
+// ---------------------------------------------------------------------------
+// The JavaScript fallback layer.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The payload, as the renderer receives it over the Mojo channel.
+//
+// The channel is the transport for the payload.  It has no length limit
+// and it is not readable from another process, which the command line
+// is.
+std::string* const g_js_payload_from_mojo = new std::string();
+
+// The layer's script, as the renderer assembles it.
+//
+// It is the code -- which is compiled into the browser and is the same
+// for every profile -- followed by the payload, which carries the
+// profile's values.
+//
+// The payload is read from the command line.  The command line is built
+// when the renderer process is created, so the payload is there before
+// the renderer runs a single line.  The Mojo channel arrives later:
+// the renderer has to connect before it can deliver anything, and a
+// navigation can begin before it does.  A renderer whose first
+// navigation has no payload reports the host's values for every axis,
+// which is the one thing the engine exists to prevent.
+const std::string& JsRuntimeSource() {
+  static const std::string* source = new std::string([] {
+    const base::CommandLine* command_line =
+        base::CommandLine::ForCurrentProcess();
+    if (!command_line) {
+      return std::string();
+    }
+
+    // The switch carries the payload, base64 encoded.  A Windows
+    // command line cannot describe a document that contains quotes,
+    // spaces and newlines, so the browser encodes it before it hands
+    // it over; base64 has none of them and survives the trip intact.
+    std::string payload;
+    const std::string inline_encoded =
+        command_line->GetSwitchValueASCII(kJsPayloadSwitchName);
+    if (!inline_encoded.empty()) {
+      const std::optional<std::vector<uint8_t>> decoded =
+          base::Base64Decode(inline_encoded);
+      if (!decoded.has_value()) {
+        LOG(ERROR) << "NOVA: the JavaScript payload on the command line is "
+                      "not valid base64";
+        return std::string();
+      }
+      payload.assign(decoded->begin(), decoded->end());
+    }
+
+    // The payload that arrived over the Mojo channel wins over the one
+    // on the command line: it is the same payload, but it did not pass
+    // through the process table.
+    if (!g_js_payload_from_mojo->empty()) {
+      payload = *g_js_payload_from_mojo;
+    }
+
+    if (payload.empty()) {
+      return std::string();
+    }
+
+    // The payload installs itself and the code reads it.  The code goes
+    // first: it defines the marker the payload checks, and it reads the
+    // payload as it starts.
+    return payload + "\n" + GetJsRuntimeCode();
+  }());
+  return *source;
+}
+
+}  // namespace
+
+// Called by the renderer when the browser hands the payload over the
+// Mojo channel.
+//
+// The payload that arrives here is the whole payload, so it wins over
+// anything the command line carried.
+void SetJsRuntimeFromMojo(std::string runtime) {
+  if (getenv("NOVA_TRACE")) {
+    FILE* t = fopen("C:\\nova-test\\nova_trace.txt", "a");
+    if (t) {
+      fprintf(t, "mojo: runtime len=%d\n", (int)runtime.size());
+      fflush(t);
+      fclose(t);
+    }
+  }
+  *g_js_payload_from_mojo = std::move(runtime);
+}
+
+const std::string& GetJsRuntimeSource() {
+  if (!g_js_payload_from_mojo->empty()) {
+    static const std::string* source =
+        new std::string(*g_js_payload_from_mojo + "\n" + GetJsRuntimeCode());
+    return *source;
+  }
+  return JsRuntimeSource();
+}
+
+bool HasJsRuntime() {
+  return !GetJsRuntimeSource().empty();
+}
+
+// The script the renderer actually runs.
+//
+// It is the JavaScript layer with the native core's declaration of what
+// it owns in front of it.  The declaration has to run first: the layer
+// reads it as it starts and stands down on the surfaces the native core
+// has already taken care of.
+//
+// The result is *not* cached.  The script arrives over a Mojo channel,
+// and the first navigation can start before the channel has delivered
+// it; a value that was computed once and kept would then be the empty
+// one, for the rest of the renderer's life.  Recomputing costs a string
+// concatenation, and this runs once per document.
+const std::string& GetEffectiveJsRuntimeSource() {
+  static thread_local std::string source;
+  const std::string& runtime = GetJsRuntimeSource();
+  if (getenv("NOVA_TRACE")) {
+    FILE* t = fopen("C:\\nova-test\\nova_trace.txt", "a");
+    if (t) {
+      fprintf(t, "effective: runtime len=%d\n", (int)runtime.size());
+      fflush(t);
+      fclose(t);
+    }
+  }
+  if (runtime.empty()) {
+    source.clear();
+    return source;
+  }
+  if (!IsNovaCoreInitialized()) {
+    source = runtime;
+    return source;
+  }
+
+  // The declaration names only the surfaces the native core owns.
+  // When it owns none of them -- which is the case for a browser that
+  // was not patched at all -- the layer is left to do everything.
+  const std::string declaration = BuildNativeSurfaceDeclaration();
+  source = declaration + runtime;
+  return source;
+}
+
+const char kJsRuntimeSwitchName[] = "nova-js-runtime-source";
+const char kJsPayloadSwitchName[] = "nova-js-payload-source";
+
+// ---------------------------------------------------------------------------
+// The browser-side hand-over cache
+// ---------------------------------------------------------------------------
+//
+// The browser process reads the profile and the JavaScript layer from disk
+// and puts both on the command line of every renderer it spawns.  The
+// renderer cannot do that read itself: it is sandboxed and the user data
+// directory is not among the paths it may open.
+//
+// The catch is *where* the browser-side read happens.  The renderer command
+// line is built on the browser's IO thread, and a thread that has been
+// marked as non-blocking must not wait on the disk: a stat() or a read()
+// there trips the "tls_blocking_disallowed" DCHECK and takes the whole
+// browser down.
+//
+// So the read happens exactly once, on the main thread, during startup --
+// before any renderer exists and therefore before anything a page can
+// observe.  The result is cached here, and the IO thread only ever copies
+// a string that is already in memory.
+
+namespace {
+
+// The cached payload.  Written once on the main thread during startup
+// and only read afterwards, so a plain pointer swap is enough.
+std::string* const g_cached_js_payload = new std::string();
+
+// The payload as it was read, before any encoding.
+std::string* const g_cached_js_payload_raw = new std::string();
+
+// Reads the payload from the path on the command line.  Blocking; only
+// the main thread may call this.
+//
+// The payload is the profile's values, without the code that installs
+// them.  The code is compiled into the browser, so only this part
+// travels.
+void PrimeBrowserHandoverCache(const base::CommandLine& command_line) {
+  const std::string payload_path =
+      command_line.GetSwitchValueASCII("nova-js-payload");
+  if (!payload_path.empty()) {
+    base::FilePath file_path(base::FilePath::FromUTF8Unsafe(payload_path));
+    std::string contents;
+    if (base::ReadFileToString(file_path, &contents)) {
+      *g_cached_js_payload_raw = contents;
+
+      // The payload also goes on the command line of the renderer, and
+      // a Windows command line cannot describe a document that contains
+      // quotes, spaces and newlines.  Base64 can: it has none of them
+      // and survives the trip intact.
+      //
+      // The early-startup variant is used because this runs before the
+      // feature list is registered: the ordinary encoder consults a
+      // feature flag, and asking for a flag that does not exist yet is
+      // a fatal error.
+      //
+      // The payload is eight kilobytes of JSON, so base64 of it is
+      // eleven, which fits on a command line with room to spare.
+      *g_cached_js_payload = base::Base64EncodeEarlyStartup(
+          base::as_byte_span(std::string_view(contents)));
+    } else {
+      LOG(ERROR) << "NOVA: the JavaScript payload could not be read: "
+                 << payload_path << " ("
+                 << logging::SystemErrorCodeToString(
+                        logging::GetLastSystemErrorCode())
+                 << ")";
+    }
+  }
+}
+
+}  // namespace
+
+// Called on the main thread during startup, before the first renderer is
+// spawned.  From here on the IO thread never touches the disk.
+void PrimeBrowserHandover(const base::CommandLine& command_line) {
+  PrimeBrowserHandoverCache(command_line);
+}
+
+std::string ReadJsRuntimeForBrowser() {
+  return *g_cached_js_payload;
+}
+
+// The payload itself, for the Mojo channel.
+//
+// The Mojo channel carries the payload as it stands: it is not limited
+// to the length of a command line, so the payload does not have to be
+// encoded, and the renderer does not have to decode it.
+//
+// The code is not sent: it is compiled into the browser.
+std::string ReadJsRuntimeForRenderer() {
+  return *g_cached_js_payload_raw;
 }
 
 }  // namespace nova

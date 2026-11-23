@@ -61,6 +61,17 @@ JS_RUNTIME_FILENAME = "nova_js_runtime.js"
 #: given, so a stale file is detected instead of served.
 JS_RUNTIME_MANIFEST = "nova_js_runtime.json"
 
+#: The name of the payload inside the user data directory.
+#:
+#: The payload is the profile's values without the code that installs
+#: them.  The code is compiled into the browser, so only the payload
+#: travels, and the payload is what the browser reads.
+JS_PAYLOAD_FILENAME = "nova_js_payload.js"
+
+#: The name of the manifest that records which payload the browser was
+#: given.
+JS_PAYLOAD_MANIFEST = "nova_js_payload.json"
+
 
 class InjectionPoint(str, Enum):
     """Where the script is injected."""
@@ -98,6 +109,68 @@ def _restrict(path: Path) -> None:
         # Windows has no POSIX permission bits; the user data directory is
         # already per-user.
         pass
+
+
+def write_payload(
+    config: ProfileConfig,
+    user_data_dir: Path,
+    builder: JSRuntimeBuilder | None = None,
+) -> WrittenRuntime:
+    """Write the *payload* for ``config`` into ``user_data_dir``.
+
+    The layer is two parts: the code, which is the same for every
+    profile and is compiled into the browser, and the payload, which
+    carries the profile's values.
+
+    The payload is what travels.  The code is seventy-five kilobytes
+    and does not fit on a Windows command line next to the payload;
+    compiled into the browser it costs nothing to carry and cannot
+    arrive late.
+
+    The function is idempotent: if the file on disk already carries the
+    digest of the payload that was just built, it is not rewritten.
+    """
+
+    builder = builder or JSRuntimeBuilder()
+    payload = builder.build_payload_only(config)
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    user_data_dir.mkdir(parents=True, exist_ok=True)
+    path = user_data_dir / JS_PAYLOAD_FILENAME
+    manifest_path = user_data_dir / JS_PAYLOAD_MANIFEST
+
+    existing = _read_manifest(manifest_path)
+    if existing.get("digest") == digest and path.exists():
+        return WrittenRuntime(
+            path=path,
+            digest=digest,
+            injection_point=InjectionPoint.DOCUMENT_START,
+            bytes_written=path.stat().st_size,
+        )
+
+    path.write_text(payload, encoding="utf-8")
+    _restrict(path)
+
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "digest": digest,
+                "profile_id": config.profile_id,
+                "injection_point": InjectionPoint.DOCUMENT_START.value,
+                "bytes": len(payload.encode("utf-8")),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    _restrict(manifest_path)
+
+    return WrittenRuntime(
+        path=path,
+        digest=digest,
+        injection_point=InjectionPoint.DOCUMENT_START,
+        bytes_written=len(payload.encode("utf-8")),
+    )
 
 
 def write_runtime(
@@ -172,7 +245,12 @@ def remove_runtime(user_data_dir: Path) -> bool:
     """
 
     removed = False
-    for name in (JS_RUNTIME_FILENAME, JS_RUNTIME_MANIFEST):
+    for name in (
+        JS_RUNTIME_FILENAME,
+        JS_RUNTIME_MANIFEST,
+        JS_PAYLOAD_FILENAME,
+        JS_PAYLOAD_MANIFEST,
+    ):
         path = user_data_dir / name
         if path.exists():
             path.unlink()

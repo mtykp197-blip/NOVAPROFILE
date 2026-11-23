@@ -26,6 +26,8 @@
 #include <string>
 #include <vector>
 
+#include "base/command_line.h"
+
 namespace nova {
 
 // ---------------------------------------------------------------------------
@@ -596,7 +598,32 @@ bool ParseProfileConfig(const std::string& json, ProfileConfig* config,
 // The browser process reads ``--nova-config=<path>`` from its command line.
 // The path is validated before the file is opened so that a malformed
 // switch cannot be used to read an arbitrary file.
+//
+// The renderer is sandboxed and cannot open the file, so the browser
+// process reads it and hands the document to the renderer on the
+// command line.  The renderer prefers that document and falls back to
+// the path.
 bool LoadProfileConfigFromCommandLine(ProfileConfig* config, std::string* error);
+
+// The name of the switch that carries the configuration to the renderer.
+extern const char kConfigSourceSwitchName[];
+
+// Reads the configuration file in the browser process, which is the only
+// process that is not sandboxed.  An empty result means there is no
+// configuration.
+//
+// The value comes out of the hand-over cache, which is filled once on
+// the main thread during startup.  This function itself never touches the
+// disk: the renderer command line is built on the IO thread, and a
+// blocking read there trips the "tls_blocking_disallowed" DCHECK.
+std::string ReadConfigSourceForBrowser();
+
+// Fills the configuration hand-over cache from the path on the command
+// line.
+//
+// This reads the disk and therefore blocks, so it may only be called on
+// the main thread.  It must run before the first renderer is spawned.
+void PrimeConfigHandover(const base::CommandLine& command_line);
 
 }  // namespace nova
 

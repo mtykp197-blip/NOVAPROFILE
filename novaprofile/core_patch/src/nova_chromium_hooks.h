@@ -44,6 +44,10 @@
 
 namespace nova {
 
+namespace blink {
+class LocalDOMWindow;
+}  // namespace blink
+
 // ---------------------------------------------------------------------------
 // The configuration accessor.
 //
@@ -210,6 +214,122 @@ const std::vector<std::string>& GetTlsExtensionOrder();
 
 // Whether the handshake carries the GREASE extension.
 bool GetTlsGreaseEnabled();
+
+// ---------------------------------------------------------------------------
+// The JavaScript fallback layer.
+//
+// The native core covers the values that Blink reads.  The values that
+// only JavaScript can see -- the heap limit, the maths, the codec list,
+// the canvas hash -- are carried by a script that the renderer injects
+// at document start.
+//
+// The script is handed to the browser through the --nova-js-runtime
+// switch, which carries the path of the file in the user data
+// directory rather than the script itself: the command line of a process
+// is readable by every process on the machine, the user data directory
+// is not.
+//
+// The file is read once, in the renderer, the first time a document asks
+// for it.  A page that arrives before the file has been read gets the
+// values from the native core alone, which is why the injection is
+// driven from the document rather than from the browser process.
+// ---------------------------------------------------------------------------
+
+// Reads the runtime script named on the command line, if there is one.
+// The result is cached, so the file is read once per renderer process.
+//
+// The caller must not free the result; it lives as long as the process.
+const std::string& GetJsRuntimeSource();
+
+// Whether the runtime script was found and read.  When it was not, the
+// native core is the only layer, and the probe will say so.
+bool HasJsRuntime();
+
+// The script the renderer actually runs.
+//
+// It is the runtime script with the native core's declaration of the
+// surfaces it owns in front of it.  The declaration has to run first:
+// the runtime reads it as it starts and stands down on the surfaces the
+// native core has already taken care of.
+//
+// The caller must not free the result; it lives as long as the process.
+const std::string& GetEffectiveJsRuntimeSource();
+
+// Hands the runtime to the renderer over the Mojo channel.
+//
+// This is how the script normally arrives.  The command line cannot
+// carry it: a Windows command line holds at most 32,767 characters and
+// the script is longer than that, so the argument would arrive
+// truncated and the renderer would run half a script.
+//
+// The script that arrives here is the whole script, so it wins over
+// anything the command line carried.
+void SetJsRuntimeFromMojo(std::string runtime);
+
+// ---------------------------------------------------------------------------
+// Handing the runtime to the renderer.
+//
+// The renderer is sandboxed: it cannot open a file in the user data
+// directory, so it cannot read the runtime for itself.  The browser
+// process can, and it does.
+//
+// The browser therefore reads the script and passes it to the renderer
+// on the command line.  That puts the payload in the arguments of the
+// renderer, where every process on the machine can read it -- which is
+// exactly what writing the file into the user data directory was
+// meant to avoid.
+//
+// The trade is made deliberately: a fingerprint that a site can read
+// out of the process arguments is a fingerprint that has already
+// leaked, but a fingerprint that never reaches the renderer is not a
+// fingerprint at all.  The payload only reaches the renderer when the
+// profile is being launched, and the renderer is short lived.
+// ---------------------------------------------------------------------------
+
+// Reads the runtime in the browser process and returns it.
+//
+// The browser process is not sandboxed, so this is the only place the
+// file can be read.  An empty result means there is no runtime.
+//
+// The value comes out of the hand-over cache, which is filled once on
+// the main thread during startup.  This function itself never touches
+// the disk: the renderer command line is built on the IO thread, and a
+// blocking read there trips the "tls_blocking_disallowed" DCHECK.
+std::string ReadJsRuntimeForBrowser();
+
+// The script itself, for the Mojo channel.
+//
+// The command line cannot carry the script: a Windows command line holds
+// at most 32,767 characters and the script is longer than that.  The
+// Mojo channel has no such limit, so the script travels over it as it
+// stands and the renderer does not have to decode it.
+//
+// An empty result means there is no runtime.
+std::string ReadJsRuntimeForRenderer();
+
+// The layer's code, compiled into the browser.
+//
+// The code is the same for every profile, so it does not travel at all:
+// it is in the binary.  Only the payload -- the profile's values -- is
+// handed over, and it is small enough to fit on a command line.
+const std::string& GetJsRuntimeCode();
+
+// The name of the switch that carries the runtime to the renderer.
+extern const char kJsRuntimeSwitchName[];
+
+// The name of the switch that carries the profile's payload to the
+// renderer.
+//
+// The payload is what the layer reads: the user agent, the screen, the
+// device catalogue, the codec list.  It is different for every profile
+// and it is the only part of the layer that is secret.
+extern const char kJsPayloadSwitchName[];
+
+// Fills the hand-over cache from the paths on the command line.
+//
+// This reads the disk and therefore blocks, so it may only be called on
+// the main thread.  It must run before the first renderer is spawned.
+void PrimeBrowserHandover(const base::CommandLine& command_line);
 
 }  // namespace nova
 

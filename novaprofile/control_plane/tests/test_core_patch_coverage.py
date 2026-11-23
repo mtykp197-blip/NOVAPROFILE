@@ -236,14 +236,33 @@ def test_every_declared_hook_is_implemented():
 
     header = _source_text("nova_chromium_hooks.h")
     implementation = _source_text("nova_blink_patch.cc")
+    # The configuration accessors are declared in their own header and
+    # defined in their own file; the test has to look at both.
+    config_header = _source_text("nova_core_config.h")
+    config_implementation = _source_text("nova_core_config.cc")
+    # The layer's code lives in its own file: it is generated, and it is
+    # the only part of the layer that is compiled into the browser.
+    generated = _source_text("nova_js_runtime_code.cc")
 
     declared = re.findall(r"^\s*[A-Za-z_][\w:<>,\s*&]*\s+(\w+)\(", header, re.M)
     assert declared, "no hooks were declared"
 
     for name in declared:
         pattern = rf"^[A-Za-z_][\w:<>,\s*&]*\s+{re.escape(name)}\("
-        assert re.search(pattern, implementation, re.M), (
+        assert re.search(pattern, implementation, re.M) or re.search(
+            pattern, generated, re.M
+        ), (
             f"{name} is declared in the hooks header but not implemented"
+        )
+
+    # The configuration header declares the same kind of thing, and the
+    # same rule applies to it.
+    for name in re.findall(
+        r"^\s*[A-Za-z_][\w:<>,\s*&]*\s+(\w+)\(", config_header, re.M
+    ):
+        pattern = rf"^[A-Za-z_][\w:<>,\s*&]*\s+{re.escape(name)}\("
+        assert re.search(pattern, config_implementation, re.M), (
+            f"{name} is declared in the configuration header but not implemented"
         )
 
 
@@ -624,9 +643,15 @@ def test_the_patch_calls_only_declared_hooks():
     # The noise helpers live in their own header; the patches call them
     # directly.
     noise = _source_text("nova_pixel_noise.h")
+    # The configuration accessors live in their own header as well: the
+    # browser process reads the profile from disk before it forks any
+    # child, and the renderer reads it from the command line, and both
+    # of those are configuration concerns rather than surface concerns.
+    config = _source_text("nova_core_config.h")
     # Every declaration in the headers is a hook, whatever it returns.
     declared = set(re.findall(r"^\s*[A-Za-z_][\w:<>,\s*&]*\s+(\w+)\(", header, re.M))
     declared |= set(re.findall(r"^\s*[A-Za-z_][\w:<>,\s*&]*\s+(\w+)\(", noise, re.M))
+    declared |= set(re.findall(r"^\s*[A-Za-z_][\w:<>,\s*&]*\s+(\w+)\(", config, re.M))
     # The internal helpers of the implementation file are not hooks: they
     # are called from inside the core, not from the Chromium patches.
     internal = set(re.findall(r"^\s*[A-Za-z_][\w:<>,\s*&]*\s+(\w+)\(", implementation, re.M))
