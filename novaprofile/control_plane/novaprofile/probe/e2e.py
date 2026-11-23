@@ -1665,6 +1665,39 @@ def _values_equal(expected: Any, actual: Any) -> bool:
     return _normalise(expected) == _normalise(actual)
 
 
+def _unordered_equal(axis: str, field: str, expected: Any, actual: Any) -> bool:
+    """Return ``True`` when the two values hold the same members.
+
+    Only the fields named in :data:`UNORDERED_FIELDS` are compared this
+    way.  Everything else keeps its order, because there the order is
+    part of what the page sees.
+    """
+
+    if f"{axis}.{field}" not in UNORDERED_FIELDS:
+        return False
+    if not isinstance(expected, (list, tuple)) or not isinstance(actual, (list, tuple)):
+        return False
+    return sorted(_normalise(expected)) == sorted(_normalise(actual))
+
+
+#: The fields whose value is a set rather than a sequence.
+#:
+#: A page cannot see the order in which a browser enumerates a set of
+#: codecs or of extensions -- it asks whether a member is present, not
+#: where it sits.  Comparing them by order would report a mismatch for
+#: two browsers that answer exactly the same question the same way.
+#:
+#: The comparison is order-insensitive for these and only these.
+UNORDERED_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "media_decode.supported",
+        "webgl.extensions",
+        "plugins",
+        "mime_types",
+    }
+)
+
+
 def _numeric(value: Any) -> float | None:
     """Return ``value`` as a float when it is a number, else ``None``."""
 
@@ -1734,6 +1767,17 @@ def compare_axis(
             continue
         if _values_equal(exp, act):
             fields.append(FieldComparison(field=name, verdict="match", expected=exp, actual=act))
+            continue
+        if _unordered_equal(axis, name, exp, act):
+            fields.append(
+                FieldComparison(
+                    field=name,
+                    verdict="match",
+                    expected=exp,
+                    actual=act,
+                    detail="same members, different order",
+                )
+            )
             continue
         exp_num = _numeric(exp)
         act_num = _numeric(act)
