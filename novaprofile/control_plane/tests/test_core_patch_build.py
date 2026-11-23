@@ -25,6 +25,7 @@ produces a patched tree.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -588,6 +589,16 @@ def _write_synthetic_checkout(root: Path) -> Path:
 #: something a test suite can require.
 CHROMIUM_CHECKOUT = Path(r"C:\chromium\src")
 
+#: The commit the stock content is read from.
+#:
+#: The checkout holds the NOVA changes and they are committed there, so
+#: the head of the checkout is not the stock content: the series was
+#: written against the release, and the release is this commit.
+#:
+#: The environment variable wins, so the same test works on every
+#: machine.
+CHROMIUM_BASELINE = os.environ.get("NOVA_CHROMIUM_BASELINE", "339b0817fb")
+
 
 def _stock_checkout_or_skip() -> Path:
     """The Chromium checkout, or skip the test when there is none."""
@@ -627,7 +638,7 @@ def _write_stock_checkout(root: Path) -> Path:
         # working tree of a checkout that has the series applied is
         # patched, and the series obviously does not apply to itself.
         completed = subprocess.run(
-            ["git", "show", f"HEAD:{path}"],
+            ["git", "show", f"{CHROMIUM_BASELINE}:{path}"],
             cwd=str(checkout),
             capture_output=True,
         )

@@ -517,10 +517,10 @@ index d75832c..060b716 100644
    }
 diff --git a/third_party/blink/renderer/core/nova/BUILD.gn b/third_party/blink/renderer/core/nova/BUILD.gn
 new file mode 100644
-index 0000000000..6052e0d 100644
+index 0000000000..583d9f8 100644
 --- /dev/null
 +++ b/third_party/blink/renderer/core/nova/BUILD.gn
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,63 @@
 +# Copyright 2026 The Chromium Authors
 +# Use of this source code is governed by a BSD-style license that can be
 +# found in the LICENSE file.
@@ -553,12 +553,14 @@ index 0000000000..6052e0d 100644
 +    "nova_core_config.cc",
 +    "nova_js_runtime_code.cc",
 +    "nova_pixel_noise.cc",
++    "nova_transport.cc",
 +  ]
 +
 +  public = [
 +    "nova_chromium_hooks.h",
 +    "nova_core_config.h",
 +    "nova_pixel_noise.h",
++    "nova_transport.h",
 +  ]
 +
 +  # The header is included by name rather than by path, so the directory
@@ -568,6 +570,7 @@ index 0000000000..6052e0d 100644
 +  deps = [
 +    "//base",
 +    "//third_party/boringssl",
++    "//third_party/zlib",
 +    "//ui/gfx/geometry",
 +  ]
 +
@@ -583,10 +586,10 @@ index 0000000000..6052e0d 100644
 +}
 diff --git a/third_party/blink/renderer/core/nova/nova_blink_patch.cc b/third_party/blink/renderer/core/nova/nova_blink_patch.cc
 new file mode 100644
-index 0000000000..41daea5 100644
+index 0000000000..3fbf45f 100644
 --- /dev/null
 +++ b/third_party/blink/renderer/core/nova/nova_blink_patch.cc
-@@ -0,0 +1,1184 @@
+@@ -0,0 +1,1193 @@
 +// NOVA Profile Core -- Blink integration.
 +//
 +// This file is the *hook layer* of the NOVA profile engine.  It is
@@ -666,13 +669,22 @@ index 0000000000..41daea5 100644
 +#include "base/strings/string_util.h"
 +#include "base/synchronization/lock.h"
 +#include "ui/gfx/geometry/rect_f.h"
++#include "third_party/blink/renderer/core/nova/nova_transport.h"
 +
 +namespace nova {
 +
-+// The name of the switch that carries the JavaScript runtime to the
-+// renderer.  The switch carries the script itself, not a path: the
-+// renderer is sandboxed and cannot open a file.
-+extern const char kJsRuntimeSwitchName[];
++// The name of the switch that carries the payload to the renderer.
++//
++// The payload is the profile's values without the code that installs
++// them.  The code is compiled into the browser; only the payload
++// travels.
++extern const char kJsPayloadSwitchName[];
++
++// The layer's code.
++//
++// It is the same for every profile and it is compiled into the browser,
++// so it does not travel at all.
++const std::string& GetJsRuntimeCode();
 +
 +namespace {
 +
@@ -1575,14 +1587,11 @@ index 0000000000..41daea5 100644
 +    const std::string inline_encoded =
 +        command_line->GetSwitchValueASCII(kJsPayloadSwitchName);
 +    if (!inline_encoded.empty()) {
-+      const std::optional<std::vector<uint8_t>> decoded =
-+          base::Base64Decode(inline_encoded);
-+      if (!decoded.has_value()) {
++      if (!InflateFromCommandLine(inline_encoded, &payload)) {
 +        LOG(ERROR) << "NOVA: the JavaScript payload on the command line is "
 +                      "not valid base64";
 +        return std::string();
 +      }
-+      payload.assign(decoded->begin(), decoded->end());
 +    }
 +
 +    // The payload that arrived over the Mojo channel wins over the one
@@ -1676,7 +1685,6 @@ index 0000000000..41daea5 100644
 +  return source;
 +}
 +
-+const char kJsRuntimeSwitchName[] = "nova-js-runtime-source";
 +const char kJsPayloadSwitchName[] = "nova-js-payload-source";
 +
 +// ---------------------------------------------------------------------------
@@ -1733,10 +1741,14 @@ index 0000000000..41daea5 100644
 +      // feature flag, and asking for a flag that does not exist yet is
 +      // a fatal error.
 +      //
-+      // The payload is eight kilobytes of JSON, so base64 of it is
-+      // eleven, which fits on a command line with room to spare.
++      // The payload is deflated first, for the same reason the profile
++      // is: the renderer is started with both of them on its command
++      // line, and a Windows command line holds at most 32,767
++      // characters.  The two together do not fit uncompressed.
++      const std::string deflated = DeflateForCommandLine(contents);
 +      *g_cached_js_payload = base::Base64EncodeEarlyStartup(
-+          base::as_byte_span(std::string_view(contents)));
++          base::as_byte_span(std::string_view(
++              deflated.empty() ? contents : deflated)));
 +    } else {
 +      LOG(ERROR) << "NOVA: the JavaScript payload could not be read: "
 +                 << payload_path << " ("
@@ -1773,10 +1785,10 @@ index 0000000000..41daea5 100644
 +}  // namespace nova
 diff --git a/third_party/blink/renderer/core/nova/nova_chromium_hooks.h b/third_party/blink/renderer/core/nova/nova_chromium_hooks.h
 new file mode 100644
-index 0000000000..9c13e24 100644
+index 0000000000..e43afb6 100644
 --- /dev/null
 +++ b/third_party/blink/renderer/core/nova/nova_chromium_hooks.h
-@@ -0,0 +1,336 @@
+@@ -0,0 +1,333 @@
 +// NOVA Profile Core -- the Chromium integration patches.
 +//
 +// This header is included by the Chromium source files that need to serve
@@ -2093,9 +2105,6 @@ index 0000000000..9c13e24 100644
 +// handed over, and it is small enough to fit on a command line.
 +const std::string& GetJsRuntimeCode();
 +
-+// The name of the switch that carries the runtime to the renderer.
-+extern const char kJsRuntimeSwitchName[];
-+
 +// The name of the switch that carries the profile's payload to the
 +// renderer.
 +//
@@ -2115,10 +2124,10 @@ index 0000000000..9c13e24 100644
 +#endif  // NOVA_PROFILE_CORE_CHROMIUM_HOOKS_H_
 diff --git a/third_party/blink/renderer/core/nova/nova_core_config.cc b/third_party/blink/renderer/core/nova/nova_core_config.cc
 new file mode 100644
-index 0000000000..e8d98e7 100644
+index 0000000000..a3df231 100644
 --- /dev/null
 +++ b/third_party/blink/renderer/core/nova/nova_core_config.cc
-@@ -0,0 +1,1207 @@
+@@ -0,0 +1,1218 @@
 +// NOVA Profile Core -- configuration parsing (implementation).
 +
 +#include "nova_core_config.h"
@@ -2139,6 +2148,7 @@ index 0000000000..e8d98e7 100644
 +#include "base/path_service.h"
 +#include "base/values.h"
 +#include "url/gurl.h"
++#include "third_party/blink/renderer/core/nova/nova_transport.h"
 +
 +namespace nova {
 +namespace {
@@ -3216,15 +3226,13 @@ index 0000000000..e8d98e7 100644
 +  const std::string inline_encoded =
 +      command_line->GetSwitchValueASCII(kConfigSourceSwitchName);
 +  if (!inline_encoded.empty()) {
-+    const std::optional<std::vector<uint8_t>> decoded =
-+        base::Base64Decode(inline_encoded);
-+    if (!decoded.has_value()) {
++    std::string decoded;
++    if (!InflateFromCommandLine(inline_encoded, &decoded)) {
 +      *error = "the --" + std::string(kConfigSourceSwitchName) +
 +               " switch is not valid base64";
 +      return false;
 +    }
-+    return ParseProfileConfig(std::string(decoded->begin(), decoded->end()),
-+                              config, error);
++    return ParseProfileConfig(decoded, config, error);
 +  }
 +
 +  const std::string path = command_line->GetSwitchValueASCII("nova-config");
@@ -3311,8 +3319,20 @@ index 0000000000..e8d98e7 100644
 +    // feature list is registered: the ordinary encoder consults a
 +    // feature flag, and asking for a flag that does not exist yet is a
 +    // fatal error.
-+    *g_cached_config_source = base::Base64EncodeEarlyStartup(
-+        base::as_byte_span(std::string_view(contents)));
++    //
++    // The document is deflated first.  The renderer is started with the
++    // profile *and* the JavaScript layer's payload on its command line,
++    // and a Windows command line holds at most 32,767 characters.  Base64
++    // of the two together is more than that, and the renderer would not
++    // start at all.  Deflated the profile is a quarter of its size.
++    const std::string deflated = DeflateForCommandLine(contents);
++    if (!deflated.empty()) {
++      *g_cached_config_source = base::Base64EncodeEarlyStartup(
++          base::as_byte_span(std::string_view(deflated)));
++    } else {
++      *g_cached_config_source = base::Base64EncodeEarlyStartup(
++          base::as_byte_span(std::string_view(contents)));
++    }
 +  } else {
 +    LOG(ERROR) << "NOVA: the profile configuration could not be read: "
 +               << config_path << " ("
@@ -6181,6 +6201,187 @@ index 0000000000..e23bf17 100644
 +}  // namespace nova
 +
 +#endif  // NOVA_PROFILE_CORE_PIXEL_NOISE_H_
+diff --git a/third_party/blink/renderer/core/nova/nova_transport.cc b/third_party/blink/renderer/core/nova/nova_transport.cc
+new file mode 100644
+index 0000000000..cb6bf4a 100644
+--- /dev/null
++++ b/third_party/blink/renderer/core/nova/nova_transport.cc
+@@ -0,0 +1,103 @@
++// NOVA Profile Core -- the transport of the profile to the renderer.
++//
++// The reasoning behind this file is in nova_transport.h.
++
++#include "third_party/blink/renderer/core/nova/nova_transport.h"
++
++#include <cstring>
++#include <optional>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "base/base64.h"
++#include "third_party/zlib/zlib.h"
++
++namespace nova {
++
++// The marker that says the payload is compressed.
++//
++// The first byte is a NUL, which no JSON document starts with.
++const char kCompressedMarker[] = "\x01nova-z:";
++
++std::string DeflateForCommandLine(std::string_view contents) {
++  std::string out;
++  out.append(kCompressedMarker, sizeof(kCompressedMarker) - 1);
++
++  z_stream stream;
++  std::memset(&stream, 0, sizeof(stream));
++  // The window bits are negative, which asks for a raw deflate stream
++  // without the zlib header and without the trailing checksum.  The
++  // reader below inflates it the same way.
++  if (deflateInit2(&stream, Z_BEST_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8,
++                   Z_DEFAULT_STRATEGY) != Z_OK) {
++    return std::string();
++  }
++
++  stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(contents.data()));
++  stream.avail_in = static_cast<uInt>(contents.size());
++
++  std::string chunk;
++  chunk.resize(64 * 1024);
++  int status = Z_OK;
++  do {
++    stream.next_out = reinterpret_cast<Bytef*>(chunk.data());
++    stream.avail_out = static_cast<uInt>(chunk.size());
++    status = deflate(&stream, Z_FINISH);
++    if (status != Z_OK && status != Z_STREAM_END && status != Z_BUF_ERROR) {
++      deflateEnd(&stream);
++      return std::string();
++    }
++    out.append(chunk.data(), chunk.size() - stream.avail_out);
++  } while (status != Z_STREAM_END);
++
++  deflateEnd(&stream);
++  return out;
++}
++
++bool InflateFromCommandLine(const std::string& encoded, std::string* out) {
++  const std::optional<std::vector<uint8_t>> decoded = base::Base64Decode(encoded);
++  if (!decoded.has_value()) {
++    return false;
++  }
++  const std::string payload(decoded->begin(), decoded->end());
++  const size_t marker_length = sizeof(kCompressedMarker) - 1;
++  if (payload.size() < marker_length ||
++      payload.compare(0, marker_length, kCompressedMarker) != 0) {
++    // Not compressed: the payload is the document itself.
++    *out = payload;
++    return true;
++  }
++
++  const char* data = payload.data() + marker_length;
++  size_t size = payload.size() - marker_length;
++
++  z_stream stream;
++  std::memset(&stream, 0, sizeof(stream));
++  if (inflateInit2(&stream, -MAX_WBITS) != Z_OK) {
++    return false;
++  }
++  stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data));
++  stream.avail_in = static_cast<uInt>(size);
++
++  std::string result;
++  std::string chunk;
++  chunk.resize(64 * 1024);
++  int status = Z_OK;
++  do {
++    stream.next_out = reinterpret_cast<Bytef*>(chunk.data());
++    stream.avail_out = static_cast<uInt>(chunk.size());
++    status = inflate(&stream, Z_NO_FLUSH);
++    if (status != Z_OK && status != Z_STREAM_END) {
++      inflateEnd(&stream);
++      return false;
++    }
++    result.append(chunk.data(), chunk.size() - stream.avail_out);
++  } while (status != Z_STREAM_END && stream.avail_in > 0);
++
++  inflateEnd(&stream);
++  *out = result;
++  return true;
++}
++
++}  // namespace nova
+diff --git a/third_party/blink/renderer/core/nova/nova_transport.h b/third_party/blink/renderer/core/nova/nova_transport.h
+new file mode 100644
+index 0000000000..5ca4033 100644
+--- /dev/null
++++ b/third_party/blink/renderer/core/nova/nova_transport.h
+@@ -0,0 +1,66 @@
++// NOVA Profile Core -- the transport of the profile to the renderer.
++//
++// The browser process reads the profile from disk and the renderer has
++// to have it.  The renderer cannot read the file itself: it is
++// sandboxed and the user data directory is not among the paths it may
++// open.  The browser is not sandboxed, so it reads the file and hands
++// the document over.
++//
++// The hand-over rides on the renderer's command line.  A Windows
++// command line is a single string that the system splits into
++// arguments, and its quoting rules cannot describe a document that
++// itself contains quotes, spaces and newlines: the renderer would
++// receive a fragment of the JSON, fail to parse it, and fall back to
++// the host's values -- which is the one thing the engine exists to
++// prevent.
++//
++// Base64 fixes the quoting.  It has no spaces, no quotes and no
++// newlines, so the argument survives the trip intact.
++//
++// It does not fix the length.  A Windows command line holds at most
++// 32,767 characters, and the renderer is started with the profile *and*
++// the JavaScript layer's payload on its command line.  Base64 of the
++// two together is more than that.
++//
++// So both documents are deflated before they are encoded.  The profile
++// is eighteen kilobytes of JSON and the payload is nine; deflated they
++// are three and two, and base64 of that is seven in all.
++//
++// The marker at the front of the payload says whether it is
++// compressed.  A reader that meets the marker inflates it; a reader
++// that does not takes the payload as it stands.  That way a browser
++// that was built before the compression was added still reads a payload
++// that was written after it.
++
++#ifndef THIRD_PARTY_BLINK_RENDERER_CORE_NOVA_NOVA_TRANSPORT_H_
++#define THIRD_PARTY_BLINK_RENDERER_CORE_NOVA_NOVA_TRANSPORT_H_
++
++#include <string>
++#include <string_view>
++
++namespace nova {
++
++// The marker that says the payload is compressed.
++//
++// The payload starts with it, and a reader that finds it inflates what
++// follows.  The marker holds a NUL as its first byte, which no JSON
++// document starts with, so a plain document can never be mistaken for a
++// compressed one.
++extern const char kCompressedMarker[];
++
++// Deflates ``contents`` for the command line.
++//
++// The result carries the marker, so the reader knows what to do with
++// it.  An empty result means the compression failed, and the caller
++// should then fall back to another transport.
++std::string DeflateForCommandLine(std::string_view contents);
++
++// The inverse of DeflateForCommandLine.
++//
++// ``encoded`` is the base64 of the deflated document.  It returns false
++// when the argument is not valid base64.
++bool InflateFromCommandLine(const std::string& encoded, std::string* out);
++
++}  // namespace nova
++
++#endif  // THIRD_PARTY_BLINK_RENDERER_CORE_NOVA_NOVA_TRANSPORT_H_
 diff --git a/third_party/blink/renderer/core/BUILD.gn b/third_party/blink/renderer/core/BUILD.gn
 index c1e08ec..0615884 100644
 --- a/third_party/blink/renderer/core/BUILD.gn

@@ -77,13 +77,22 @@
 #include "base/strings/string_util.h"
 #include "base/synchronization/lock.h"
 #include "ui/gfx/geometry/rect_f.h"
+#include "third_party/blink/renderer/core/nova/nova_transport.h"
 
 namespace nova {
 
-// The name of the switch that carries the JavaScript runtime to the
-// renderer.  The switch carries the script itself, not a path: the
-// renderer is sandboxed and cannot open a file.
-extern const char kJsRuntimeSwitchName[];
+// The name of the switch that carries the payload to the renderer.
+//
+// The payload is the profile's values without the code that installs
+// them.  The code is compiled into the browser; only the payload
+// travels.
+extern const char kJsPayloadSwitchName[];
+
+// The layer's code.
+//
+// It is the same for every profile and it is compiled into the browser,
+// so it does not travel at all.
+const std::string& GetJsRuntimeCode();
 
 namespace {
 
@@ -986,14 +995,11 @@ const std::string& JsRuntimeSource() {
     const std::string inline_encoded =
         command_line->GetSwitchValueASCII(kJsPayloadSwitchName);
     if (!inline_encoded.empty()) {
-      const std::optional<std::vector<uint8_t>> decoded =
-          base::Base64Decode(inline_encoded);
-      if (!decoded.has_value()) {
+      if (!InflateFromCommandLine(inline_encoded, &payload)) {
         LOG(ERROR) << "NOVA: the JavaScript payload on the command line is "
                       "not valid base64";
         return std::string();
       }
-      payload.assign(decoded->begin(), decoded->end());
     }
 
     // The payload that arrived over the Mojo channel wins over the one
@@ -1087,7 +1093,6 @@ const std::string& GetEffectiveJsRuntimeSource() {
   return source;
 }
 
-const char kJsRuntimeSwitchName[] = "nova-js-runtime-source";
 const char kJsPayloadSwitchName[] = "nova-js-payload-source";
 
 // ---------------------------------------------------------------------------
@@ -1144,10 +1149,14 @@ void PrimeBrowserHandoverCache(const base::CommandLine& command_line) {
       // feature flag, and asking for a flag that does not exist yet is
       // a fatal error.
       //
-      // The payload is eight kilobytes of JSON, so base64 of it is
-      // eleven, which fits on a command line with room to spare.
+      // The payload is deflated first, for the same reason the profile
+      // is: the renderer is started with both of them on its command
+      // line, and a Windows command line holds at most 32,767
+      // characters.  The two together do not fit uncompressed.
+      const std::string deflated = DeflateForCommandLine(contents);
       *g_cached_js_payload = base::Base64EncodeEarlyStartup(
-          base::as_byte_span(std::string_view(contents)));
+          base::as_byte_span(std::string_view(
+              deflated.empty() ? contents : deflated)));
     } else {
       LOG(ERROR) << "NOVA: the JavaScript payload could not be read: "
                  << payload_path << " ("

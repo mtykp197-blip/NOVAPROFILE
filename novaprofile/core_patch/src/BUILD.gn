@@ -30,12 +30,14 @@ source_set("nova_core") {
     "nova_core_config.cc",
     "nova_js_runtime_code.cc",
     "nova_pixel_noise.cc",
+    "nova_transport.cc",
   ]
 
   public = [
     "nova_chromium_hooks.h",
     "nova_core_config.h",
     "nova_pixel_noise.h",
+    "nova_transport.h",
   ]
 
   # The header is included by name rather than by path, so the directory
@@ -45,6 +47,7 @@ source_set("nova_core") {
   deps = [
     "//base",
     "//third_party/boringssl",
+    "//third_party/zlib",
     "//ui/gfx/geometry",
   ]
 

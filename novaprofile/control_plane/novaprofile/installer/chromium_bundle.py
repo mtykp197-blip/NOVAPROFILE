@@ -45,6 +45,15 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+#: The name the browser carries in the product.
+#:
+#: Chromium's own executable is called ``chrome.exe``.  A product that
+#: ships under its own name should not ship a file called
+#: ``chrome.exe``: the name is on the task bar, in the file properties
+#: and in every process listing, and it is the first thing that says
+#: what the machine is running.
+PRODUCT_EXECUTABLE = "NOVAPROFILE.exe"
+
 #: The files Chromium needs beside the executable, by extension.
 #
 #: The list is deliberately by pattern rather than by name: Chromium
@@ -196,6 +205,25 @@ def build_bundle(chromium_dir: Path, target: Path, *, version: str = "") -> Bund
             }
         )
 
+    # The executable carries the product's name rather than Chromium's.
+    #
+    # The file is copied rather than moved: the build directory belongs
+    # to the build, and a build that has been renamed in place cannot be
+    # rebuilt over.
+    built = target / "chrome.exe"
+    product = target / PRODUCT_EXECUTABLE
+    if built.is_file() and not product.is_file():
+        shutil.copy2(built, product)
+        result.files += 1
+        result.total_bytes += product.stat().st_size
+        entries.append(
+            {
+                "path": PRODUCT_EXECUTABLE,
+                "bytes": product.stat().st_size,
+                "sha256": _digest(product),
+            }
+        )
+
     manifest: dict[str, object] = {
         "version": version,
         "files": entries,
@@ -241,9 +269,9 @@ def verify_bundle(target: Path) -> list[str]:
         if _digest(candidate) != expected:
             problems.append(f"{relative} does not match its digest")
 
-    executable = target / "chrome.exe"
+    executable = target / PRODUCT_EXECUTABLE
     if not executable.is_file():
-        problems.append("chrome.exe is missing")
+        problems.append(f"{PRODUCT_EXECUTABLE} is missing")
 
     return problems
 

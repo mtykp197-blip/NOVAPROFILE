@@ -18,6 +18,7 @@
 #include "base/path_service.h"
 #include "base/values.h"
 #include "url/gurl.h"
+#include "third_party/blink/renderer/core/nova/nova_transport.h"
 
 namespace nova {
 namespace {
@@ -1095,15 +1096,13 @@ bool LoadProfileConfigFromCommandLine(ProfileConfig* config, std::string* error)
   const std::string inline_encoded =
       command_line->GetSwitchValueASCII(kConfigSourceSwitchName);
   if (!inline_encoded.empty()) {
-    const std::optional<std::vector<uint8_t>> decoded =
-        base::Base64Decode(inline_encoded);
-    if (!decoded.has_value()) {
+    std::string decoded;
+    if (!InflateFromCommandLine(inline_encoded, &decoded)) {
       *error = "the --" + std::string(kConfigSourceSwitchName) +
                " switch is not valid base64";
       return false;
     }
-    return ParseProfileConfig(std::string(decoded->begin(), decoded->end()),
-                              config, error);
+    return ParseProfileConfig(decoded, config, error);
   }
 
   const std::string path = command_line->GetSwitchValueASCII("nova-config");
@@ -1190,8 +1189,20 @@ void PrimeConfigHandover(const base::CommandLine& command_line) {
     // feature list is registered: the ordinary encoder consults a
     // feature flag, and asking for a flag that does not exist yet is a
     // fatal error.
-    *g_cached_config_source = base::Base64EncodeEarlyStartup(
-        base::as_byte_span(std::string_view(contents)));
+    //
+    // The document is deflated first.  The renderer is started with the
+    // profile *and* the JavaScript layer's payload on its command line,
+    // and a Windows command line holds at most 32,767 characters.  Base64
+    // of the two together is more than that, and the renderer would not
+    // start at all.  Deflated the profile is a quarter of its size.
+    const std::string deflated = DeflateForCommandLine(contents);
+    if (!deflated.empty()) {
+      *g_cached_config_source = base::Base64EncodeEarlyStartup(
+          base::as_byte_span(std::string_view(deflated)));
+    } else {
+      *g_cached_config_source = base::Base64EncodeEarlyStartup(
+          base::as_byte_span(std::string_view(contents)));
+    }
   } else {
     LOG(ERROR) << "NOVA: the profile configuration could not be read: "
                << config_path << " ("

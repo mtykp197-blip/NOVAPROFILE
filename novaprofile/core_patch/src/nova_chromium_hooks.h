@@ -314,9 +314,6 @@ std::string ReadJsRuntimeForRenderer();
 // handed over, and it is small enough to fit on a command line.
 const std::string& GetJsRuntimeCode();
 
-// The name of the switch that carries the runtime to the renderer.
-extern const char kJsRuntimeSwitchName[];
-
 // The name of the switch that carries the profile's payload to the
 // renderer.
 //

@@ -1377,6 +1377,35 @@ _FONT_CANDIDATES: Final[tuple[str, ...]] = (
 # --------------------------------------------------------------------------
 
 
+def _webgpu_expectation(config: ProfileConfig) -> dict[str, Any]:
+    """What the WebGPU surface is expected to report.
+
+    WebGPU is off on most Android devices in the wild, and a profile
+    that keeps it off has no adapter at all: ``requestAdapter`` resolves
+    to ``null`` and the page sees no vendor, no architecture and no
+    device.
+
+    The expectation therefore follows the profile's own switch.  When
+    the axis is off the expectation is empty, and the comparison reports
+    the axis as *unavailable* rather than as a mismatch -- a browser
+    that exposes no adapter is not a browser that got the adapter
+    wrong.
+    """
+
+    if not _config_attr(config, "webgpu.enabled"):
+        return {}
+
+    return {
+        "vendor": _config_attr(config, "webgpu.adapter.vendor"),
+        "architecture": _config_attr(config, "webgpu.adapter.architecture"),
+        "device": _config_attr(config, "webgpu.adapter.device"),
+        "description": _config_attr(config, "webgpu.adapter.description"),
+        "maxTextureDimension2D": _config_attr(
+            config, "webgpu.limits.maxTextureDimension2D"
+        ),
+    }
+
+
 def derive_expected_values(config: ProfileConfig) -> dict[str, dict[str, Any]]:
     """Return the values the *simulator* reports for ``config``.
 
@@ -1492,15 +1521,7 @@ def derive_expected_values(config: ProfileConfig) -> dict[str, dict[str, Any]]:
             "rtt": _get(storage, "connection", "rtt"),
             "downlink": _get(storage, "connection", "downlink"),
         },
-        "webgpu": {
-            "vendor": _config_attr(config, "webgpu.adapter.vendor"),
-            "architecture": _config_attr(config, "webgpu.adapter.architecture"),
-            "device": _config_attr(config, "webgpu.adapter.device"),
-            "description": _config_attr(config, "webgpu.adapter.description"),
-            "maxTextureDimension2D": _config_attr(
-                config, "webgpu.limits.maxTextureDimension2D"
-            ),
-        },
+        "webgpu": _webgpu_expectation(config),
         "math": {
             "acos": _config_attr(config, "math_precision.acos"),
             "asin": _config_attr(config, "math_precision.asin"),

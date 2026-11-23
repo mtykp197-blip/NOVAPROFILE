@@ -88,6 +88,8 @@ CREATED = {
     "third_party/blink/renderer/core/nova/nova_js_runtime_code.cc",
     "third_party/blink/renderer/core/nova/nova_pixel_noise.cc",
     "third_party/blink/renderer/core/nova/nova_pixel_noise.h",
+    "third_party/blink/renderer/core/nova/nova_transport.cc",
+    "third_party/blink/renderer/core/nova/nova_transport.h",
 }
 
 CORE_FILES = [
