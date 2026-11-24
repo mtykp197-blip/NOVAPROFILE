@@ -460,6 +460,8 @@ def build_plan(
     core_sources = [
         SRC_DIR / "nova_core_config.h",
         SRC_DIR / "nova_core_config.cc",
+        SRC_DIR / "nova_unit_values.h",
+        SRC_DIR / "nova_unit_values.cc",
         SRC_DIR / "nova_chromium_hooks.h",
         SRC_DIR / "nova_pixel_noise.h",
         SRC_DIR / "nova_pixel_noise.cc",

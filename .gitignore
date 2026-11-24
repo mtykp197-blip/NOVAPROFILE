@@ -1,71 +1,18 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-build/
-dist/
-dist_test/
-.venv/
-venv/
-env/
-ENV/
-
-# Tooling caches
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-.coverage
-coverage.xml
-htmlcov/
-
-# The dataset probe workspace.
+# The desktop shell's dependencies.
 #
-# This holds the raw scraped datasets -- 33 MB of CSV -- and the scratch
-# scripts used to merge them.  The merged result is committed under
-# novaprofile/core_patch/data/; the raw dumps are not, because they are
-# reproducible from the public sources and they bloat the repository.
-.dataset_probe/
+# The dependencies are restored from ``package-lock.json`` by ``npm
+# install``; they are not part of the source and they are large.
+novaprofile/desktop/node_modules/
 
-# The scratch directory the browser verification writes into.
-#
-# A Chromium profile directory holds the component cache, which reaches
-# a hundred megabytes and over the size GitHub accepts.  Nothing in here
-# is worth keeping: the directory is recreated on every run.
-_cfgtest/
-_probe*.json
+# The build output of the shell.
+novaprofile/desktop/dist/
 
-# Nova runtime
-state.db
-state.db-wal
-state.db-shm
-keys/
-logs/
-profiles/
-*.db-journal
-.nova_verify*/
-.nova_run/
-*.nova
+# A backup of the patch series, taken before it was regenerated.
+novaprofile/core_patch/patches.bak/
 
-# Test and measurement scratch output
-*.log
-*.log.err
-!scale_check_100m.log
-.nova_measurements.tmp/
-scratch/
-tmp/
+# The frozen control plane.
+novaprofile/control_plane/build/
+novaprofile/control_plane/dist/
 
-# Editors / OS
-.vscode/
-.idea/
-*.swp
-Thumbs.db
-desktop.ini
-.DS_Store
-
-# Local interpreter pointer (machine specific)
-.python_path
-
-# The chat-transfer export holds the Cursor account credentials.
-# It travels by hand (USB, drive), never through the repository.
-*CHAT_TRANSFER*/
-*chat_transfer*/
+# The working notes of the audit.
+.audit/

@@ -1,0 +1,80 @@
+{
+  "name": "novaprofile",
+  "productName": "NOVA PROFILE",
+  "version": "1.0.0",
+  "description": "NOVA PROFILE -- the anti-collision Android profile engine.",
+  "main": "electron/main/index.js",
+  "author": "NOVA",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.nova.profile",
+    "productName": "NOVAPROFILE",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../control_plane/dist/nova-backend",
+        "to": "backend",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../../core/build/nova-win",
+        "to": "core",
+        "filter": [
+          "chrome.exe",
+          "chrome.dll",
+          "icudtl.dat",
+          "resources.pak",
+          "snapshot_blob.bin",
+          "v8_context_snapshot.bin",
+          "locales/**/*",
+          "swiftshader/**/*",
+          "*.bin",
+          "*.dat",
+          "*.pak"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "NOVAPROFILE-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "NOVA PROFILE"
+    }
+  },
+  "allowScripts": {
+    "electron@33.4.11": true
+  }
+}

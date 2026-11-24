@@ -21,7 +21,7 @@ namespace {
 // every document.
 const char kJsRuntimeCode[] = R"NOVAJS(
 
-(function () {
+(function (__novaNativeSurfaces__, __novaPayload__) {
   'use strict';
   if (window.__NOVA_RUNTIME__) { return; }
   var __NOVA_RUNTIME__ = true;
@@ -44,16 +44,27 @@ const char kJsRuntimeCode[] = R"NOVAJS(
   // So the layer stands down on exactly the surfaces the native core
   // owns, and only on those.  A surface the native core does not reach
   // is still the layer's job.
-  var nativeSurfaces = window.__NOVA_NATIVE_SURFACES__;
+  //
+  // The list arrives as an argument to this function, not as a property
+  // on the window.  A property would be a marker in its own right: a
+  // script that enumerates the window's own properties would find it,
+  // and a browser that carries a profile's fingerprint must not carry a
+  // name that says it does.  An argument never reaches the page.
+  var nativeSurfaces = __novaNativeSurfaces__;
   if (nativeSurfaces && !nativeSurfaces.length) { nativeSurfaces = null; }
   function nativeOwns(surface) {
     if (!nativeSurfaces) { return false; }
     return nativeSurfaces.indexOf(surface) !== -1;
   }
 
-  var P = window.__NOVA_PROFILE__;
+  // The payload arrives as an argument to this function, so that it never
+  // becomes a property of the window.  A payload on the window would be
+  // a fingerprint of its own: it carries the profile's salts, the
+  // device identifiers and the font list, and a script that enumerates
+  // the window's own properties -- or reads one of them -- would get
+  // the whole thing.
+  var P = __novaPayload__;
   if (!P) { return; }
-
   // The source text a native function reports.
   //
   // A stock Blink accessor names itself in the text it reports:
@@ -701,7 +712,13 @@ const char kJsRuntimeCode[] = R"NOVAJS(
   }
 
   // -- the network information ------------------------------------------------
-  if (typeof navigator !== 'undefined' && navigator.connection && P.storage_network && !nativeOwns('storage')) {
+  // The network information is *not* a native surface.  The native core
+  // patches the storage estimate, which is a different thing: the
+  // estimate is a number the quota manager computes, and the network
+  // information is a set of attributes on ``navigator.connection``.
+  // The native core does not reach the latter, so this half stays with
+  // the JavaScript layer.
+  if (typeof navigator !== 'undefined' && navigator.connection && P.storage_network) {
     var sn = P.storage_network;
     var connectionValues = {
       effectiveType: sn.effective_type,
@@ -801,20 +818,24 @@ const char kJsRuntimeCode[] = R"NOVAJS(
 
     function perturb(data) {
       if (!strength || !data || !data.length) { return data; }
-      var out = new Uint8ClampedArray(data.length);
+      // The buffer is perturbed *in place*.  It cannot be replaced:
+      // ``ImageData.data`` is a read-only attribute in Blink, and an
+      // assignment to it throws -- which takes the whole readback with
+      // it, and the page is left with a surface that answers nothing at
+      // all.
       for (var i = 0; i < data.length; i++) {
         var r = next() % 1000;
         var delta = ((r / 1000) - 0.5) * 2 * strength;
-        out[i] = data[i] + delta;
+        data[i] = data[i] + delta;
       }
-      return out;
+      return data;
     }
 
     if (targets.indexOf('getImageData') !== -1) {
       var nativeGetImageData = CanvasRenderingContext2D.prototype.getImageData;
       CanvasRenderingContext2D.prototype.getImageData = hide(function (x, y, w, h) {
         var img = nativeGetImageData.call(this, x, y, w, h);
-        img.data = perturb(img.data);
+        perturb(img.data);
         // The readback timing.  The delay is a constant of the profile,
         // so two reads of the same canvas take the same time.
         burn(timingDelay(cv.timing, 'delay_ms'));
@@ -1053,6 +1074,60 @@ const char kJsRuntimeCode[] = R"NOVAJS(
               get: hide(function () { return au.output_latency; }, 'get outputLatency'),
               configurable: true, enumerable: true
             });
+            // The channel count of the destination is the device's own
+            // output layout, and a script reads it there: the live
+            // context's destination is the hardware, while an offline
+            // context renders with whatever the site asked for.
+            //
+            // The accessor lives on ``AudioNode`` -- several prototypes
+            // above the destination -- so a patch on the destination's
+            // own prototype would be shadowed by it.  The prototype
+            // that *carries* the accessor is therefore the one that has
+            // to be patched, and the chain is walked to find it.
+            //
+            // The instance is patched as well, when it can be: the
+            // instance's own property is the closest to the reader and
+            // the hardest to see past.
+            var destination = ctx.destination;
+            if (destination) {
+              var channelCountGetter = hide(function () {
+                return au.channel_count;
+              }, 'get channelCount');
+              var patched = false;
+              try {
+                Object.defineProperty(destination, 'channelCount', {
+                  get: channelCountGetter,
+                  set: function () {},
+                  enumerable: true,
+                  configurable: true
+                });
+                patched = true;
+              } catch (e) { /* a locked-down destination stays stock */ }
+              if (!patched) {
+                // The instance would not take the property -- it is a
+                // native object and it may not be extensible.  The
+                // prototype that carries the accessor is then the one
+                // to patch, and every context of the page shares it.
+                try {
+                  var proto = Object.getPrototypeOf(destination);
+                  while (proto) {
+                    var descriptor = Object.getOwnPropertyDescriptor(
+                      proto, 'channelCount');
+                    if (descriptor) {
+                      Object.defineProperty(proto, 'channelCount', {
+                        get: channelCountGetter,
+                        set: function () {},
+                        enumerable: descriptor.enumerable,
+                        configurable: true
+                      });
+                      patched = true;
+                      break;
+                    }
+                    proto = Object.getPrototypeOf(proto);
+                  }
+                } catch (e) { /* a locked-down destination stays stock */ }
+              }
+            }
           } catch (e) { /* a locked-down context stays stock */ }
           return ctx;
         };
@@ -1294,18 +1369,29 @@ const char kJsRuntimeCode[] = R"NOVAJS(
     var gpu = P.webgpu;
     if (gpu.enabled) {
       try {
+        // The adapter's identity is read two ways in the wild.  The
+        // modern way is the ``info`` property, which is a plain object
+        // the adapter carries; the older way is the
+        // ``requestAdapterInfo()`` method, which answers with a promise
+        // of the same thing.  A page may use either, so both have to
+        // carry the profile's answer -- a page that finds ``info``
+        // missing reads nothing at all, and a page that finds the two
+        // disagreeing has found a fingerprint that does not belong to
+        // any device.
+        var adapterInfo = {
+          vendor: gpu.adapter.vendor,
+          architecture: gpu.adapter.architecture,
+          device: gpu.adapter.device,
+          description: gpu.adapter.description
+        };
         navigator.gpu.requestAdapter = hide(function () {
           return Promise.resolve({
             features: new Set(gpu.features),
             limits: gpu.limits,
             isFallbackAdapter: gpu.adapter.is_fallback_adapter,
+            info: adapterInfo,
             requestAdapterInfo: function () {
-              return Promise.resolve({
-                vendor: gpu.adapter.vendor,
-                architecture: gpu.adapter.architecture,
-                device: gpu.adapter.device,
-                description: gpu.adapter.description
-              });
+              return Promise.resolve(adapterInfo);
             }
           });
         }, 'requestAdapter');
@@ -1574,7 +1660,6 @@ const char kJsRuntimeCode[] = R"NOVAJS(
       var gyro = sensors.gyroscope || { x: 0, y: 0, z: 0 };
       var lin = sensors.linear_acceleration || { x: 0, y: 0, z: 0 };
       var grav = sensors.gravity || { x: 0, y: 0, z: 9.81 };
-      var abs = sensors.absolute_orientation || {};
       var rel = sensors.relative_orientation || {};
 
       // The interval the profile carries.  A motion event says how
@@ -1607,11 +1692,17 @@ const char kJsRuntimeCode[] = R"NOVAJS(
       }
 
       function buildOrientation() {
+        // The orientation event a phone sends is the *relative* one: the
+        // reading is referenced to the start of the session rather than
+        // to the earth's magnetic field, and the event says so with
+        // ``absolute: false``.  A desktop has no magnetometer and
+        // reports nothing at all, so the reading that is served here
+        // has to be the one a phone would send.
         var init = {
-          absolute: abs.absolute !== undefined ? abs.absolute : true,
-          alpha: abs.alpha !== undefined ? abs.alpha : null,
-          beta: abs.beta !== undefined ? abs.beta : null,
-          gamma: abs.gamma !== undefined ? abs.gamma : null
+          absolute: false,
+          alpha: rel.alpha !== undefined ? rel.alpha : null,
+          beta: rel.beta !== undefined ? rel.beta : null,
+          gamma: rel.gamma !== undefined ? rel.gamma : null
         };
         try {
           return new DeviceOrientationEvent('deviceorientation', init);
@@ -1828,7 +1919,7 @@ const char kJsRuntimeCode[] = R"NOVAJS(
   }
 
   window.__NOVA_READY__ = true;
-})();
+})(__NOVA_NATIVE_SURFACES__, __NOVA_PAYLOAD__);
 )NOVAJS";
 
 }  // namespace

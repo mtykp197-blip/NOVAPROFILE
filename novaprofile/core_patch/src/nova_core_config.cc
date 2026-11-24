@@ -318,6 +318,44 @@ bool ReadShaderPrecision(const base::DictValue& dict,
 // ---------------------------------------------------------------------------
 
 bool ParseSeed(const base::DictValue& dict, SeedConfig* out, std::string* error) {
+  // The stratum is optional.  It is read separately from the rest,
+  // because "absent" and "zero" are different things: a stratum of zero
+  // is the first unit of a family, and a profile that does not belong
+  // to a family at all has no stratum.
+  //
+  // The value arrives either as a number or as a null -- the control
+  // plane writes a null for a profile that stands alone, and the
+  // parser has to tell the two apart without the reader's help.
+  const base::Value* stratum = dict.Find("stratum");
+  if (stratum) {
+    switch (stratum->type()) {
+      case base::Value::Type::INTEGER: {
+        const int64_t value = stratum->GetInt();
+        if (value < 0) {
+          *error = "negative field: stratum";
+          return false;
+        }
+        out->has_stratum = true;
+        out->stratum = static_cast<uint32_t>(value);
+        break;
+      }
+      case base::Value::Type::NONE:
+        // The absent stratum: the profile stands alone.
+        break;
+      case base::Value::Type::STRING:
+        // The control plane spells "absent" as an empty string when it
+        // has had to turn the null into one.  It means the same thing.
+        if (!stratum->GetString().empty()) {
+          *error = "non-integer field: stratum";
+          return false;
+        }
+        break;
+      default:
+        *error = "non-integer field: stratum";
+        return false;
+    }
+  }
+
   return ReadString(dict, "master_seed", &out->master_seed, error) &&
          ReadInt(dict, "seed_epoch", &out->seed_epoch, error) &&
          ReadInt(dict, "nudge_step", &out->nudge_step, error) &&
@@ -368,16 +406,27 @@ bool ParseAndroidAbiSoc(const base::DictValue& dict,
 }
 
 bool ParseScreen(const base::DictValue& dict, Screen* out, std::string* error) {
-  return ReadInt(dict, "width", &out->width, error) &&
-         ReadInt(dict, "height", &out->height, error) &&
-         ReadInt(dict, "avail_width", &out->avail_width, error) &&
-         ReadInt(dict, "avail_height", &out->avail_height, error) &&
-         ReadInt(dict, "avail_left", &out->avail_left, error) &&
-         ReadInt(dict, "avail_top", &out->avail_top, error) &&
-         ReadInt(dict, "color_depth", &out->color_depth, error) &&
-         ReadInt(dict, "pixel_depth", &out->pixel_depth, error) &&
-         ReadDouble(dict, "device_pixel_ratio", &out->device_pixel_ratio, error) &&
-         ReadInt(dict, "density_dpi", &out->density_dpi, error);
+  if (!ReadInt(dict, "width", &out->width, error) ||
+      !ReadInt(dict, "height", &out->height, error) ||
+      !ReadInt(dict, "avail_width", &out->avail_width, error) ||
+      !ReadInt(dict, "avail_height", &out->avail_height, error) ||
+      !ReadInt(dict, "avail_left", &out->avail_left, error) ||
+      !ReadInt(dict, "avail_top", &out->avail_top, error) ||
+      !ReadInt(dict, "color_depth", &out->color_depth, error) ||
+      !ReadInt(dict, "pixel_depth", &out->pixel_depth, error) ||
+      !ReadDouble(dict, "device_pixel_ratio", &out->device_pixel_ratio, error) ||
+      !ReadInt(dict, "density_dpi", &out->density_dpi, error)) {
+    return false;
+  }
+
+  // The panel ratios are optional: a profile that does not name them
+  // simply reports the ratio it states.
+  std::vector<double> ratios;
+  std::string ratio_error;
+  if (ReadDoubleList(dict, "device_pixel_ratio_options", &ratios, &ratio_error)) {
+    out->device_pixel_ratio_options = ratios;
+  }
+  return true;
 }
 
 bool ParseOrientation(const base::DictValue& dict,
@@ -718,26 +767,49 @@ bool ParseSensors(const base::DictValue& dict,
 bool ParseNavigator(const base::DictValue& dict,
                     NavigatorConfig* out,
                     std::string* error) {
-  return ReadString(dict, "user_agent", &out->user_agent, error) &&
-         ReadString(dict, "app_version", &out->app_version, error) &&
-         ReadString(dict, "app_name", &out->app_name, error) &&
-         ReadString(dict, "app_code_name", &out->app_code_name, error) &&
-         ReadString(dict, "vendor", &out->vendor, error) &&
-         ReadString(dict, "vendor_sub", &out->vendor_sub, error) &&
-         ReadString(dict, "product", &out->product, error) &&
-         ReadString(dict, "product_sub", &out->product_sub, error) &&
-         ReadString(dict, "platform", &out->platform, error) &&
-         ReadInt(dict, "hardware_concurrency", &out->hardware_concurrency,
-                 error) &&
-         ReadInt(dict, "device_memory", &out->device_memory, error) &&
-         ReadInt(dict, "max_touch_points", &out->max_touch_points, error) &&
-         ReadString(dict, "language", &out->language, error) &&
-         ReadStringList(dict, "languages", &out->languages, error) &&
-         ReadBool(dict, "cookie_enabled", &out->cookie_enabled, error) &&
-         ReadBool(dict, "pdf_viewer_enabled", &out->pdf_viewer_enabled, error) &&
-         ReadBool(dict, "webdriver", &out->webdriver, error) &&
-         ReadBool(dict, "on_line", &out->on_line, error) &&
-         ReadBool(dict, "java_enabled", &out->java_enabled, error);
+  // The hardware ranges are optional: a profile that does not name them
+  // simply reports the values it states, and the core does not derive
+  // anything on its behalf.
+  std::vector<int> cores;
+  std::vector<int> memory;
+  std::vector<int> touch;
+  bool has_cores = ReadIntList(dict, "hardware_concurrency_options", &cores, error);
+  bool has_memory = ReadIntList(dict, "device_memory_options", &memory, error);
+  bool has_touch = ReadIntList(dict, "max_touch_points_options", &touch, error);
+
+  if (!ReadString(dict, "user_agent", &out->user_agent, error) ||
+      !ReadString(dict, "app_version", &out->app_version, error) ||
+      !ReadString(dict, "app_name", &out->app_name, error) ||
+      !ReadString(dict, "app_code_name", &out->app_code_name, error) ||
+      !ReadString(dict, "vendor", &out->vendor, error) ||
+      !ReadString(dict, "vendor_sub", &out->vendor_sub, error) ||
+      !ReadString(dict, "product", &out->product, error) ||
+      !ReadString(dict, "product_sub", &out->product_sub, error) ||
+      !ReadString(dict, "platform", &out->platform, error) ||
+      !ReadInt(dict, "hardware_concurrency", &out->hardware_concurrency,
+               error) ||
+      !ReadInt(dict, "device_memory", &out->device_memory, error) ||
+      !ReadInt(dict, "max_touch_points", &out->max_touch_points, error) ||
+      !ReadString(dict, "language", &out->language, error) ||
+      !ReadStringList(dict, "languages", &out->languages, error) ||
+      !ReadBool(dict, "cookie_enabled", &out->cookie_enabled, error) ||
+      !ReadBool(dict, "pdf_viewer_enabled", &out->pdf_viewer_enabled, error) ||
+      !ReadBool(dict, "webdriver", &out->webdriver, error) ||
+      !ReadBool(dict, "on_line", &out->on_line, error) ||
+      !ReadBool(dict, "java_enabled", &out->java_enabled, error)) {
+    return false;
+  }
+
+  if (has_cores) {
+    out->hardware_concurrency_options = cores;
+  }
+  if (has_memory) {
+    out->device_memory_options = memory;
+  }
+  if (has_touch) {
+    out->max_touch_points_options = touch;
+  }
+  return true;
 }
 
 bool ParseUserAgentData(const base::DictValue& dict,
@@ -752,7 +824,8 @@ bool ParseUserAgentData(const base::DictValue& dict,
          ReadString(dict, "architecture", &out->architecture, error) &&
          ReadString(dict, "bitness", &out->bitness, error) &&
          ReadString(dict, "model", &out->model, error) &&
-         ReadBool(dict, "wow64", &out->wow64, error);
+         ReadBool(dict, "wow64", &out->wow64, error) &&
+         ReadString(dict, "ua_full_version", &out->ua_full_version, error);
 }
 
 bool ParsePermissions(const base::DictValue& dict,
@@ -1143,76 +1216,31 @@ bool LoadProfileConfigFromCommandLine(ProfileConfig* config, std::string* error)
 const char kConfigSourceSwitchName[] = "nova-config-source";
 
 // ---------------------------------------------------------------------------
-// The browser-side hand-over cache (configuration)
+// The browser process's copy of the profile
 // ---------------------------------------------------------------------------
 //
-// The browser process reads the profile from disk and puts it on the
-// command line of every renderer it spawns.  The renderer cannot do that
-// read itself: it is sandboxed and the user data directory is not among
-// the paths it may open.
+// The browser process is given a path and it is the only process that is
+// not sandboxed, so it is the one that reads the file.  The startup code
+// reads it and hands the document here.
 //
-// The catch is *where* the browser-side read happens.  The renderer command
-// line is built on the browser's IO thread, and a thread that has been
-// marked as non-blocking must not wait on the disk: a read() there trips
-// the "tls_blocking_disallowed" DCHECK and takes the whole browser down.
-//
-// So the read happens exactly once, on the main thread, during startup --
-// before any renderer exists and therefore before anything a page can
-// observe.  The result is cached here, and the IO thread only ever copies
-// a string that is already in memory.
+// The document is handed over rather than read again because the read
+// may only happen on the main thread during startup, and the hooks are
+// reached from threads that are not allowed to wait on the disk.
 
 namespace {
 
-// The cached document.  Written once on the main thread during startup
-// and only read afterwards.
-std::string* const g_cached_config_source = new std::string();
+// The document.  Written once on the main thread during startup and only
+// read afterwards, so a plain pointer swap is enough.
+std::string* const g_browser_config_document = new std::string();
 
 }  // namespace
 
-// Called on the main thread during startup, before the first renderer is
-// spawned.  From here on the IO thread never touches the disk.
-void PrimeConfigHandover(const base::CommandLine& command_line) {
-  const std::string config_path =
-      command_line.GetSwitchValueASCII("nova-config");
-  if (config_path.empty()) {
-    return;
-  }
-  base::FilePath file_path(base::FilePath::FromUTF8Unsafe(config_path));
-  std::string contents;
-  if (base::ReadFileToStringWithMaxSize(file_path, &contents, 8 * 1024 * 1024)) {
-    // The document goes on the command line of the renderer, and a
-    // Windows command line cannot describe a document that contains
-    // quotes, spaces and newlines.  Base64 can: it has none of them,
-    // so the argument survives the trip intact.
-    //
-    // The early-startup variant is used because this runs before the
-    // feature list is registered: the ordinary encoder consults a
-    // feature flag, and asking for a flag that does not exist yet is a
-    // fatal error.
-    //
-    // The document is deflated first.  The renderer is started with the
-    // profile *and* the JavaScript layer's payload on its command line,
-    // and a Windows command line holds at most 32,767 characters.  Base64
-    // of the two together is more than that, and the renderer would not
-    // start at all.  Deflated the profile is a quarter of its size.
-    const std::string deflated = DeflateForCommandLine(contents);
-    if (!deflated.empty()) {
-      *g_cached_config_source = base::Base64EncodeEarlyStartup(
-          base::as_byte_span(std::string_view(deflated)));
-    } else {
-      *g_cached_config_source = base::Base64EncodeEarlyStartup(
-          base::as_byte_span(std::string_view(contents)));
-    }
-  } else {
-    LOG(ERROR) << "NOVA: the profile configuration could not be read: "
-               << config_path << " ("
-               << logging::SystemErrorCodeToString(
-                      logging::GetLastSystemErrorCode())
-               << ")";
-  }
+void SetBrowserConfigDocument(const std::string& document) {
+  *g_browser_config_document = document;
 }
 
-std::string ReadConfigSourceForBrowser() {
-  return *g_cached_config_source;
+std::string ReadBrowserConfigDocument() {
+  return *g_browser_config_document;
 }
+
 }  // namespace nova

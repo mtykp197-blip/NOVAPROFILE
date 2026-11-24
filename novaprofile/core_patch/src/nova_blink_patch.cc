@@ -57,10 +57,12 @@
 // Worker, a SharedWorker and a ServiceWorker all report identical values:
 // they are separate JS worlds but the same native process.
 
+#include "nova_chromium_hooks.h"
 #include "nova_core_config.h"
 #include "nova_pixel_noise.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -80,6 +82,25 @@
 #include "third_party/blink/renderer/core/nova/nova_transport.h"
 
 namespace nova {
+// The trace.
+//
+// The trace is a line on Chromium's own log.  That is not the obvious
+// place to put it: the log is noisy, and a trace that is switched on
+// and off is easier to live with.
+//
+// The obvious alternatives do not work.  An environment variable does
+// not reach the renderer, which is a child process, and Chromium does
+// not necessarily hand the environment to it.  A file does not work
+// either: the file stays empty.
+//
+// The log does work, because the standard error of a child process is
+// the standard error of the browser.  A line logged in the renderer
+// comes out of the browser's own standard error, next to everything
+// else.
+inline bool NovaTraceOn() {
+  return true;
+}
+
 
 // The name of the switch that carries the payload to the renderer.
 //
@@ -145,6 +166,16 @@ class NovaConfigHolder {
                                      config.audio.salt,
                                      config.audio.mode + "|" +
                                          config.webgl.unmasked_renderer);
+    // The unit values are derived once, here, so that every surface
+    // agrees on them.  A surface that derived its own would draw a
+    // different value from the same seed and the profile would report
+    // two different core counts.
+    unit_values_ = DeriveUnitValues(
+        config, config.navigator.hardware_concurrency_options,
+        config.navigator.device_memory_options,
+        config.navigator.max_touch_points_options, config.screen.width,
+        config.screen.height, config.screen.device_pixel_ratio,
+        config.screen.device_pixel_ratio_options);
     initialized_ = true;
     return true;
   }
@@ -173,14 +204,44 @@ class NovaConfigHolder {
     if (!command_line) {
       return;
     }
+    // The lazy load is the *only* load for a child process: the
+    // document arrives on the command line and there is nothing to
+    // read from the disk.  For the browser process the document was
+    // handed over by the startup code, before any child existed.
+    //
+    // A path is never read here.  The lazy load may run on a thread
+    // that is not allowed to wait on the disk -- a read there trips the
+    // "tls_blocking_disallowed" DCHECK and takes the whole browser down
+    // -- and the child processes are sandboxed and cannot read the file
+    // anyway.
+    const std::string inline_source =
+        command_line->GetSwitchValueASCII(kConfigSourceSwitchName);
     const std::string path = command_line->GetSwitchValueASCII("nova-config");
-    if (path.empty()) {
+    if (inline_source.empty() && path.empty()) {
       return;
     }
+
+    // The browser process reads its copy of the profile from the
+    // hand-over.  The children are given the document itself.
+    std::string document;
+    if (!inline_source.empty()) {
+      if (!InflateFromCommandLine(inline_source, &document)) {
+        LOG(ERROR) << "NOVA: the profile configuration on the command line "
+                      "is not valid base64";
+        return;
+      }
+    } else {
+      document = ReadBrowserConfigDocument();
+      if (document.empty()) {
+        return;
+      }
+    }
+
     ProfileConfig config;
     std::string error;
-    if (!LoadProfileConfigFromCommandLine(&config, &error)) {
-      LOG(ERROR) << "NOVA: failed to load the profile configuration: " << error;
+    if (!ParseProfileConfig(document, &config, &error)) {
+      LOG(ERROR) << "NOVA: the profile configuration could not be parsed: "
+                 << error;
       return;
     }
     Initialize(config);
@@ -226,6 +287,12 @@ class NovaConfigHolder {
     return audio_key_;
   }
 
+  // The derived unit values.
+  const UnitValues& UnitValueCache() {
+    base::AutoLock guard(lock_);
+    return unit_values_;
+  }
+
  private:
   NovaConfigHolder() = default;
 
@@ -236,6 +303,7 @@ class NovaConfigHolder {
   PixelNoiseKey webgl_key_;
   PixelNoiseKey offscreen_key_;
   PixelNoiseKey audio_key_;
+  UnitValues unit_values_;
 };
 
 // Reads the configuration before the renderer process starts.
@@ -262,8 +330,46 @@ bool InitializeNovaCore(const base::CommandLine& command_line) {
   const std::string path = command_line.GetSwitchValueASCII("nova-config");
   const std::string inline_source =
       command_line.GetSwitchValueASCII(kConfigSourceSwitchName);
-  if (path.empty() && inline_source.empty()) {
-    return false;
+  LOG(INFO) << "NOVA: init-core: type="
+            << command_line.GetSwitchValueASCII("type").c_str()
+            << " path=" << (int)path.size()
+            << " inline=" << (int)inline_source.size();
+
+  // The document itself is what a child process is given.  The browser
+  // process reads the file itself, through the hand-over cache, and
+  // that read happens on the main thread during startup -- this function
+  // may run on a thread that is not allowed to wait on the disk, and a
+  // read there trips the "tls_blocking_disallowed" DCHECK.
+  //
+  // The browser is given the path and the children are given the
+  // document, so the two are told apart by the path: only the browser
+  // has one.
+  if (inline_source.empty()) {
+    if (path.empty()) {
+      return false;
+    }
+    // The browser process.  Its copy of the document was handed to it
+    // by the startup code, which read the file and put the document
+    // here.  The document is the raw JSON; the startup code has already
+    // decoded it.
+    const std::string document = ReadBrowserConfigDocument();
+    if (document.empty()) {
+      // Nothing was handed over: the browser was not started with a
+      // profile it could read, or it was started without the hand-over
+      // being primed.  Either way there is nothing to install.
+      return false;
+    }
+    ProfileConfig config;
+    std::string error;
+    if (!ParseProfileConfig(document, &config, &error)) {
+      LOG(ERROR) << "NOVA: the profile configuration could not be parsed: "
+                 << error;
+      return false;
+    }
+    NovaConfigHolder::Get().Initialize(config);
+    LOG(INFO) << "NOVA: profile " << config.profile_id << " loaded (preset "
+              << config.seed_config.preset_id << ")";
+    return true;
   }
 
   ProfileConfig config;
@@ -272,7 +378,6 @@ bool InitializeNovaCore(const base::CommandLine& command_line) {
     LOG(ERROR) << "NOVA: failed to load the profile configuration: " << error;
     return false;
   }
-
   NovaConfigHolder::Get().Initialize(config);
   LOG(INFO) << "NOVA: profile " << config.profile_id << " loaded (preset "
             << config.seed_config.preset_id << ")";
@@ -322,6 +427,19 @@ const ProfileConfig& GetNovaConfigRef() {
   holder.EnsureInitialized();
   return holder.GetConfigRef();
 }
+
+// The derived unit values.
+//
+// The values in the configuration are what the profile asks for; these
+// are what the core reports, after deriving the ones the profile left
+// out.  A surface reads these, so that the whole browser agrees on one
+// set of numbers.
+const UnitValues& GetUnitValues() {
+  NovaConfigHolder& holder = NovaConfigHolder::Get();
+  holder.EnsureInitialized();
+  return holder.UnitValueCache();
+}
+
 
 // ---------------------------------------------------------------------------
 // The surfaces the native core owns
@@ -395,36 +513,93 @@ std::vector<std::string> GetNativeOwnedSurfaces() {
     surfaces.push_back("fonts");
   }
 
+  // The geometry is perturbed in the compositor, so that the rectangle
+  // a page measures is the perturbed one and the layout behind it
+  // agrees with it.
+  if (config.rects.mode != "native_passthrough" &&
+      config.rects.mode != "disabled") {
+    surfaces.push_back("rects");
+  }
+
+  // The device inventory is the profile's own, so that the count of the
+  // cameras and the microphones is the profile's and not the machine's.
+  if (config.media_devices.mode != "native_passthrough" &&
+      config.media_devices.mode != "disabled") {
+    surfaces.push_back("media_devices");
+  }
+
+  // The readings of the motion sensors are the profile's own.
+  //
+  // The surface is *not* claimed here.  The native core has the
+  // readings -- the accelerometer, the gyroscope and the gravity are in
+  // the configuration -- but it does not deliver them: a
+  // ``devicemotion`` event is delivered by the event machinery, and the
+  // native core does not drive it.
+  //
+  // Claiming a surface the native core does not implement is the one
+  // mistake this list must never make.  The JavaScript layer stands
+  // down on the surfaces that are named here, so a name without an
+  // implementation leaves the surface reporting the host's values --
+  // and the host has no sensors at all, so the page waits for an
+  // event that never comes.  That is a bigger difference from a phone
+  // than any reading would have been.
+  //
+  // So the sensors stay with the JavaScript layer, which delivers the
+  // event with the profile's readings and the profile's interval.
+
+  // The readback of the canvas is perturbed in the rasterizer.
+  if (config.canvas_2d.mode != "native_passthrough" &&
+      config.canvas_2d.mode != "block") {
+    surfaces.push_back("canvas");
+  }
+
+  // The audio parameters are the profile's own.
+  //
+  // The audio surface is not claimed either, for the same reason as the
+  // sensors: the native core has no implementation that reaches the
+  // audio stack.  The JavaScript layer builds the contexts with the
+  // profile's rate and channel count, and that is what a site reads.
+
+  // The storage estimate is served from the quota manager, so that the
+  // quota and the usage are the profile's.
+  if (config.storage_network.quota_bytes > 0) {
+    surfaces.push_back("storage");
+  }
+
   return surfaces;
 }
 
 // The declaration the JavaScript layer reads to learn which surfaces the
 // native core owns.
 //
-// It is a plain assignment to a property on the window that does not
-// exist otherwise.  A page that does not know about it sees one more
-// own property on the window -- which the JavaScript layer would have
-// added anyway with its own marker.
+// It is a local variable in the script that runs the layer.  The layer is
+// handed the value as an argument, so the list never reaches the page: a
+// script that enumerates the window's own properties finds nothing, and
+// a script that reads the layer's source finds an argument rather than a
+// global.
 //
-// The property is only written when the browser was started with the
-// expose switch.  Without it the declaration is empty, and the layer
-// has to assume that the native core owns nothing: it then patches
-// every surface itself, which is what a browser that was not patched at
-// all needs.
+// The declaration used to be an assignment to a property on the window,
+// and it was written only when the browser was started with the expose
+// switch.  That was wrong twice over.
 //
-// The switch exists because the property is a fingerprint of its own.
-// A script that looks for names like this one finds it with a single
-// property enumeration, and a browser that carries the profile's
-// fingerprint must not carry a marker that says it does.
+// The first wrongness was the switch.  The switch is a debugging aid,
+// and the layer was made to depend on it: with the switch off -- which
+// is how the browser runs in production -- the layer assumed that the
+// native core owned nothing, and it patched every surface itself.  On
+// the surfaces the native core already owns that produced two
+// perturbations of the same value: the native one, and then the
+// JavaScript one on top of it.  A page that measures the geometry sees
+// the sum of the two, and the sum is not the number the profile
+// describes.
+//
+// The second wrongness was the property.  A window property that does
+// not exist otherwise is a marker, and a marker that says "this browser
+// carries a fingerprint" is exactly what the browser must not carry.
 std::string BuildNativeSurfaceDeclaration() {
-  // The switch is read once.  It is a debugging aid, and it is read on
-  // a path that runs once per document.
-  static const bool expose = base::CommandLine::ForCurrentProcess()
-                                 ->HasSwitch("nova-expose-surfaces");
-
-  if (!expose)
-    return std::string();
-
+  // The list is empty when the native core owns nothing -- which is the
+  // case for a browser that was not patched at all, and for a profile
+  // that asked for no perturbation at all.  The layer then patches
+  // every surface itself, which is what an unpatched browser needs.
   const std::vector<std::string> surfaces = GetNativeOwnedSurfaces();
   std::string json = "[";
   for (size_t i = 0; i < surfaces.size(); ++i) {
@@ -434,7 +609,14 @@ std::string BuildNativeSurfaceDeclaration() {
   }
   json += "]";
 
-  return "window.__NOVA_NATIVE_SURFACES__ = " + json + ";\n";
+  // The wrapper opens a scope of its own, binds the list inside it, and
+  // the layer -- which is appended after this -- reads the binding and
+  // closes the wrapper.  Nothing outside the wrapper can see the list,
+  // and the window never gains a property for it.
+  return "(function () {\n"
+         "var __NOVA_NATIVE_SURFACES__ = " +
+         json +
+         ";\n";
 }
 
 // ---------------------------------------------------------------------------
@@ -481,6 +663,153 @@ std::string GetUnmaskedRendererString() {
     return std::string();
   }
   return holder.GetConfig().webgl.unmasked_renderer;
+}
+
+// The version strings.
+//
+// The version of the context and the version of the shading language
+// are read together with the unmasked renderer, and a script that
+// finds three strings that do not belong together knows the GPU is a
+// mask.  So they come from the profile as well.
+//
+// The strings are the whole ones -- "WebGL 2.0 (OpenGL ES 3.0
+// Chromium)" -- and not the inner part, because the wrapper is what
+// tells the script which API version the context implements.
+std::string GetWebGLVersionString() {
+  NovaConfigHolder& holder = NovaConfigHolder::Get();
+  if (!holder.IsInitialized()) {
+    return std::string();
+  }
+  return holder.GetConfig().webgl.version;
+}
+
+std::string GetWebGLShadingLanguageVersionString() {
+  NovaConfigHolder& holder = NovaConfigHolder::Get();
+  if (!holder.IsInitialized()) {
+    return std::string();
+  }
+  return holder.GetConfig().webgl.shading_language_version;
+}
+
+// ---------------------------------------------------------------------------
+// The WebGL parameter table
+//
+// The parameter table is what identifies the GPU.  The unmasked renderer
+// says "Mali-G78" and the table says how many texture units it has, how
+// many uniform vectors a fragment shader may declare, how large a texture
+// may be -- and a table that does not belong to the named renderer is the
+// single easiest way to catch a spoofed GPU.
+//
+// So the whole table comes from the profile.  The values are read here
+// rather than in the WebGL module, so that the WebGL module only has to
+// ask for "the value of this parameter" and does not have to know what
+// the profile says.
+// ---------------------------------------------------------------------------
+
+const WebGLParameters& GetWebGLParameters() {
+  static const WebGLParameters kEmpty;
+  NovaConfigHolder& holder = NovaConfigHolder::Get();
+  if (!holder.IsInitialized()) {
+    return kEmpty;
+  }
+  return holder.GetConfig().webgl.parameters;
+}
+
+// The profile's own value of a WebGL parameter, by its name.
+//
+// The names are the ones the control plane uses, which are the lower
+// case form of the GL enumerant: ``max_texture_size`` for
+// ``GL_MAX_TEXTURE_SIZE``.  A parameter the profile does not describe
+// returns false, and the caller keeps the host's value.
+//
+// The value is returned through |out| and the function returns true when
+// the profile describes the parameter.
+bool GetWebGLParameter(const std::string& name, int* out) {
+  if (!out) {
+    return false;
+  }
+  const WebGLParameters& parameters = GetWebGLParameters();
+  if (name == "max_texture_size") {
+    *out = parameters.max_texture_size;
+  } else if (name == "max_cube_map_texture_size") {
+    *out = parameters.max_cube_map_texture_size;
+  } else if (name == "max_3d_texture_size") {
+    *out = parameters.max_3d_texture_size;
+  } else if (name == "max_array_texture_layers") {
+    *out = parameters.max_array_texture_layers;
+  } else if (name == "max_renderbuffer_size") {
+    *out = parameters.max_renderbuffer_size;
+  } else if (name == "max_vertex_attribs") {
+    *out = parameters.max_vertex_attribs;
+  } else if (name == "max_vertex_uniform_vectors") {
+    *out = parameters.max_vertex_uniform_vectors;
+  } else if (name == "max_vertex_uniform_components") {
+    *out = parameters.max_vertex_uniform_components;
+  } else if (name == "max_fragment_uniform_vectors") {
+    *out = parameters.max_fragment_uniform_vectors;
+  } else if (name == "max_fragment_uniform_components") {
+    *out = parameters.max_fragment_uniform_components;
+  } else if (name == "max_varying_vectors") {
+    *out = parameters.max_varying_vectors;
+  } else if (name == "max_combined_texture_image_units") {
+    *out = parameters.max_combined_texture_image_units;
+  } else if (name == "max_vertex_texture_image_units") {
+    *out = parameters.max_vertex_texture_image_units;
+  } else if (name == "max_texture_image_units") {
+    *out = parameters.max_texture_image_units;
+  } else if (name == "max_color_attachments") {
+    *out = parameters.max_color_attachments;
+  } else if (name == "max_draw_buffers") {
+    *out = parameters.max_draw_buffers;
+  } else if (name == "max_samples") {
+    *out = parameters.max_samples;
+  } else if (name == "max_uniform_buffer_bindings") {
+    *out = parameters.max_uniform_buffer_bindings;
+  } else if (name == "sample_buffers") {
+    *out = parameters.sample_buffers;
+  } else if (name == "samples") {
+    *out = parameters.samples;
+  } else if (name == "max_texture_max_anisotropy_ext") {
+    *out = parameters.max_texture_max_anisotropy_ext;
+  } else {
+    return false;
+  }
+  // A parameter the profile leaves at zero is one it does not describe.
+  // The host's value is kept in that case.
+  return *out != 0;
+}
+
+// The profile's own value of a WebGL parameter that is a range.
+//
+// The ranges are the aliased line width range and the aliased point size
+// range.  They are read into |out| and the function returns true when
+// the profile describes them.
+bool GetWebGLParameterRange(const std::string& name, std::vector<double>* out) {
+  if (!out) {
+    return false;
+  }
+  const WebGLParameters& parameters = GetWebGLParameters();
+  if (name == "aliased_line_width_range") {
+    *out = parameters.aliased_line_width_range;
+  } else if (name == "aliased_point_size_range") {
+    *out = parameters.aliased_point_size_range;
+  } else {
+    return false;
+  }
+  return !out->empty();
+}
+
+// The profile's own value of the viewport dimensions, which is a pair.
+bool GetWebGLViewportDims(std::vector<int>* out) {
+  if (!out) {
+    return false;
+  }
+  const WebGLParameters& parameters = GetWebGLParameters();
+  if (parameters.max_viewport_dims.size() != 2) {
+    return false;
+  }
+  *out = parameters.max_viewport_dims;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -695,6 +1024,85 @@ std::string RewriteMediaDeviceId(const std::string& device_id,
   return std::string(buffer);
 }
 
+// The profile's own device inventory.
+//
+// The host's inventory is the machine's, not the profile's.  A desktop
+// has a camera that an Android phone does not, and a machine with two
+// microphones has two where the profile has one.  A page that counts
+// the devices -- or reads their labels -- learns about the machine, and
+// a machine is shared by every profile that runs on it.  So the
+// enumeration is replaced by the profile's own list.
+//
+// The identifiers in that list were derived from the profile's salt when
+// the profile was generated, so they are already unique to the profile
+// and they do not have to be rewritten again here.  Rewriting them a
+// second time would be harmless for the uniqueness and would change
+// the value the profile declares, which is what the verifier compares
+// against.
+std::vector<std::string> NovaMediaDeviceKinds() {
+  std::vector<std::string> kinds;
+  if (!IsNovaCoreInitialized()) {
+    return kinds;
+  }
+  const ProfileConfig& config = GetNovaConfigRef();
+  if (config.media_devices.mode == "native_passthrough" ||
+      config.media_devices.mode == "disabled") {
+    return kinds;
+  }
+  if (!config.media_devices.audio_inputs.empty()) {
+    kinds.push_back("audioinput");
+  }
+  if (!config.media_devices.audio_outputs.empty()) {
+    kinds.push_back("audiooutput");
+  }
+  if (!config.media_devices.video_inputs.empty()) {
+    kinds.push_back("videoinput");
+  }
+  return kinds;
+}
+
+std::vector<NovaMediaDevice> NovaMediaDevices(const std::string& kind) {
+  std::vector<NovaMediaDevice> devices;
+  if (!IsNovaCoreInitialized()) {
+    return devices;
+  }
+  const ProfileConfig& config = GetNovaConfigRef();
+  if (config.media_devices.mode == "native_passthrough" ||
+      config.media_devices.mode == "disabled") {
+    return devices;
+  }
+
+  if (kind == "audioinput") {
+    for (const auto& entry : config.media_devices.audio_inputs) {
+      NovaMediaDevice device;
+      device.device_id = entry.device_id;
+      device.group_id = entry.group_id;
+      device.label = entry.label;
+      device.kind = "audioinput";
+      devices.push_back(std::move(device));
+    }
+  } else if (kind == "audiooutput") {
+    for (const auto& entry : config.media_devices.audio_outputs) {
+      NovaMediaDevice device;
+      device.device_id = entry.device_id;
+      device.group_id = entry.group_id;
+      device.label = entry.label;
+      device.kind = "audiooutput";
+      devices.push_back(std::move(device));
+    }
+  } else if (kind == "videoinput") {
+    for (const auto& entry : config.media_devices.video_inputs) {
+      NovaMediaDevice device;
+      device.device_id = entry.device_id;
+      device.group_id = entry.group_id;
+      device.label = entry.label;
+      device.kind = "videoinput";
+      devices.push_back(std::move(device));
+    }
+  }
+  return devices;
+}
+
 // ---------------------------------------------------------------------------
 // The motion sensors
 //
@@ -842,6 +1250,187 @@ bool IsFontInProfile(const std::string& family_name,
   return false;
 }
 
+// Whether the family is one of the CSS generic families.
+//
+// A generic family is not a file: it is a request for "whatever the
+// platform offers for this kind of text".  It is therefore always
+// available, and it is never part of the profile's inventory -- a
+// page that enumerates the fonts of a device does not find "serif"
+// among them.
+bool IsGenericFontFamily(const std::string& family_name) {
+  static const char* kGenericFamilies[] = {
+      "serif",        "sans-serif",   "monospace",   "cursive",
+      "fantasy",      "system-ui",    "ui-serif",    "ui-sans-serif",
+      "ui-monospace", "ui-rounded",   "math",        "emoji",
+      "fangsong",     "-webkit-body",
+  };
+  for (const char* generic : kGenericFamilies) {
+    if (base::EqualsCaseInsensitiveASCII(family_name, generic)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The size adjustment the profile's own font inventory applies.
+//
+// Why the inventory needs a metric of its own
+// --------------------------------------------
+//
+// The standard font probe asks a question that has two halves.  The
+// first is "is this family on the device?", and the second is "does it
+// measure differently from the generic font?".  A device answers the
+// second half by accident: a family that is present has its own
+// metrics, and a family that is absent measures exactly as the generic.
+//
+// So the answer the probe reads is *the difference between the family's
+// metrics and the generic's*.  On the machine the browser runs on, the
+// host's fonts answer it -- and they answer it with the host's
+// inventory, which is the inventory of a Windows workstation.
+//
+// The profile declares its own inventory: the fonts of an Android
+// phone.  On a Windows machine none of them is installed, so without
+// help they would all measure as the generic and the probe would
+// report an empty inventory.
+//
+// The help is a size adjustment: the family is resolved as usual, and
+// then its size is scaled by a factor that comes from the profile's
+// salt and the family's name.  The scale is small -- a fraction of a
+// percent -- and it is what makes the family measure differently from
+// the generic, which is exactly the answer the probe is looking for.
+//
+// Two properties matter and both come from the salt:
+//
+//   * the factor is the same for every run of the profile, so the
+//     inventory is stable: a device whose fonts move between two
+//     visits is a device that can be singled out;
+//   * the factor is different for every family and every profile, so
+//     two profiles never share a fingerprint.
+//
+// The factor is derived from the salt with a hash, so it does not
+// depend on the order of the inventory, on the machine, or on the
+// font that happens to be installed.
+double NovaFontSizeAdjustment(const std::string& family_name,
+                               const std::string& salt) {
+  if (salt.empty()) {
+    return 1.0;
+  }
+
+  // A small FNV-1a over the salt and the family name.  It is the same
+  // hash the JavaScript layer uses, so the two layers agree on the
+  // value when both of them are active.
+  uint64_t hash = 1469598103934665603ULL;
+  auto mix = [&hash](const std::string& text) {
+    for (char character : text) {
+      hash ^= static_cast<unsigned char>(character);
+      hash *= 1099511628211ULL;
+    }
+    hash ^= 0x5c;
+    hash *= 1099511628211ULL;
+  };
+  mix(salt);
+  mix(family_name);
+
+  // The factor is in [0.965, 1.035): the family's width differs from
+  // the generic's by a couple of percent, which is far above the
+  // two-decimal rounding the probe compares at, and far below the
+  // difference between two real fonts.
+  //
+  // The factor is never exactly one.  A factor of one is the *absence*
+  // of an adjustment: the family would measure exactly as the generic
+  // does and the probe would report it as absent, which is the one
+  // outcome the adjustment exists to prevent.
+  //
+  // The range is wider than it looks like it needs to be, because the
+  // platform rounds the size of a font to whole pixels before it is
+  // rasterized.  On Windows the height of a face is a whole number of
+  // pixels, so a factor of 0.997 at 72 pixels lands on 72 pixels again
+  // and the family measures exactly as the generic does.  The factor
+  // therefore has to be big enough to move the size by at least one
+  // pixel; the caller checks that and asks for another one when it is
+  // not.
+  const double unit = static_cast<double>(hash % 7000) / 100000.0;
+  double adjustment = 0.965 + unit * 0.07;
+  if (adjustment == 1.0) {
+    adjustment = 1.001;
+  }
+  return adjustment;
+}
+
+// The size adjustment the profile's font inventory applies to a family,
+// with the size the family is asked for taken into account.
+//
+// The platform rounds a font's size to whole pixels, so an adjustment
+// has to move the size by at least one pixel to have any effect at
+// all.  This function returns the adjustment and, through |applied|,
+// the size the family is actually asked for.  When the adjustment of
+// the family does not move the size, another one is drawn: the family
+// has to measure differently from the generic, which is the one thing
+// the adjustment exists for.
+double NovaFontSizeAdjustmentForSize(const std::string& family_name,
+                                     const std::string& salt,
+                                     float font_size,
+                                     float* applied) {
+  double adjustment = NovaFontSizeAdjustment(family_name, salt);
+  if (salt.empty() || font_size <= 0.0f) {
+    if (applied) {
+      *applied = font_size;
+    }
+    return adjustment;
+  }
+
+  // The size the platform will use: it rounds to whole pixels, so the
+  // comparison is made on the rounded value.
+  auto rounded = [](double size) {
+    return static_cast<double>(static_cast<long>(size + 0.5));
+  };
+
+  const double base = rounded(font_size);
+  double best = adjustment;
+  double best_delta = std::abs(rounded(base * adjustment) - base);
+
+  // When the factor that was drawn does not move the size, another one
+  // is drawn from the same hash, so the answer stays a function of the
+  // salt and the family alone.
+  if (best_delta < 1.0) {
+    uint64_t hash = 1469598103934665603ULL;
+    auto mix = [&hash](const std::string& text) {
+      for (char character : text) {
+        hash ^= static_cast<unsigned char>(character);
+        hash *= 1099511628211ULL;
+      }
+      hash ^= 0x5c;
+      hash *= 1099511628211ULL;
+    };
+    mix(salt);
+    mix(family_name);
+    for (int attempt = 0; attempt < 64 && best_delta < 1.0; ++attempt) {
+      hash ^= 0x9e;
+      hash *= 1099511628211ULL;
+      const double candidate =
+          0.965 + static_cast<double>(hash % 7000) / 100000.0 * 0.07;
+      if (candidate == 1.0) {
+        continue;
+      }
+      const double delta = std::abs(rounded(base * candidate) - base);
+      if (delta > best_delta) {
+        best_delta = delta;
+        best = candidate;
+      }
+    }
+    // Nothing moved the size, so the size is moved by hand: the family
+    // is asked for one pixel less.
+    if (best_delta < 1.0) {
+      best = (base - 1.0) / base;
+    }
+  }
+
+  if (applied) {
+    *applied = static_cast<float>(base * best);
+  }
+  return best;
+}
+
 // ---------------------------------------------------------------------------
 // The geometry perturbation
 //
@@ -849,14 +1438,34 @@ bool IsFontInProfile(const std::string& family_name,
 // profile in the "noise" mode gets the deltas of its own seed; a profile
 // in the "disabled" mode gets the rectangle the layout produced, so the
 // page sees the host geometry untouched.
-// ---------------------------------------------------------------------------
-
+//
+// The deltas are whole pixels and they are the same for every surface.
+// That is a deliberate choice, and it is the same choice the JavaScript
+// layer and the simulator make, because the three of them have to agree
+// exactly: a page that measures the geometry has to get the number the
+// profile describes, and not the sum of two different perturbations.
+//
+// A fractional offset was tried and it is wrong for two reasons.  The
+// first is that a half-pixel rectangle is a tell: a real layout produces
+// rectangles that are aligned to the pixel grid, and one that lands
+// between two pixels is a rectangle that no layout engine produced.
+// The second is that the element rectangle and the range rectangle move
+// by different amounts, and a page that compares the two -- a classic
+// cross-surface consistency check -- finds them disagreeing about where
+// the text is.  The text does not move relative to its box, so the two
+// must move together.
+//
+// The layout itself is not perturbed: only the rectangle the page reads
+// is.  A page that reads the geometry and a page that hits the geometry
+// therefore see two different things, and that is the price of a
+// perturbation that does not rebuild the layout.
 void ApplyRectDeltas(gfx::RectF& rect, const char* surface) {
   if (!IsNovaCoreInitialized()) {
     return;
   }
   const ProfileConfig& config = GetNovaConfigRef();
-  if (config.rects.mode == "disabled" || config.rects.mode == "native_passthrough") {
+  if (config.rects.mode == "disabled" ||
+      config.rects.mode == "native_passthrough") {
     return;
   }
   const int delta_x = GetRectDeltaX();
@@ -866,20 +1475,8 @@ void ApplyRectDeltas(gfx::RectF& rect, const char* surface) {
   if (delta_x == 0 && delta_y == 0 && delta_width == 0 && delta_height == 0) {
     return;
   }
-  // The surface name keeps the element rectangle and the range rectangle
-  // from moving by exactly the same amount.  A page that compares the
-  // two -- a classic cross-surface consistency check -- must not find
-  // them trivially equal.
-  int surface_shift = 0;
-  if (surface != nullptr) {
-    for (const char* c = surface; *c != '\0'; ++c) {
-      surface_shift = (surface_shift * 31 + static_cast<unsigned char>(*c)) & 0xFF;
-    }
-  }
-  const int shift_x = (surface_shift % 3) - 1;
-  const int shift_y = ((surface_shift >> 3) % 3) - 1;
 
-  rect.Offset(delta_x * (1 + shift_x) * 0.5f, delta_y * (1 + shift_y) * 0.5f);
+  rect.Offset(delta_x, delta_y);
   if (delta_width != 0 || delta_height != 0) {
     rect.set_width(std::max(0.0f, rect.width() + delta_width));
     rect.set_height(std::max(0.0f, rect.height() + delta_height));
@@ -979,46 +1576,65 @@ std::string* const g_js_payload_from_mojo = new std::string();
 // navigation can begin before it does.  A renderer whose first
 // navigation has no payload reports the host's values for every axis,
 // which is the one thing the engine exists to prevent.
-const std::string& JsRuntimeSource() {
-  static const std::string* source = new std::string([] {
-    const base::CommandLine* command_line =
-        base::CommandLine::ForCurrentProcess();
-    if (!command_line) {
-      return std::string();
-    }
+// The profile's payload, as the JSON the layer reads.
+//
+// It arrives either on the command line or over the Mojo channel, and
+// the Mojo one wins: it is the same payload, but it did not pass
+// through the process table.
+//
+// The result is *not* cached.
+//
+// The payload has two transports, and the second one arrives late: the
+// renderer connects to the browser over the Mojo channel, and the
+// channel delivers the payload when it is ready.  A navigation can
+// begin before that happens -- and the first navigation is the one
+// that matters, because it is the one the page sees the values on.
+//
+// A cached value would freeze whatever was there at the first read.
+// When the first read happens before the channel has delivered
+// anything, the cached value is the empty one, and it stays empty for
+// the life of the renderer: the layer never runs, and the page sees
+// the host's values for every axis the layer owns.
+//
+// So the payload is read every time it is asked for.  The command line
+// is read once and kept; the channel is polled.
+const std::string& JsRuntimePayload() {
+  static thread_local std::string payload;
 
-    // The switch carries the payload, base64 encoded.  A Windows
-    // command line cannot describe a document that contains quotes,
-    // spaces and newlines, so the browser encodes it before it hands
-    // it over; base64 has none of them and survives the trip intact.
-    std::string payload;
-    const std::string inline_encoded =
-        command_line->GetSwitchValueASCII(kJsPayloadSwitchName);
-    if (!inline_encoded.empty()) {
-      if (!InflateFromCommandLine(inline_encoded, &payload)) {
-        LOG(ERROR) << "NOVA: the JavaScript payload on the command line is "
-                      "not valid base64";
-        return std::string();
-      }
-    }
+  // The payload that arrived over the Mojo channel wins over the one
+  // on the command line.
+  if (!g_js_payload_from_mojo->empty()) {
+    payload = *g_js_payload_from_mojo;
+    return payload;
+  }
 
-    // The payload that arrived over the Mojo channel wins over the one
-    // on the command line: it is the same payload, but it did not pass
-    // through the process table.
-    if (!g_js_payload_from_mojo->empty()) {
-      payload = *g_js_payload_from_mojo;
-    }
+  const base::CommandLine* command_line =
+      base::CommandLine::ForCurrentProcess();
+  if (!command_line) {
+    payload.clear();
+    return payload;
+  }
 
-    if (payload.empty()) {
-      return std::string();
-    }
+  // The switch carries the payload, base64 encoded.  A Windows
+  // command line cannot describe a document that contains quotes,
+  // spaces and newlines, so the browser encodes it before it hands
+  // it over; base64 has none of them and survives the trip intact.
+  const std::string inline_encoded =
+      command_line->GetSwitchValueASCII(kJsPayloadSwitchName);
+  if (inline_encoded.empty()) {
+    payload.clear();
+    return payload;
+  }
 
-    // The payload installs itself and the code reads it.  The code goes
-    // first: it defines the marker the payload checks, and it reads the
-    // payload as it starts.
-    return payload + "\n" + GetJsRuntimeCode();
-  }());
-  return *source;
+  std::string decoded;
+  if (!InflateFromCommandLine(inline_encoded, &decoded)) {
+    LOG(ERROR) << "NOVA: the JavaScript payload on the command line is "
+                  "not valid base64";
+    payload.clear();
+    return payload;
+  }
+  payload = std::move(decoded);
+  return payload;
 }
 
 }  // namespace
@@ -1029,36 +1645,81 @@ const std::string& JsRuntimeSource() {
 // The payload that arrives here is the whole payload, so it wins over
 // anything the command line carried.
 void SetJsRuntimeFromMojo(std::string runtime) {
-  if (getenv("NOVA_TRACE")) {
-    FILE* t = fopen("C:\\nova-test\\nova_trace.txt", "a");
-    if (t) {
-      fprintf(t, "mojo: runtime len=%d\n", (int)runtime.size());
-      fflush(t);
-      fclose(t);
-    }
-  }
+  LOG(INFO) << "NOVA: mojo: runtime len=" << (int)runtime.size();
   *g_js_payload_from_mojo = std::move(runtime);
 }
 
 const std::string& GetJsRuntimeSource() {
-  if (!g_js_payload_from_mojo->empty()) {
-    static const std::string* source =
-        new std::string(*g_js_payload_from_mojo + "\n" + GetJsRuntimeCode());
-    return *source;
+  static thread_local std::string source;
+  const std::string& payload = JsRuntimePayload();
+  LOG(INFO) << "NOVA: js-runtime: payload=" << (int)payload.size();
+  if (payload.empty()) {
+    source.clear();
+    return source;
   }
-  return JsRuntimeSource();
+  source = payload + "\n" + GetJsRuntimeCode();
+  return source;
 }
 
 bool HasJsRuntime() {
   return !GetJsRuntimeSource().empty();
 }
 
+// The payload the browser hands the renderer.
+//
+// The payload is the profile's values, as a JSON document.  It arrives
+// either as the raw JSON or wrapped in the assignment that installs it
+// on the window; the wrapper is stripped here, because the value has to
+// end up as an argument to the layer and never as a property of the
+// window.
+//
+// A payload on the window would be a fingerprint of its own: it carries
+// the profile's salts, the device identifiers and the font list, and a
+// script that enumerates the window's own properties would get the
+// whole thing.
+std::string ExtractPayloadJson(const std::string& payload) {
+  const std::string trimmed(
+      base::TrimWhitespaceASCII(payload, base::TRIM_ALL));
+  const std::string prefix = "window.__NOVA_PROFILE__=";
+  if (!base::StartsWith(trimmed, prefix)) {
+    // The payload is already the bare JSON.
+    return trimmed;
+  }
+  std::string body = trimmed.substr(prefix.size());
+  // The assignment ends with a semicolon.  The JSON does not contain
+  // one at the top level, so the last one is the statement's.
+  const size_t last = body.rfind(';');
+  if (last != std::string::npos) {
+    body = body.substr(0, last);
+  }
+  return std::string(base::TrimWhitespaceASCII(body, base::TRIM_ALL));
+}
+
 // The script the renderer actually runs.
 //
-// It is the JavaScript layer with the native core's declaration of what
-// it owns in front of it.  The declaration has to run first: the layer
-// reads it as it starts and stands down on the surfaces the native core
-// has already taken care of.
+// It is the JavaScript layer, wrapped in a scope that holds the two
+// values the layer reads: the native core's list of the surfaces it
+// owns, and the profile's own payload.
+//
+// The wrapper exists for two reasons.
+//
+// The first is the handoff.  Without the list the layer assumes that the
+// native core owns nothing, and it patches every surface itself.  On
+// the surfaces the native core already owns that produced two
+// perturbations of the same value: the native one, and then the
+// JavaScript one on top of it.  A page that measures the geometry sees
+// the sum of the two, and the sum is not the number the profile
+// describes.
+//
+// The second is the marker.  Both the list and the payload used to be
+// published as properties on the window, and a property that does not
+// exist otherwise is a fingerprint of its own: a script that enumerates
+// the window's own properties finds the list with a single enumeration,
+// and the payload -- which carries the profile's salts, the device
+// identifiers and the font list -- is the whole profile in the clear.
+// A browser that carries a profile's fingerprint must not carry a name
+// that says it does.  Inside a wrapper both are local variables, and
+// they are gone by the time the page's first script runs.
 //
 // The result is *not* cached.  The script arrives over a Mojo channel,
 // and the first navigation can start before the channel has delivered
@@ -1067,21 +1728,10 @@ bool HasJsRuntime() {
 // concatenation, and this runs once per document.
 const std::string& GetEffectiveJsRuntimeSource() {
   static thread_local std::string source;
-  const std::string& runtime = GetJsRuntimeSource();
-  if (getenv("NOVA_TRACE")) {
-    FILE* t = fopen("C:\\nova-test\\nova_trace.txt", "a");
-    if (t) {
-      fprintf(t, "effective: runtime len=%d\n", (int)runtime.size());
-      fflush(t);
-      fclose(t);
-    }
-  }
-  if (runtime.empty()) {
+  const std::string& payload = JsRuntimePayload();
+  LOG(INFO) << "NOVA: effective: runtime len=" << (int)payload.size();
+  if (payload.empty()) {
     source.clear();
-    return source;
-  }
-  if (!IsNovaCoreInitialized()) {
-    source = runtime;
     return source;
   }
 
@@ -1089,105 +1739,12 @@ const std::string& GetEffectiveJsRuntimeSource() {
   // When it owns none of them -- which is the case for a browser that
   // was not patched at all -- the layer is left to do everything.
   const std::string declaration = BuildNativeSurfaceDeclaration();
-  source = declaration + runtime;
+  source = declaration + "var __NOVA_PAYLOAD__ = " +
+           ExtractPayloadJson(payload) + ";\n" + GetJsRuntimeCode() +
+           "\n})();\n";
   return source;
 }
 
 const char kJsPayloadSwitchName[] = "nova-js-payload-source";
-
-// ---------------------------------------------------------------------------
-// The browser-side hand-over cache
-// ---------------------------------------------------------------------------
-//
-// The browser process reads the profile and the JavaScript layer from disk
-// and puts both on the command line of every renderer it spawns.  The
-// renderer cannot do that read itself: it is sandboxed and the user data
-// directory is not among the paths it may open.
-//
-// The catch is *where* the browser-side read happens.  The renderer command
-// line is built on the browser's IO thread, and a thread that has been
-// marked as non-blocking must not wait on the disk: a stat() or a read()
-// there trips the "tls_blocking_disallowed" DCHECK and takes the whole
-// browser down.
-//
-// So the read happens exactly once, on the main thread, during startup --
-// before any renderer exists and therefore before anything a page can
-// observe.  The result is cached here, and the IO thread only ever copies
-// a string that is already in memory.
-
-namespace {
-
-// The cached payload.  Written once on the main thread during startup
-// and only read afterwards, so a plain pointer swap is enough.
-std::string* const g_cached_js_payload = new std::string();
-
-// The payload as it was read, before any encoding.
-std::string* const g_cached_js_payload_raw = new std::string();
-
-// Reads the payload from the path on the command line.  Blocking; only
-// the main thread may call this.
-//
-// The payload is the profile's values, without the code that installs
-// them.  The code is compiled into the browser, so only this part
-// travels.
-void PrimeBrowserHandoverCache(const base::CommandLine& command_line) {
-  const std::string payload_path =
-      command_line.GetSwitchValueASCII("nova-js-payload");
-  if (!payload_path.empty()) {
-    base::FilePath file_path(base::FilePath::FromUTF8Unsafe(payload_path));
-    std::string contents;
-    if (base::ReadFileToString(file_path, &contents)) {
-      *g_cached_js_payload_raw = contents;
-
-      // The payload also goes on the command line of the renderer, and
-      // a Windows command line cannot describe a document that contains
-      // quotes, spaces and newlines.  Base64 can: it has none of them
-      // and survives the trip intact.
-      //
-      // The early-startup variant is used because this runs before the
-      // feature list is registered: the ordinary encoder consults a
-      // feature flag, and asking for a flag that does not exist yet is
-      // a fatal error.
-      //
-      // The payload is deflated first, for the same reason the profile
-      // is: the renderer is started with both of them on its command
-      // line, and a Windows command line holds at most 32,767
-      // characters.  The two together do not fit uncompressed.
-      const std::string deflated = DeflateForCommandLine(contents);
-      *g_cached_js_payload = base::Base64EncodeEarlyStartup(
-          base::as_byte_span(std::string_view(
-              deflated.empty() ? contents : deflated)));
-    } else {
-      LOG(ERROR) << "NOVA: the JavaScript payload could not be read: "
-                 << payload_path << " ("
-                 << logging::SystemErrorCodeToString(
-                        logging::GetLastSystemErrorCode())
-                 << ")";
-    }
-  }
-}
-
-}  // namespace
-
-// Called on the main thread during startup, before the first renderer is
-// spawned.  From here on the IO thread never touches the disk.
-void PrimeBrowserHandover(const base::CommandLine& command_line) {
-  PrimeBrowserHandoverCache(command_line);
-}
-
-std::string ReadJsRuntimeForBrowser() {
-  return *g_cached_js_payload;
-}
-
-// The payload itself, for the Mojo channel.
-//
-// The Mojo channel carries the payload as it stands: it is not limited
-// to the length of a command line, so the payload does not have to be
-// encoded, and the renderer does not have to decode it.
-//
-// The code is not sent: it is compiled into the browser.
-std::string ReadJsRuntimeForRenderer() {
-  return *g_cached_js_payload_raw;
-}
 
 }  // namespace nova

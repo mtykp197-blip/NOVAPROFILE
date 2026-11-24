@@ -31,6 +31,7 @@ source_set("nova_core") {
     "nova_js_runtime_code.cc",
     "nova_pixel_noise.cc",
     "nova_transport.cc",
+    "nova_unit_values.cc",
   ]
 
   public = [
@@ -38,6 +39,7 @@ source_set("nova_core") {
     "nova_core_config.h",
     "nova_pixel_noise.h",
     "nova_transport.h",
+    "nova_unit_values.h",
   ]
 
   # The header is included by name rather than by path, so the directory
@@ -56,6 +58,7 @@ source_set("nova_core") {
   # runs the TLS handshake, so it has to be able to read the profile's
   # own cipher suites and curves.
   visibility = [
+    "//chrome/*",
     "//content/*",
     "//net/*",
     "//third_party/blink/*",

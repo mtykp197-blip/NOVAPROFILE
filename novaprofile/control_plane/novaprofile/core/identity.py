@@ -792,6 +792,19 @@ class DeviceIdentityFactory:
         # status bar and the navigation bar.
         avail_w = logical_width
         avail_h = int(logical_height * 0.94)
+
+        # The ratios the model's panels are able to report.
+        #
+        # The panel reports the ratio of its density bucket, and a model
+        # is offered a handful of buckets, so the set is short and
+        # closed.  It travels with the profile because the core draws
+        # from it when the profile leaves the ratio out -- and a core
+        # that drew from a list of its own would offer the model a
+        # ratio its panels cannot produce.
+        ratio_options = tuple(
+            float(ratio) for ratio in (preset.dpr_options or ())
+        ) or (float(dpr),)
+
         return preset.screen.model_copy(
             update={
                 "width": logical_width,
@@ -800,6 +813,7 @@ class DeviceIdentityFactory:
                 "avail_height": avail_h,
                 "density_dpi": density,
                 "device_pixel_ratio": dpr,
+                "device_pixel_ratio_options": ratio_options,
             }
         )
 

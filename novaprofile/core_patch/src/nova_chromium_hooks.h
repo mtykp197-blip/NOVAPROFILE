@@ -34,6 +34,7 @@
 
 #include "nova_core_config.h"
 #include "nova_pixel_noise.h"
+#include "nova_unit_values.h"
 
 #include <cstdint>
 #include <string>
@@ -42,11 +43,19 @@
 #include "base/command_line.h"
 #include "ui/gfx/geometry/rect_f.h"
 
-namespace nova {
-
 namespace blink {
 class LocalDOMWindow;
 }  // namespace blink
+
+namespace blink {
+class Document;
+}  // namespace blink
+
+namespace blink {
+class ExecutionContext;
+}  // namespace blink
+
+namespace nova {
 
 // ---------------------------------------------------------------------------
 // The configuration accessor.
@@ -64,6 +73,19 @@ ProfileConfig GetNovaConfig();
 // the client hints are read on every request.
 const ProfileConfig& GetNovaConfigRef();
 
+// The unit values -- the core count, the memory, the touch points, the
+// panel -- as the core reports them.
+//
+// The values in the configuration are what the profile *asks* for.  The
+// unit values are what the core *derives*, when the profile left a value
+// out: the core count of a unit of a family whose SoC has eight cores
+// is drawn from the family's own range, and two units of that family
+// never draw the same one.
+//
+// A surface reads the unit values rather than the configuration, so that
+// the derivation happens in exactly one place and every surface agrees.
+const UnitValues& GetUnitValues();
+
 // The noise keys, one per readback surface.
 PixelNoiseKey GetCanvasNoiseKey();
 PixelNoiseKey GetWebGLNoiseKey();
@@ -72,6 +94,40 @@ PixelNoiseKey GetOffscreenNoiseKey();
 // The WebGL identity strings.
 std::string GetUnmaskedVendorString();
 std::string GetUnmaskedRendererString();
+
+// The version strings.
+//
+// The version of the context and the version of the shading language
+// are read together with the unmasked renderer, and a script that
+// finds three strings that do not belong together knows that the GPU
+// is a mask.  So they come from the profile as well.
+//
+// The strings are the whole ones -- "WebGL 2.0 (OpenGL ES 3.0
+// Chromium)" -- and not the inner part, because the wrapper is what
+// tells the script which API version the context implements.
+std::string GetWebGLVersionString();
+std::string GetWebGLShadingLanguageVersionString();
+
+// The WebGL parameter table.
+//
+// The table is what identifies the GPU: the unmasked renderer says
+// "Mali-G78" and the table says how many texture units it has and how
+// many uniform vectors a fragment shader may declare.  A table that
+// does not belong to the named renderer is the easiest way to catch a
+// spoofed GPU, so the whole table comes from the profile.
+//
+// The parameters are looked up by their lower case names --
+// ``max_texture_size`` for ``GL_MAX_TEXTURE_SIZE``.  A parameter the
+// profile does not describe returns false, and the caller keeps the
+// host's value.
+bool GetWebGLParameter(const std::string& name, int* out);
+
+// The parameters that are ranges rather than single values.
+bool GetWebGLParameterRange(const std::string& name,
+                            std::vector<double>* out);
+
+// The viewport dimensions, which are a pair.
+bool GetWebGLViewportDims(std::vector<int>* out);
 
 // ---------------------------------------------------------------------------
 // The surfaces that are read on their own.
@@ -147,6 +203,32 @@ std::string RewriteMediaDeviceId(const std::string& device_id,
                                  const char* kind,
                                  size_t index);
 
+// One device of the profile's own inventory.
+//
+// The profile declares the devices it has.  The host's inventory is the
+// machine's: a desktop has a camera that an Android phone does not, and
+// a machine with two microphones has two.  A page that counts the
+// devices, or that reads their labels, learns about the machine rather
+// than about the profile -- so the enumeration has to be the profile's.
+//
+// The identifiers here are already the profile's own: they were derived
+// from the profile's salt when the profile was generated, and they are
+// the same in every origin the profile visits.
+struct NovaMediaDevice {
+  std::string device_id;
+  std::string group_id;
+  std::string label;
+  std::string kind;
+};
+
+// The profile's own device inventory, grouped by the device class.
+//
+// The list is empty when the profile does not describe an inventory, or
+// when the profile asked for the host's devices to be passed through.
+// In that case the caller keeps the host's list unchanged.
+std::vector<std::string> NovaMediaDeviceKinds();
+std::vector<NovaMediaDevice> NovaMediaDevices(const std::string& kind);
+
 // The motion sensors.
 double GetSensorAccelerometerX();
 double GetSensorAccelerometerY();
@@ -176,6 +258,40 @@ std::string GetWebGpuSalt();
 // and the cursive ones -- are always available.
 bool IsFontInProfile(const std::string& family_name,
                      const std::vector<std::string>& installed);
+
+// Whether the family is one of the CSS generic families.
+//
+// A generic family is a request for "whatever the platform offers for
+// this kind of text", not a file.  It is always available and it is
+// never part of the profile's inventory.
+bool IsGenericFontFamily(const std::string& family_name);
+
+// The size adjustment the profile's font inventory applies to a family.
+//
+// The standard font probe reads the difference between a family's
+// metrics and the generic's, so a family that is not on the machine
+// measures as the generic and is reported as absent.  The profile
+// declares an inventory the machine does not carry, so the adjustment
+// is what makes the declared families measure differently -- and the
+// salt is what makes the adjustment the same for every run of the
+// profile and different for every other profile.
+//
+// Returns 1.0 when the profile carries no salt.
+double NovaFontSizeAdjustment(const std::string& family_name,
+                               const std::string& salt);
+
+// The size adjustment the profile's font inventory applies to a family,
+// with the size the family is asked for taken into account.
+//
+// The platform rounds a font's size to whole pixels before it is
+// rasterized, so an adjustment only has an effect when it moves the
+// size by at least one pixel.  This function returns an adjustment that
+// does move it, and reports the size the family is to be asked for
+// through |applied|.
+double NovaFontSizeAdjustmentForSize(const std::string& family_name,
+                                     const std::string& salt,
+                                     float font_size,
+                                     float* applied);
 
 // The process entry points.
 bool InitializeFromCommandLine(const base::CommandLine& command_line);
@@ -286,27 +402,6 @@ void SetJsRuntimeFromMojo(std::string runtime);
 // profile is being launched, and the renderer is short lived.
 // ---------------------------------------------------------------------------
 
-// Reads the runtime in the browser process and returns it.
-//
-// The browser process is not sandboxed, so this is the only place the
-// file can be read.  An empty result means there is no runtime.
-//
-// The value comes out of the hand-over cache, which is filled once on
-// the main thread during startup.  This function itself never touches
-// the disk: the renderer command line is built on the IO thread, and a
-// blocking read there trips the "tls_blocking_disallowed" DCHECK.
-std::string ReadJsRuntimeForBrowser();
-
-// The script itself, for the Mojo channel.
-//
-// The command line cannot carry the script: a Windows command line holds
-// at most 32,767 characters and the script is longer than that.  The
-// Mojo channel has no such limit, so the script travels over it as it
-// stands and the renderer does not have to decode it.
-//
-// An empty result means there is no runtime.
-std::string ReadJsRuntimeForRenderer();
-
 // The layer's code, compiled into the browser.
 //
 // The code is the same for every profile, so it does not travel at all:
@@ -321,12 +416,6 @@ const std::string& GetJsRuntimeCode();
 // device catalogue, the codec list.  It is different for every profile
 // and it is the only part of the layer that is secret.
 extern const char kJsPayloadSwitchName[];
-
-// Fills the hand-over cache from the paths on the command line.
-//
-// This reads the disk and therefore blocks, so it may only be called on
-// the main thread.  It must run before the first renderer is spawned.
-void PrimeBrowserHandover(const base::CommandLine& command_line);
 
 }  // namespace nova
 

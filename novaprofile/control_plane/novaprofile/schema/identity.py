@@ -208,6 +208,18 @@ class Geolocation(BaseModel):
     speed: float | None = Field(default=None, ge=0.0)
     timestamp_jitter_ms: int = Field(default=0, ge=0)
 
+    # The place the fix describes.
+    #
+    # The region is the name of the table entry the coordinates were
+    # drawn from, and the city is the part of it that a geolocation
+    # service would name.  A profile that carries the coordinates but
+    # not the name is a profile whose fix cannot be placed on a map
+    # without an offline table -- and an operator looking at a hundred
+    # profiles cannot tell whether they are in one city or a hundred.
+    region: str | None = Field(default=None)
+    city: str | None = Field(default=None)
+    country_code: str | None = Field(default=None, max_length=2)
+
 
 __all__ = [
     "Navigator",

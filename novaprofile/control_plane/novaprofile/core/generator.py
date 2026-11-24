@@ -1874,6 +1874,16 @@ class ProfileGenerator:
             VIETNAM_TIMEZONE,
         )
 
+        # The name of the place the fix belongs to.
+        #
+        # The coordinates alone do not say where they are: a fix of
+        # 21.71, 104.91 is in the north of the country, and only a table
+        # says which province that is.  The profile carries the name as
+        # well, so that an operator looking at a hundred profiles can
+        # see that they are not all standing on one corner of one city.
+        region_name: str | None = None
+        country_code: str | None = None
+
         if geo.timezone == VIETNAM_TIMEZONE:
             # A Vietnamese profile is placed in a *province*, not in the
             # middle of the reference point of Ho Chi Minh City.
@@ -1897,7 +1907,8 @@ class ProfileGenerator:
                 )
             else:
                 province_index = self._geo_province % len(VIETNAM_COORDINATES)
-            _province, base_lat, base_lng = VIETNAM_COORDINATES[province_index]
+            region_name, base_lat, base_lng = VIETNAM_COORDINATES[province_index]
+            country_code = "VN"
             # The jitter is wider than in the generic path: a province
             # is a hundred kilometres across, so a fix that is precise
             # to the metre would contradict the province it claims.
@@ -1906,6 +1917,7 @@ class ProfileGenerator:
             )
         else:
             base_lat, base_lng = coordinates_for(geo.timezone)
+            country_code = geo.country_code
             # The jitter stays inside a few kilometres, which is what a
             # city-level geolocation fix looks like.
             jitter_km = deriver.derive_float(Axis.GEO_TIMEZONE, 0.0, 8.0, context="geo.jitter_km")
@@ -1941,6 +1953,9 @@ class ProfileGenerator:
             altitude_accuracy=None,
             heading=None,
             speed=None,
+            region=region_name,
+            city=region_name,
+            country_code=country_code,
             timestamp_jitter_ms=deriver.derive_int(
                 Axis.GEO_TIMEZONE, 0, 3000, context="geo.jitter"
             ),

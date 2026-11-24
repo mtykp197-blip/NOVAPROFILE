@@ -298,6 +298,20 @@ def serve(
     host: str = typer.Option("", "--host", help="Bind address (default 127.0.0.1)."),  # noqa: B008
     port: int = typer.Option(0, "--port", min=0, max=65535, help="Bind port (default 8756)."),  # noqa: B008
     reload: bool = typer.Option(False, "--reload", help="Enable auto-reload."),  # noqa: B008
+    data_dir: str = typer.Option(
+        "",
+        "--data-dir",
+        help="Where the profiles live (overrides NOVA_PROFILE_HOME).",
+    ),  # noqa: B008
+    handshake: bool = typer.Option(
+        False,
+        "--handshake",
+        help=(
+            "Print one line of JSON when the service is ready: the port it "
+            "bound and the key it wants.  A desktop shell reads that line "
+            "instead of polling for a port it has to guess."
+        ),
+    ),  # noqa: B008
 ) -> None:
     """Start the FastAPI control plane with uvicorn.
 
@@ -314,8 +328,23 @@ def serve(
     from novaprofile.api import auth
     from novaprofile.api.app import create_app
 
+    if data_dir:
+        os.environ["NOVA_PROFILE_HOME"] = str(Path(data_dir).expanduser())
+
     bind_host = host or auth.api_host()
     bind_port = port or auth.api_port()
+
+    # The key.
+    #
+    # A shell that starts the service is a shell that cannot be asked
+    # for a key on the console, so the service makes one for itself and
+    # hands it to the shell in the handshake.  The key is generated only
+    # when none is configured: a key the operator set is the operator's
+    # key, and it is not replaced behind their back.
+    key = auth.api_key()
+    if not key and handshake:
+        key = auth.generate_key()
+        os.environ[auth.API_KEY_ENV_VAR] = key
 
     report = auth.exposure_report()
     if not report.loopback and not auth.require_auth():
@@ -338,6 +367,17 @@ def serve(
     console.print(f"[green]Serving[/green] NOVA control plane on http://{bind_host}:{bind_port}")
     if auth.require_auth():
         console.print("[dim]Authentication is on; send the key in the X-Nova-Key header.[/dim]")
+
+    if handshake:
+        # The handshake is written to stdout, alone on one line, as
+        # JSON.  The shell reads the first line that parses as JSON
+        # with a port in it, and ignores the rest: the banner above is
+        # for a human reading a terminal.
+        sys.stdout.write(
+            json.dumps({"port": bind_port, "api_key": key, "host": bind_host}) + "\n"
+        )
+        sys.stdout.flush()
+
     uvicorn.run(create_app(), host=bind_host, port=bind_port, reload=reload)
 
 

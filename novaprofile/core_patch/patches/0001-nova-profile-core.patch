@@ -174,8 +174,12 @@ index f5c0db2..b668e1d 100644
  
  unsigned NavigatorConcurrentHardware::hardwareConcurrency() const {
 +  if (nova::IsNovaCoreInitialized()) {
-+    return static_cast<unsigned>(
-+        nova::GetNovaConfig().navigator.hardware_concurrency);
++    // The value the control plane drew, and the one the core draws on
++    // the profile's behalf when the profile leaves it out.  It is not
++    // the value of the machine the browser happens to run on: that
++    // value belongs to the host, and a fleet whose members all report
++    // the host's core count is a fleet of one.
++    return static_cast<unsigned>(nova::GetUnitValues().hardware_concurrency);
 +  }
    return static_cast<unsigned>(base::SysInfo::NumberOfProcessors());
  }

@@ -66,6 +66,12 @@ NUMERIC_FIELDS: frozenset[str] = frozenset(
         "noise_strength",
         "output_latency",
         "visual_viewport_scale",
+        # The stratum is optional: a profile that stands alone has
+        # none, and the core reads an absent stratum as "this profile
+        # does not belong to a family".  A null there has to stay a
+        # null -- the empty string would be a type error, and the core
+        # refuses the whole document over a type error.
+        "stratum",
     }
 )
 
@@ -85,6 +91,11 @@ FRACTIONAL_FIELDS: frozenset[str] = frozenset(
     {
         # the screen and the viewport
         "device_pixel_ratio",
+        # The ratios the panels of a model are able to report.  The
+        # core draws the ratio of a unit from this list when the
+        # profile leaves the ratio out, and a list of ratios that was
+        # truncated to whole numbers is a list of different ratios.
+        "device_pixel_ratio_options",
         "visual_viewport_scale",
         # the audio timings
         "base_latency",
@@ -107,7 +118,7 @@ FRACTIONAL_FIELDS: frozenset[str] = frozenset(
 )
 
 
-def coerce_document(value: Any, path: str = "") -> Any:
+def coerce_document(value: Any, path: str = "", field: str | None = None) -> Any:
     """Make one value acceptable to the core.
 
     Returns the value itself when it is already acceptable, a clamped
@@ -115,7 +126,16 @@ def coerce_document(value: Any, path: str = "") -> Any:
     when it is a null string, ``null`` when it is an empty string in a
     field the core reads as a number, and an integer when it is a float
     that has to be whole.
+
+    |field| is the name of the field the value belongs to, when it is
+    known.  It is the name the core knows, and for an item of a list it
+    is the name of the list itself rather than the index: the core
+    reads a list of pixel ratios as a list of doubles, and an index is
+    not a field name it knows.
     """
+
+    if field is None:
+        field = path.rsplit(".", 1)[-1] if path else ""
 
     if isinstance(value, dict):
         return {
@@ -123,7 +143,16 @@ def coerce_document(value: Any, path: str = "") -> Any:
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [coerce_document(item, f"{path}[{index}]") for index, item in enumerate(value)]
+        # A list of numbers keeps the type of the field it belongs to.
+        #
+        # The path of an item in a list ends in its index, so a list of
+        # pixel ratios would have every one of its items truncated to an
+        # integer -- 2.625 becoming 2 -- because the *index* is not a
+        # field name the core knows.  The field the list belongs to is
+        # the name before the bracket, and that is the name the
+        # coercion has to look at.
+        field = path.rsplit("[", 1)[0].rsplit(".", 1)[-1] if "[" in path else path.rsplit(".", 1)[-1]
+        return [coerce_document(item, path, field=field) for index, item in enumerate(value)]
     if isinstance(value, bool):
         return value
     if isinstance(value, int):
@@ -140,19 +169,19 @@ def coerce_document(value: Any, path: str = "") -> Any:
         # The fields the core reads as a double are the exception: a
         # pixel ratio of 2.625 is a real value, and truncating it to 2
         # would report a device the profile never described.
-        if path.rsplit(".", 1)[-1] in FRACTIONAL_FIELDS:
+        if field in FRACTIONAL_FIELDS:
             return value
         return int(value)
     if value is None:
         # A null string is the empty string, unless the field is one
         # the core reads as a number -- there an absent value is the
         # absent value the profile means.
-        if path.rsplit(".", 1)[-1] in NUMERIC_FIELDS:
+        if field in NUMERIC_FIELDS:
             return None
         # The core's readers are strict and have no notion of an
         # absent optional string.
         return ""
-    if value == "" and path.rsplit(".", 1)[-1] in NUMERIC_FIELDS:
+    if value == "" and field in NUMERIC_FIELDS:
         # An empty string in a field the core reads as a number is the
         # profile saying "the device does not know", which the core
         # spells as an absent value.

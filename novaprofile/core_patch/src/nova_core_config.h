@@ -43,6 +43,25 @@ struct SeedConfig {
   std::string hkdf_version;
   std::string preset_id;
   std::string core_version;
+
+  // Which unit of the device family this profile is.
+  //
+  // The narrow readings -- the browser major, the core count, the
+  // memory -- are drawn *stratified*, so that two handsets of one model
+  // do not report the same ones.  The stratum is the unit's place in
+  // the family, and it has to travel with the seed: a profile that is
+  // regenerated from its seed must come back as the same handset, or
+  // its fingerprint changes every time the operator opens it.
+  //
+  // The value is optional.  A profile that stands alone draws every
+  // choice independently and the stratum is then unused.
+  //
+  // The value is stored as a signed number so that "absent" and "zero"
+  // are different things: a stratum of zero is a real unit -- the first
+  // one of the family -- and it is not the same as a profile that does
+  // not belong to a family at all.
+  bool has_stratum = false;
+  uint32_t stratum = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -99,6 +118,16 @@ struct Screen {
   int pixel_depth = 24;
   double device_pixel_ratio = 1.0;
   int density_dpi = 0;
+
+  // The ratios the *panels* of this model are able to report.
+  //
+  // A panel reports the ratio of its density bucket, and a model is
+  // offered a handful of buckets, so the set is short and closed.  When
+  // the ratio above is left at zero, the core draws one from this list
+  // instead -- from the profile's own seed, so two units of the same
+  // model report different ratios and neither of them reports a ratio
+  // its panels cannot produce.
+  std::vector<double> device_pixel_ratio_options;
 };
 
 struct Orientation {
@@ -386,6 +415,19 @@ struct NavigatorConfig {
   bool webdriver = false;
   bool on_line = true;
   bool java_enabled = false;
+
+  // The values the *hardware* of this model is able to report.
+  //
+  // These are not the values the profile reports; they are the range the
+  // model could report.  A model whose SoC has eight cores can never
+  // report sixteen, and a model whose digitiser takes five fingers can
+  // never report ten.  When a value above is left at zero, the core
+  // draws one from these lists instead -- and draws it from the
+  // profile's own seed, so that two units of the same model report
+  // different values and neither of them reports an impossible one.
+  std::vector<int> hardware_concurrency_options;
+  std::vector<int> device_memory_options;
+  std::vector<int> max_touch_points_options;
 };
 
 struct UserAgentDataConfig {
@@ -398,6 +440,16 @@ struct UserAgentDataConfig {
   std::string bitness;
   std::string model;
   bool wow64 = false;
+
+  // The full version of the browser, as the high-entropy hint
+  // ``uaFullVersion`` carries it.
+  //
+  // The hint is the build number of the browser, and it is a value of
+  // its own: the version list carries it per brand, and the hint
+  // carries the one of the real brand.  Without it the hint is empty,
+  // and a page that reads the hint and the list sees a browser that
+  // knows its brands but not its own version.
+  std::string ua_full_version;
 };
 
 struct PermissionsConfig {
@@ -608,22 +660,24 @@ bool LoadProfileConfigFromCommandLine(ProfileConfig* config, std::string* error)
 // The name of the switch that carries the configuration to the renderer.
 extern const char kConfigSourceSwitchName[];
 
-// Reads the configuration file in the browser process, which is the only
-// process that is not sandboxed.  An empty result means there is no
-// configuration.
+// Hands the browser process its own copy of the profile.
 //
-// The value comes out of the hand-over cache, which is filled once on
-// the main thread during startup.  This function itself never touches the
-// disk: the renderer command line is built on the IO thread, and a
-// blocking read there trips the "tls_blocking_disallowed" DCHECK.
-std::string ReadConfigSourceForBrowser();
+// The browser process is given a path, and it is the only process that
+// is not sandboxed, so it is the one that reads the file.  The startup
+// code reads it and hands the document here, and the hooks pick it up
+// from this side.
+//
+// The document is the raw JSON.  It is handed over rather than read
+// again because the read may only happen on the main thread during
+// startup, and the hooks are reached from threads that are not allowed
+// to wait on the disk.
+void SetBrowserConfigDocument(const std::string& document);
 
-// Fills the configuration hand-over cache from the path on the command
-// line.
+// The browser process's copy of the profile.
 //
-// This reads the disk and therefore blocks, so it may only be called on
-// the main thread.  It must run before the first renderer is spawned.
-void PrimeConfigHandover(const base::CommandLine& command_line);
+// An empty result means there is none: the browser was not started
+// with a profile it could read.
+std::string ReadBrowserConfigDocument();
 
 }  // namespace nova
 
