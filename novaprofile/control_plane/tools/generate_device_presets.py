@@ -247,6 +247,12 @@ LEGAL_CORE_COUNTS: tuple[int, ...] = (4, 6, 8, 12)
 #: The memory amounts a handset is sold with.  The amount is not
 #: rounded to a power of two: a six gigabyte handset is a six gigabyte
 #: handset, and Chromium's own approximation is what rounds it.
+#:
+#: These are the industry's sizes.  A phone with ten gigabytes exists
+#: only in the one limited edition that carried it, and a phone with
+#: eighteen exists in the gaming line that pushed the envelope; the set
+#: of sizes is otherwise closed, because the dies come in these
+#: capacities and the boards are built around them.
 LEGAL_RAM: tuple[int, ...] = (1, 2, 3, 4, 6, 8, 10, 12, 16, 18, 24)
 
 
@@ -417,9 +423,7 @@ def gpu_facts(renderer: str) -> tuple[str, str, str, int]:
         vendor, webgl_vendor = "Qualcomm", "Qualcomm"
     elif part.startswith("Xclipse"):
         vendor, webgl_vendor = "Samsung", "ARM"
-    elif part.startswith("Immortalis"):
-        vendor, webgl_vendor = "ARM", "ARM"
-    elif part.startswith("Mali"):
+    elif part.startswith("Immortalis") or part.startswith("Mali"):
         vendor, webgl_vendor = "ARM", "ARM"
     elif part.startswith("PowerVR") or part.startswith("SGX") or part.startswith("IMG"):
         vendor, webgl_vendor = "Imagination Technologies", "Imagination Technologies"
@@ -528,10 +532,56 @@ def build(preset_id: str, row: dict[str, Any]) -> DevicePreset:
     codename = codename_for(model_code)
     board = board_for(codename, gpu_vendor)
 
+    # The memory configurations the line was sold in.
+    #
+    # The amounts are the industry's: two, three, four, six, eight,
+    # twelve and sixteen gigabytes.  The arithmetic that steps a base
+    # up and down by two walks past them -- a line with eight gigabytes
+    # would be given ten and fourteen and twenty, and none of the three
+    # is a configuration that line was sold in.
+    #
+    # So the set is the real amounts: the one the row names, and the
+    # ones that sit around it in the industry's list.  A line sold
+    # with four was also sold with six, and a line sold with sixteen
+    # was also sold with twelve; those are the steps the dies and the
+    # boards actually come in.
     ram_options = tuple(
-        sorted({_nearest_ram(ram - 2), ram, _nearest_ram(ram + 2), _nearest_ram(ram + 4)})
+        sorted(
+            {
+                ram,
+                *(
+                    candidate
+                    for candidate in LEGAL_RAM
+                    if abs(candidate - ram) <= 4
+                ),
+            }
+        )
     )
-    cpu_options = (cores,)
+
+    # The core counts the model's chipsets report.
+    #
+    # A handset is sold with more than one system-on-chip, and the core
+    # count follows the chip that is in it.  The counts that exist are
+    # four, six, eight and twelve, and the set is the ones of the same
+    # generation as the one the row names -- a four-core chip and a
+    # twelve-core chip are two different handsets, not two
+    # configurations of one.
+    cpu_options = tuple(
+        sorted(
+            candidate
+            for candidate in LEGAL_CORE_COUNTS
+            if candidate == cores or abs(candidate - cores) <= 4
+        )
+    ) or (cores,)
+
+    # The touch-point counts the digitiser of the line reports.
+    #
+    # The entry units of a line that moved to ten-point panels in its
+    # second year shipped with the five-point one, and the platform
+    # answered five for those.  Both are real, and both belong to the
+    # line.
+    touch_points_options = (5, 10)
+
     dpr_options = tuple(
         sorted(
             {
@@ -605,7 +655,7 @@ def build(preset_id: str, row: dict[str, Any]) -> DevicePreset:
         year=2024 if int(release) >= 14 else 2023,
         release_variants=tuple(release_variants),
         model_variants=(model_code,),
-        touch_points_options=(10,),
+        touch_points_options=touch_points_options,
     )
 
 

@@ -42,7 +42,13 @@ class Navigator(BaseModel):
     # The values here are the counts the handsets of this fleet ship
     # with.  A big.LITTLE SoC of the era reports four, six, eight or
     # twelve logical cores, because its little cores count twice.
-    hardware_concurrency: Literal[4, 6, 8, 12]
+    #
+    # The set is open rather than a fixed list: a handset is sold with
+    # more than one system-on-chip, and the number of cores the
+    # platform reports follows the chipset that is in the unit.  The
+    # count is therefore whatever the model's chipsets report, and it
+    # is bounded by the platform rather than by this list.
+    hardware_concurrency: int = Field(ge=2, le=16)
     # ``deviceMemory`` is the physical memory in gigabytes, rounded to
     # the nearest power of two and clamped -- the algorithm Chromium
     # itself uses in ``ApproximatedDeviceMemory``.  A handset with 6 GB
@@ -71,6 +77,24 @@ class Navigator(BaseModel):
     on_line: bool = True
     java_enabled: bool = False
 
+    # The values the *hardware* of this model is able to report.
+    #
+    # These are not what the profile reports -- the three values above
+    # are -- but the range the model could report.  The browser core
+    # draws the reported value from these lists, out of the profile's
+    # own seed, so that:
+    #
+    #   * two units of the same model never report the same core count,
+    #     which is what separates them from one another;
+    #   * neither of them reports a value the model could not have,
+    #     which is what a site checks the model against.
+    #
+    # The lists are empty when the profile does not name them, and the
+    # core then reports the value above unchanged.
+    hardware_concurrency_options: list[int] = Field(default_factory=list)
+    device_memory_options: list[int] = Field(default_factory=list)
+    max_touch_points_options: list[int] = Field(default_factory=list)
+
     @field_validator("languages")
     @classmethod
     def _primary_language_first(cls, v: list[str]) -> list[str]:
@@ -98,6 +122,16 @@ class UserAgentData(BaseModel):
     bitness: Literal["", "64"]
     model: str
     wow64: bool = False
+
+    # The full version of the browser, as the high-entropy hint
+    # ``uaFullVersion`` carries it.
+    #
+    # The hint is the build number of the browser, and it is a value of
+    # its own: the version list carries the build per brand, and the
+    # hint carries the one of the real brand.  Without it the hint is
+    # empty, and a page that reads the hint and the list sees a browser
+    # that knows its brands but not its own version.
+    ua_full_version: str = ""
 
 
 class PluginMimeType(BaseModel):

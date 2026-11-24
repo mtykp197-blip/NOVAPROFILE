@@ -178,6 +178,7 @@ GUARDED_AXES: tuple[SignatureKind, ...] = (
     SignatureKind.STORAGE,
     SignatureKind.WEBGPU,
     SignatureKind.FONTS,
+    SignatureKind.GEO,
     SignatureKind.FULL,
 )
 
@@ -195,6 +196,7 @@ _AXIS_TO_PARTS_KEY = {
     SignatureKind.STORAGE: "sig_storage",
     SignatureKind.WEBGPU: "sig_webgpu",
     SignatureKind.FONTS: "sig_fonts",
+    SignatureKind.GEO: "sig_geo",
 }
 
 
@@ -227,6 +229,13 @@ class CollisionGuard:
     MAX_ATTEMPTS: int = 8
     #: How many nudges a single seed may take before the seed is rolled.
     MAX_NUDGE_STEPS: int = 5
+    #: How many strata a machine walk may take.  The machine readings are
+    #: drawn from the stratum's slice of the choice space, so the only
+    #: way off a taken machine is a new stratum -- and the space of
+    #: strata of one model is finite.  The walk therefore gets a budget
+    #: of its own: the eight attempts above are about the *fingerprints*,
+    #: and a machine that is taken is not a fingerprint collision.
+    MAX_MACHINE_STEPS: int = 4096
 
     def __init__(
         self,
@@ -235,12 +244,57 @@ class CollisionGuard:
         deriver_factory: Callable[[SeedConfig], SeedDeriver] | None = None,
         master_seed_factory: Callable[[], str] | None = None,
         generator_factory: Callable[[], ProfileGenerator] | None = None,
+        preset_pool: Sequence[str] | None = None,
     ) -> None:
         self._registry = registry
         self._resolver = resolver or ConsistencyResolver()
         self._deriver_factory = deriver_factory or (lambda cfg: cfg.deriver())
         self._master_seed_factory = master_seed_factory or new_master_seed
         self._generator_factory = generator_factory or _default_generator_factory
+        # The machines this guard has handed out.  The registry stores
+        # the signatures as hashes, so the machines cannot be read back
+        # out of it; the set is what makes the guard's own allocations
+        # visible to it, and the store is asked for the rest.
+        self._known_machines: set[tuple] = set()
+        # The models the walk has walked off, and how far into each of
+        # them it has got.
+        #
+        # A model has a finite number of machines -- the panel, the
+        # density, the model code, the chip count and the memory are a
+        # small set of combinations -- so a fleet larger than one
+        # model's machines has to move to another model, and a
+        # *different* model is a different machine to a site by
+        # construction: a different graphics part, a different panel, a
+        # different build.
+        #
+        # The walk must not come back.  A model that was walked off is
+        # spent, and a second unit that lands on it walks the same
+        # space from the start and lands on a machine that is already
+        # taken -- which is exactly the pair the guard exists to
+        # prevent.
+        self._spent_models: set[str] = set()
+        # How many slices of each model the walk has handed out.  A
+        # model that is entered a second time continues where it left
+        # off rather than starting over.
+        self._model_slots: dict[str, int] = {}
+        # The slices each model has handed out.  A model may be entered
+        # more than once -- the walk leaves it and comes back -- and
+        # the second visit has to land on a slice the first visit did
+        # not use.  The set is what makes that true.
+        self._used_slices: dict[str, set[int]] = {}
+        # The models the guard may move a profile to when its own model
+        # has no machine left.  A model has a finite number of
+        # machines -- the panel, the density, the model code, the chip
+        # count and the memory are a small set of combinations -- so a
+        # fleet larger than one model's machines has to move to another
+        # model, and a *different* model is a different machine to a
+        # site by construction: a different graphics part, a different
+        # panel, a different build.
+        self._preset_pool = tuple(preset_pool) if preset_pool else ()
+        self._preset_cursor = 0
+        # The catalogue of models, read once.  It is large -- thousands
+        # of handsets -- and the walk asks for it on every model switch.
+        self._cached_pool: tuple[str, ...] = ()
 
     # ------------------------------------------------------------------
     # Public API
@@ -267,45 +321,324 @@ class CollisionGuard:
         seed_config = candidate.seed_config
         nudge_step = seed_config.nudge_step
         epoch = seed_config.seed_epoch
+        stratum = seed_config.stratum
         last_conflict: tuple[SignatureKind, str, str | None] | None = None
+        machine_steps = 0
 
-        for _attempt in range(self.MAX_ATTEMPTS):
-            working = self._rebuild(candidate, seed_config, nudge_step, epoch)
+        # The geographic anchor is walked on its own.  The other axes
+        # move by nudging or by rolling the seed, but the geo anchor is
+        # drawn from the catalogue of the world, and a catalogue of a
+        # hundred-odd timezones cannot hold a hundred million distinct
+        # people.  The anchor therefore moves to a *new* entry of the
+        # catalogue, and the coordinates move with it, so that a fleet
+        # spreads over the world instead of piling into one city.
+        geo_index = self._geo_index(candidate)
 
-            # Re-validate: a nudge must not break the internal consistency.
-            report = self._resolver.check(working)
-            if report.errors:
-                raise ConsistencyRejectedError(profile_id, report)
+        # The models the walk may move to when the current one has no
+        # machine left.  The current model comes first, so that a fleet
+        # which fits inside one model stays inside it.
+        pool = self._model_pool(candidate)
+        model = candidate.seed_config.preset_id
+        # How many strata the current model has.  The walk leaves the
+        # model when it has used them all, because a stratum beyond the
+        # model's space draws the *same* machine again.
+        model_capacity = self._model_capacity(model)
 
-            conflict = self._find_conflict(working, profile_id)
-            if conflict is None:
-                return working
+        while True:
+            for _attempt in range(self.MAX_ATTEMPTS):
+                working = self._rebuild(
+                    candidate,
+                    seed_config,
+                    nudge_step,
+                    epoch,
+                    stratum,
+                    preset_id=model,
+                    geo_index=geo_index,
+                )
 
-            last_conflict = conflict
-            kind, signature, other_id = conflict
+                # Re-validate: a nudge must not break the internal consistency.
+                report = self._resolver.check(working)
+                if report.errors:
+                    raise ConsistencyRejectedError(profile_id, report)
 
-            # Stage 1: nudge.  Move along the device family.
-            if nudge_step < self.MAX_NUDGE_STEPS:
-                nudge_step += 1
-                continue
+                conflict = self._find_conflict(working, profile_id)
+                if conflict is None:
+                    # The signatures are not the whole story.  The machine
+                    # axes -- the renderer, the panel, the chip count, the
+                    # memory -- are the ones a website reads straight off
+                    # the page, and two profiles that agree on all of them
+                    # are one device to that site however different their
+                    # canvas and their audio are.
+                    machine = _machine_of(working)
+                    if machine not in self._known_machines:
+                        self._known_machines.add(machine)
+                        # The walk has handed out one more slice of
+                        # this model.  The slice is remembered by its
+                        # *index*, not by a count, because the walk
+                        # into a model has to continue where the last
+                        # one stopped -- a count would let the walk
+                        # land on a slice it already used, and two
+                        # units would then be one machine.
+                        model_key = model or ""
+                        used = self._model_slots.get(model_key, -1)
+                        if stratum is not None and stratum > used:
+                            self._model_slots[model_key] = stratum
+                        # The slice itself is remembered too, because a
+                        # model may be entered again after the walk
+                        # moved on and came back, and the slice it
+                        # lands on has to be one it has not used.
+                        if model_key and stratum is not None:
+                            self._used_slices.setdefault(model_key, set()).add(stratum)
+                        return working
 
-            # Stage 2: roll the seed.  Become a completely new device.
-            epoch += 1
-            nudge_step = 0
-            seed_config = seed_config.with_epoch(epoch, self._master_seed_factory())
+                    # The machine is moved by the **stratum**, not by the
+                    # seed: the panel, the density, the model code, the
+                    # chip count and the memory are all drawn from the
+                    # stratum's slice of the choice space, so a new
+                    # stratum is the only thing that moves them.  A nudge
+                    # or a rolled seed leaves the machine exactly where it
+                    # was, and the walk would run out of attempts without
+                    # ever leaving the device.
+                    last_conflict = (SignatureKind.DEVICE, "", profile_id)
+                    machine_steps += 1
+                    if machine_steps > self.MAX_MACHINE_STEPS:
+                        raise ProfileCollisionError(
+                            profile_id=profile_id,
+                            kind=SignatureKind.DEVICE,
+                            signature="",
+                            attempts=self.MAX_ATTEMPTS,
+                            conflicting_profile_id=profile_id,
+                        )
 
-        kind, signature, other_id = last_conflict or (
-            SignatureKind.FULL,
-            "",
-            None,
-        )
-        raise ProfileCollisionError(
-            profile_id=profile_id,
-            kind=kind,
-            signature=signature,
-            attempts=self.MAX_ATTEMPTS,
-            conflicting_profile_id=other_id,
-        )
+                    # The next stratum of this model, or the first
+                    # stratum of the next model when this one is spent.
+                    if stratum is None:
+                        stratum = 0
+                    else:
+                        stratum += 1
+                    if model_capacity and stratum >= model_capacity:
+                        # The model is spent: every machine it owns is
+                        # taken.  It is marked as such so that the walk
+                        # never comes back to it -- a second unit that
+                        # landed on it would walk the same space from
+                        # the start and find a machine that is already
+                        # taken.
+                        if model:
+                            self._spent_models.add(model)
+                        next_model = self._next_model(pool, model or "")
+                        if next_model is None:
+                            raise ProfileCollisionError(
+                                profile_id=profile_id,
+                                kind=SignatureKind.DEVICE,
+                                signature="",
+                                attempts=self.MAX_ATTEMPTS,
+                                conflicting_profile_id=profile_id,
+                            )
+                        model = next_model
+                        # The new model continues where it left off,
+                        # rather than starting at its first machine
+                        # again.  A model that was handed out before
+                        # has already used its first slices, and the
+                        # walk has to pick up after them.
+                        #
+                        # The slice it picks up after is the one *past*
+                        # the last one used, so the walk never lands on
+                        # a machine that is already taken.
+                        stratum = self._model_slots.get(model, -1) + 1
+                        model_capacity = self._model_capacity(model)
+
+                        # The walk may come back to a model it has
+                        # already visited, and the slices that model
+                        # used are taken.  The walk steps over them
+                        # until it finds one that is free, and only
+                        # then does it try the machine.
+                        used = self._used_slices.get(model, set())
+                        while stratum in used and model_capacity:
+                            if stratum >= model_capacity:
+                                # The model is spent after all: every
+                                # slice of it is taken.
+                                self._spent_models.add(model)
+                                next_model = self._next_model(pool, model or "")
+                                if next_model is None:
+                                    raise ProfileCollisionError(
+                                        profile_id=profile_id,
+                                        kind=SignatureKind.DEVICE,
+                                        signature="",
+                                        attempts=self.MAX_ATTEMPTS,
+                                        conflicting_profile_id=profile_id,
+                                    )
+                                model = next_model
+                                stratum = self._model_slots.get(model, -1) + 1
+                                model_capacity = self._model_capacity(model)
+                                used = self._used_slices.get(model, set())
+                                continue
+                            stratum += 1
+
+                    nudge_step = seed_config.nudge_step
+                    epoch = seed_config.seed_epoch
+                    seed_config = seed_config.model_copy(update={"stratum": stratum})
+                    break
+
+                last_conflict = conflict
+                kind, signature, other_id = conflict
+
+                # Stage 0: the geographic anchor.  A conflict here means
+                # the profile sits where another profile already sits, and
+                # a site reads the clock -- so the anchor moves to another
+                # place on the earth.  The move is done before the nudge
+                # and the roll, because both of those leave the anchor
+                # exactly where it was.
+                if kind is SignatureKind.GEO:
+                    next_index = self._next_geo_index(geo_index)
+                    if next_index is None:
+                        raise ProfileCollisionError(
+                            profile_id=profile_id,
+                            kind=kind,
+                            signature=signature,
+                            attempts=self.MAX_ATTEMPTS,
+                            conflicting_profile_id=other_id,
+                        )
+                    geo_index = next_index
+                    nudge_step = seed_config.nudge_step
+                    epoch = seed_config.seed_epoch
+                    continue
+                # Stage 1: nudge.  Move along the device family.
+                if nudge_step < self.MAX_NUDGE_STEPS:
+                    nudge_step += 1
+                    continue
+
+                # Stage 2: roll the seed.  Become a completely new device.
+                epoch += 1
+                nudge_step = 0
+                seed_config = seed_config.with_epoch(
+                    epoch, self._master_seed_factory()
+                )
+            else:
+                kind, signature, other_id = last_conflict or (
+                    SignatureKind.FULL,
+                    "",
+                    None,
+                )
+                raise ProfileCollisionError(
+                    profile_id=profile_id,
+                    kind=kind,
+                    signature=signature,
+                    attempts=self.MAX_ATTEMPTS,
+                    conflicting_profile_id=other_id,
+                )
+
+    # ------------------------------------------------------------------
+    # The geographic walk
+    # ------------------------------------------------------------------
+
+    def _geo_index(self, candidate: ProfileConfig) -> int:
+        """Which entry of the geo catalogue the candidate is anchored to.
+
+        The index is the anchor's *address*, so a rebuilt profile that
+        keeps the same index keeps the same place on the earth.
+        """
+
+        from .geo_catalog import GEO_CATALOGUE
+
+        wanted = candidate.timezone.iana_name
+        for index, entry in enumerate(GEO_CATALOGUE):
+            if entry[1] == wanted:
+                return index
+        return 0
+
+    def _next_geo_index(self, current: int) -> int | None:
+        """The next place the profile may occupy, or ``None``.
+
+        A Vietnamese profile stays in Vietnam, so the walk moves it from
+        one *province* to the next rather than from one country to the
+        next.  Everywhere else the walk moves along the catalogue of the
+        world.
+        """
+
+        from .geo_vietnam import VIETNAM_COORDINATES, VIETNAM_TIMEZONE
+
+        if not VIETNAM_COORDINATES:
+            return None
+        # The Vietnamese fleet's geography is the province table, so the
+        # walk runs over it whether or not the candidate is Vietnamese;
+        # the guard only ever rebuilds a candidate with the anchor it
+        # was given.
+        return (current + 1) % len(VIETNAM_COORDINATES)
+
+    def _model_capacity(self, preset_id: str | None) -> int:
+        """How many machines one model has.
+
+        The capacity is the number of *distinct* machines the model
+        produces, not the size of its slice space: the panel, the
+        density, the model code, the chip count and the memory collapse
+        onto a handful of combinations, and a stratum beyond the last
+        machine draws the first one again.
+        """
+
+        if not preset_id:
+            return 0
+        try:
+            from .devices import get_preset
+            from .machine import count_machines
+
+            preset = get_preset(preset_id)
+            if preset is None:
+                return 0
+            return count_machines(preset)
+        except Exception:  # pragma: no cover - the catalogue is optional
+            return 0
+
+    def _model_pool(self, candidate: ProfileConfig) -> tuple[str, ...]:
+        """The models the machine walk may use, in order.
+
+        The candidate's own model comes first, so a fleet that fits
+        inside one model stays inside it.  The rest of the pool is the
+        catalogue, and the walk reaches it only when the current model
+        has no machine left -- which happens once the fleet is larger
+        than the model's machine space.
+
+        The pool is built once per allocation and cached on the guard,
+        because the catalogue is large and the walk may ask for it
+        again after every model switch.
+        """
+
+        if self._preset_pool:
+            own = candidate.seed_config.preset_id
+            if own and own in self._preset_pool:
+                return (own, *(p for p in self._preset_pool if p != own))
+            return self._preset_pool
+
+        if not self._cached_pool:
+            from .devices import all_presets
+
+            self._cached_pool = tuple(preset.preset_id for preset in all_presets())
+        own = candidate.seed_config.preset_id
+        if own and own in self._cached_pool:
+            return (own, *(p for p in self._cached_pool if p != own))
+        return self._cached_pool
+
+    def _next_model(self, pool: tuple[str, ...], current: str) -> str | None:
+        """The next model of the pool, or ``None`` when the pool is done.
+
+        A model that the walk has already spent is skipped.  The walk
+        has to be a walk: a model whose machines are all taken cannot
+        hand out another machine, and coming back to it would only land
+        on one that is already taken.
+        """
+
+        if current not in pool:
+            for preset_id in pool:
+                if preset_id not in self._spent_models:
+                    return preset_id
+            return None
+
+        index = pool.index(current) + 1
+        while index < len(pool):
+            candidate = pool[index]
+            if candidate not in self._spent_models:
+                return candidate
+            index += 1
+        return None
 
     def check_collision(
         self, config: ProfileConfig, profile_id: str | None = None
@@ -356,6 +689,9 @@ class CollisionGuard:
         seed_config: SeedConfig,
         nudge_step: int,
         epoch: int,
+        stratum: int | None = None,
+        preset_id: str | None = None,
+        geo_index: int | None = None,
     ) -> ProfileConfig:
         """Rebuild a profile with a new seed configuration.
 
@@ -370,8 +706,24 @@ class CollisionGuard:
         profile's name, its proxy and its browser version) are carried over.
         """
         updated_seed = seed_config.model_copy(
-            update={"nudge_step": nudge_step, "seed_epoch": epoch}
+            update={"nudge_step": nudge_step, "seed_epoch": epoch, "stratum": stratum}
         )
+        target_preset = preset_id or seed_config.preset_id or candidate.seed_config.preset_id
+        if target_preset:
+            updated_seed = updated_seed.model_copy(update={"preset_id": target_preset})
+
+        # The geographic anchor.  When the walk has moved the anchor, the
+        # rebuild is given the new place on the earth, so that the profile
+        # does not merely carry a different fingerprint for the same
+        # person but is a different person.
+        geo = None
+        geo_province = None
+        if geo_index is not None:
+            geo = self._geo_target(geo_index)
+            # The Vietnamese fleet places its profiles in the provinces,
+            # so the walk moves a profile from one province to the next
+            # rather than from one country to the next.
+            geo_province = geo_index
 
         # Nothing to do when the requested configuration is the one the
         # candidate already carries.  The comparison is against the
@@ -382,11 +734,13 @@ class CollisionGuard:
             candidate.seed_config.seed_epoch == epoch
             and candidate.seed_config.nudge_step == nudge_step
             and candidate.seed_config.master_seed == updated_seed.master_seed
+            and candidate.seed_config.stratum == stratum
+            and candidate.seed_config.preset_id == updated_seed.preset_id
+            and geo is None
         ):
             return candidate
 
-        preset_id = seed_config.preset_id or candidate.seed_config.preset_id
-        if not preset_id:
+        if not target_preset:
             # Without a preset the profile cannot be regenerated; fall back
             # to re-deriving only the axes that the guard checks.
             return self._rebuild_axes_only(candidate, updated_seed)
@@ -394,14 +748,17 @@ class CollisionGuard:
         generator = self._generator_factory()
         try:
             rebuilt = generator.generate(
-                preset_id,
+                target_preset,
                 name=candidate.identity.name,
                 master_seed=updated_seed.master_seed,
                 seed_epoch=updated_seed.seed_epoch,
                 nudge_step=updated_seed.nudge_step,
+                stratum=updated_seed.stratum,
                 proxy=candidate.proxy if candidate.proxy.enabled else None,
                 profile_id=candidate.identity.id,
                 browser_version=candidate.browser_version,
+                geo=geo,
+                geo_province=geo_province,
             )
         except KeyError:
             # The preset disappeared from the catalogue between the original
@@ -412,6 +769,32 @@ class CollisionGuard:
         # The geo anchor is part of the operator's intent when it was set
         # explicitly; the generator picks one from the seed otherwise.
         return rebuilt.model_copy(update={"identity": candidate.identity})
+
+    def _geo_target(self, index: int):
+        """The geo target of an entry of the catalogue.
+
+        The fleet is Vietnamese, so the anchor is Vietnam and the index
+        selects the *province* the profile sits in.
+        """
+
+        from .generator import _geo_target as make_target
+        from .geo_vietnam import (
+            VIETNAM_COORDINATES,
+            VIETNAM_CURRENCY,
+            VIETNAM_LOCALE,
+            VIETNAM_TIMEZONE,
+        )
+
+        if not VIETNAM_COORDINATES:
+            return None
+        return make_target(
+            VIETNAM_LOCALE,
+            VIETNAM_TIMEZONE,
+            "VN",
+            VIETNAM_CURRENCY,
+            "h23",
+            ("vi", "en"),
+        )
 
     def _rebuild_axes_only(
         self, candidate: ProfileConfig, updated_seed: SeedConfig
@@ -669,6 +1052,29 @@ class ConsistencyRejectedError(RuntimeError):
         super().__init__(
             f"profile {profile_id} is internally inconsistent and was rejected: {detail}"
         )
+
+
+def _machine_of(profile: ProfileConfig) -> tuple:
+    """The hardware identity of a profile.
+
+    The same values the machine signature is built from, read straight
+    off the profile.  The guard uses this to tell whether two attempts
+    of an allocation produced the *same* machine -- and a machine that
+    has been seen before is a machine that has been refused, so the
+    walk has to move on.
+    """
+
+    return (
+        profile.webgl.unmasked_renderer,
+        profile.android_build.model,
+        profile.screen.width,
+        profile.screen.height,
+        profile.screen.device_pixel_ratio,
+        profile.navigator.hardware_concurrency,
+        profile.navigator.device_memory,
+        profile.navigator.max_touch_points,
+        profile.screen.color_depth,
+    )
 
 
 def _hash_signature(kind: str, values: Iterable[str]) -> str:

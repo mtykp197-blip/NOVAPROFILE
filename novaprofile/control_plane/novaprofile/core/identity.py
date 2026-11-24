@@ -95,8 +95,10 @@ from .devices import (
     GpuProfile,
     _generated_gpu_profiles,
     _generated_gpu_variants,
+    inferred_touch_points,
 )
 from .gpu_params import build_tier_table
+from .hardware_approximation import approximate_device_memory
 from .seed import Axis, SeedDeriver
 
 #: Security patch dates are ``YYYY-MM-DD``; the range below covers the
@@ -491,6 +493,61 @@ def panel_space(preset: DevicePreset) -> tuple[tuple[tuple[int, int], ...], tupl
         buckets = tuple(preset.density_options)
 
     return candidates, buckets
+
+
+def machine_space_size(preset: DevicePreset) -> int:
+    """How many distinct machines a model can produce.
+
+    The fleet walks the space of a model in slices, and the number of
+    slices is the size of the space: the product of the dimensions the
+    walk moves over.
+
+    The dimensions are the ones the generator draws in one mixed radix,
+    and the order matters here as much as it does there.  The radix
+    reaches its last dimension only after the space in front of it is
+    exhausted, so the dimensions with the most values have to come
+    first or the combination repeats long before the space is.
+
+    The dimensions, in the order the generator walks them:
+
+    * the Android releases the model is found running,
+    * the panels it is offered,
+    * the density buckets it is offered,
+    * the core counts its chipsets report,
+    * the memory the platform reports,
+    * the touch-point counts its digitiser reports,
+    * the model codes it is sold under.
+
+    The count is an *upper* bound.  The memory collapses -- several
+    physical sizes report the same number -- and several of the model
+    codes of a family resolve to the same code in the field, so a model
+    with a hundred and eight slices may produce thirty-six different
+    machines.  The caller walks the space and counts the real ones.
+    """
+
+    release_count = len(
+        preset.release_variants or ((preset.release, preset.sdk_int),)
+    )
+    model_count = len(preset.model_variants or (preset.model,))
+    panel_options, density_options = panel_space(preset)
+    core_count = len(tuple(preset.cpu_options) or (8,))
+    memory_count = len(
+        {
+            approximate_device_memory(int(value))
+            for value in (preset.ram_options or (8,))
+        }
+    )
+    touch_count = len(inferred_touch_points(preset))
+
+    return (
+        release_count
+        * len(panel_options)
+        * len(density_options)
+        * core_count
+        * max(memory_count, 1)
+        * max(touch_count, 1)
+        * model_count
+    )
 
 
 class DeviceIdentityFactory:

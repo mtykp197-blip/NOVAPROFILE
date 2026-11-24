@@ -666,6 +666,38 @@ _CHROMIUM_ANDROID_EXTENSIONS: tuple[str, ...] = (
 )
 
 
+#: The fallback used when a model is not in the catalogue at all.
+#:
+#: A handset of an unknown model reports five touch points, which is what
+#: the overwhelming majority of the handsets in the field report.
+_TOUCH_FALLBACK = None
+
+
+def _memory_report_options(preset: Any) -> tuple[int, ...]:
+    """The memory readings the hardware of ``preset`` is able to report.
+
+    ``navigator.deviceMemory`` is not the physical memory: Chromium
+    rounds it to the nearest power of two and clamps it to the platform
+    range, which on Android is one through eight gigabytes.  A handset
+    with six gigabytes reports four, and one with twelve reports eight.
+
+    The range is therefore the set of the *rounded* values, so that the
+    core draws a value the hardware could actually have reported -- and
+    so that a site cannot catch the fleet reporting a memory size no
+    handset of that model ever had.
+    """
+
+    raw = tuple(getattr(preset, "ram_options", ()) or ())
+    if not raw:
+        return (8,)
+    rounded: list[int] = []
+    for value in raw:
+        reported = approximate_device_memory(int(value))
+        if reported not in rounded:
+            rounded.append(reported)
+    return tuple(sorted(rounded))
+
+
 @dataclass(frozen=True)
 class GeoTarget:
     """The geographic anchor of a profile."""
@@ -903,10 +935,24 @@ def _voice_display_name(locale: str) -> str:
 class ProfileGenerator:
     """Builds complete profiles from a preset and a seed."""
 
-    def __init__(self, resolver=None) -> None:
+    def __init__(self, resolver=None, *, precise_geolocation: bool = True) -> None:
         from .consistency import ConsistencyResolver
 
         self._resolver = resolver or ConsistencyResolver()
+
+        # Whether every profile carries a real coordinate.
+        #
+        # A geolocation fix is only a *permission* on a real handset --
+        # the user has to grant it, and most do not -- so a draw that
+        # leaves it out half the time is the honest one.  It is also the
+        # one that breaks the fleet: the geographic anchor is what tells a
+        # site that two profiles are one person, and a profile without a
+        # coordinate only carries a timezone, so at a hundred million
+        # profiles every profile of one timezone is one person to the
+        # site.  The coordinate is drawn from the seed and is stable for
+        # the lifetime of the profile, so it separates a hundred million
+        # people who all live in the same city.
+        self._precise_geolocation = precise_geolocation
 
         # The physical unit the profile is being built for.  These are set
         # at the start of :meth:`generate` and read by the builders that
@@ -916,6 +962,7 @@ class ProfileGenerator:
         self._device_release = "14"
         self._device_locale_primary = ""
         self._stratum: int | None = None
+        self._geo_province: int | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -934,6 +981,7 @@ class ProfileGenerator:
         profile_id: str | None = None,
         browser_version: BrowserVersion | None = None,
         stratum: int | None = None,
+        geo_province: int | None = None,
     ) -> ProfileConfig:
         """Generate a complete profile.
 
@@ -974,6 +1022,11 @@ class ProfileGenerator:
         # drawing parameter, so it is folded into the generator's
         # state before anything is derived from it.
         self._stratum = seed_config.stratum
+
+        # The province the profile is placed in, when the caller pins
+        # one.  It is the collision guard's way of moving a profile off
+        # a province that another profile already occupies.
+        self._geo_province = geo_province
 
         geo_target = geo or self._pick_geo(deriver)
 
@@ -1020,6 +1073,42 @@ class ProfileGenerator:
         )
         model_options = tuple(preset.model_variants or (preset.model,))
         panel_options, density_options = panel_space(preset)
+
+        # The three narrow readings, and the spaces they are drawn from.
+        #
+        # The core count is a property of the chipset rather than of the
+        # handset, and a handset is sold with more than one chipset, so
+        # the catalogue carries the counts of the chipsets the model
+        # shipped with.
+        core_options = tuple(preset.cpu_options) or (8,)
+        # The memory the *platform* reports is the dimension, not the
+        # physical memory: the platform rounds it to a power of two and
+        # clamps it at eight, so a line whose physical memory is eight,
+        # twelve or sixteen reports eight for all of them.  Drawing the
+        # physical memory would make the dimension look wide while every
+        # unit of it reported the same number -- the platform's answer
+        # is what a site reads.
+        memory_report_options = _memory_report_options(preset)
+        # The physical memory that goes with each reported value.  The
+        # tier of the optional fonts follows the physical memory, so
+        # the two have to be kept together.
+        #
+        # The *smallest* physical memory of each reported value is the
+        # one kept: a line sold with three gigabytes reports two, and
+        # the three is the smallest part that reports two.  The larger
+        # parts report the same number, and the tier of the fonts
+        # follows the part that was soldered on, so the smallest one is
+        # the safe answer.
+        physical_by_report: dict[int, int] = {}
+        for value in preset.ram_options or (8,):
+            reported = approximate_device_memory(int(value))
+            physical = int(value)
+            if reported not in physical_by_report or physical < physical_by_report[reported]:
+                physical_by_report[reported] = physical
+        touch_options = inferred_touch_points(
+            get_preset_by_model(preset.model) or _TOUCH_FALLBACK
+        )
+
         if self._stratum is not None:
             # The order of the dimensions decides how fast each one
             # changes.  The mixed radix folds the index through the
@@ -1049,48 +1138,62 @@ class ProfileGenerator:
             # code for a long time.  What has to differ between two
             # units is the *combination* -- and the combination is kept
             # apart by the release, the panel and the density.
-            # The memory is drawn on its own, outside the radix.
             #
-            # ``navigator.deviceMemory`` is one of the cheapest things
-            # for a script to compare between two visits, and it has
-            # only a handful of possible values -- so a family that
-            # reports one memory for every unit hands a site a
-            # grouping key over the whole fleet.  It cannot be a
-            # dimension of the radix: the radix reaches its last
-            # dimension only after the space in front of it is
-            # exhausted, and the memory would sit behind the release,
-            # the panel and the density.
+            # The three narrow readings -- the core count, the physical
+            # memory and the number of touch points -- are dimensions of
+            # the *same* radix.  They used to be drawn outside it, on
+            # their own slices, and that was the hole in the fleet: two
+            # units could each land inside their own slice and still
+            # land on the same combination, and a site reads the
+            # combination rather than the slices.
             #
-            # It is drawn by the stratified draw instead, which gives
-            # each unit its own slice of the memory space.
-            physical_ram_gb = int(
-                deriver.derive_stratified(
-                    Axis.NAVIGATOR,
-                    preset.ram_options,
-                    "ram",
-                    self._stratum,
-                )
-            )
+            # The order of the dimensions is not a matter of taste.  The
+            # mixed radix reaches its last dimension only after the
+            # space in front of it is exhausted, so the dimensions with
+            # the most values have to come first or the combination
+            # repeats long before the space is.
             (
-                release_name,
-                chosen_panel,
-                chosen_density,
-                model_code,
-            ) = deriver.derive_mixed_radix(
+                release_index,
+                panel_index,
+                density_index,
+                core_index,
+                ram_index,
+                touch_index,
+                model_index,
+            ) = deriver.derive_mixed_radix_indices(
                 Axis.NAVIGATOR,
                 (
-                    release_options,
-                    panel_options,
-                    density_options,
-                    model_options,
+                    len(release_options),
+                    len(panel_options),
+                    len(density_options),
+                    len(core_options),
+                    len(memory_report_options),
+                    len(touch_options),
+                    len(model_options),
                 ),
                 "device",
                 self._stratum,
             )
+            release_name = release_options[release_index]
+            chosen_panel = panel_options[panel_index]
+            chosen_density = density_options[density_index]
+            model_code = model_options[model_index]
+            reported_ram_gb = int(memory_report_options[ram_index])
+            physical_ram_gb = physical_by_report.get(reported_ram_gb, reported_ram_gb)
+            unit_cores = int(core_options[core_index])
+            unit_touch = int(touch_options[touch_index])
         else:
-            physical_ram_gb = int(
-                deriver.derive_choice(Axis.NAVIGATOR, preset.ram_options, context="ram")
+            # The memory is drawn from the space the *platform* reports,
+            # for the same reason it is a dimension of the radix above:
+            # the platform's answer is what a site reads.  The physical
+            # memory that goes with it is then looked up, because the
+            # tier of the optional fonts follows the physical memory.
+            reported_ram_gb = int(
+                deriver.derive_choice(
+                    Axis.NAVIGATOR, memory_report_options, context="memory"
+                )
             )
+            physical_ram_gb = physical_by_report.get(reported_ram_gb, reported_ram_gb)
             release_name = release_options[
                 deriver.derive_int(
                     Axis.CLIENT_HINTS, 0, len(release_options) - 1, context="android-release"
@@ -1114,6 +1217,12 @@ class ProfileGenerator:
                     context="panel_density",
                 )
             ]
+            unit_cores = int(
+                deriver.derive_choice(Axis.NAVIGATOR, core_options, context="cores")
+            )
+            unit_touch = int(
+                deriver.derive_choice(Axis.NAVIGATOR, touch_options, context="touch")
+            )
         ram_gb = approximate_device_memory(physical_ram_gb)
         device = DeviceIdentityFactory(
             deriver,
@@ -1189,7 +1298,26 @@ class ProfileGenerator:
             version = browser_version
 
         navigator = self._build_navigator(
-            deriver, build, geo_target, caps, preset.cpu_options, ram_gb
+            deriver,
+            build,
+            geo_target,
+            caps,
+            preset.cpu_options,
+            ram_gb,
+            # The memory the *platform* reports is the physical memory
+            # rounded to a power of two and clamped to eight, so the
+            # range the model can report is the set of those rounded
+            # values.  A model with twelve gigabytes therefore reports
+            # eight, and the range says eight.
+            _memory_report_options(preset),
+            inferred_touch_points(get_preset_by_model(build.model) or _TOUCH_FALLBACK),
+            # The three narrow readings were drawn *above*, inside the
+            # one radix that walks the whole space of the device.  They
+            # are handed down rather than drawn again, because a second
+            # draw would land on a different value than the radix did
+            # and the combination would fall apart.
+            chosen_cores=unit_cores,
+            chosen_touch=unit_touch,
         )
         uad = self._build_user_agent_data(deriver, build, caps, version.full_version, abi)
 
@@ -1283,6 +1411,10 @@ class ProfileGenerator:
         caps: VersionCapabilities,
         preset_cpu_options: tuple[int, ...] = (4, 6, 8, 12),
         device_memory_gb: int = 8,
+        memory_options: tuple[int, ...] = (2, 4, 8),
+        touch_options: tuple[int, ...] = (5,),
+        chosen_cores: int | None = None,
+        chosen_touch: int | None = None,
     ) -> Navigator:
         model = build.model
         # The UA is built from the capability entry: from Chromium 110 on the
@@ -1297,20 +1429,52 @@ class ProfileGenerator:
             f"AppleWebKit/537.36 (KHTML, like Gecko) "
             f"Chrome/{caps.major}.0.0.0 Mobile Safari/537.36"
         )
-        # The core count is stratified for the same reason the memory
-        # is: Chromium can only report a handful of values, and two
-        # handsets of the same model that report the same one are
-        # grouped by a script that reads two numbers.
-        if self._stratum is not None:
-            cores = int(
-                deriver.derive_stratified(
-                    Axis.NAVIGATOR, preset_cpu_options, "cores", self._stratum
-                )
-            )
+        # The three narrow readings are drawn *together*, as one
+        # combination, and not one after the other.
+        #
+        # Drawn one after the other, each on its own, two units can each
+        # land inside their own slice and still land on the same
+        # *combination* -- and a site reads the combination.  It reads
+        # the physical resolution, the density, the system version, the
+        # core count, the memory and the model out of one telemetry
+        # record, and two profiles that agree on all of them are one
+        # device to that site, whatever their canvas and their seed
+        # say.
+        #
+        # The mixed radix is the way to walk the space of the
+        # combinations without repeating one.  The index is the
+        # stratum, folded through the dimensions the way a number is
+        # folded through its digits: dividing by the size of the
+        # previous dimension folds the combinations onto each other, and
+        # giving every dimension its own step misses the combinations
+        # where two steps happen to agree.
+        #
+        # The stratum is the unit's place in the *fleet*, not in the
+        # preset.  The place in the preset would repeat across the
+        # catalogue -- the first unit of one model and the first unit of
+        # another would both be stratum zero and would walk the same
+        # first combination of their own dimensions, and their models
+        # are the same model in the eyes of a site that only reads the
+        # combination.
+        # The values were drawn by the caller, inside the one radix that
+        # walks the whole space of the device.  They are taken as they
+        # are rather than drawn again: a second draw would land on a
+        # different value than the radix did -- the draw counter is
+        # part of the derivation, so the second call would answer
+        # differently -- and the combination would fall apart.
+        if chosen_cores is not None:
+            cores = int(chosen_cores)
         else:
             cores = int(
                 deriver.derive_choice(Axis.NAVIGATOR, preset_cpu_options, context="cores")
             )
+        if chosen_touch is not None:
+            touch_points = int(chosen_touch)
+        else:
+            touch_points = int(
+                deriver.derive_choice(Axis.NAVIGATOR, touch_options, context="touch")
+            )
+        memory_gb = int(device_memory_gb)
 
         return Navigator(
             user_agent=ua,
@@ -1331,21 +1495,25 @@ class ProfileGenerator:
             # the value Chromium would have produced on the same
             # hardware, and the native core hands it to the page
             # unchanged.
-            device_memory=device_memory_gb,  # type: ignore[arg-type]
+            device_memory=memory_gb,  # type: ignore[arg-type]
             # The touch-point count follows the digitiser of the
             # handset, not a coin flip: it is the number the platform
             # would answer through JNI on that physical unit.  A fleet
             # that mixed five and ten across otherwise identical
             # handsets would hand the site a free grouping key.
-            max_touch_points=int(
-                deriver.derive_choice(
-                    Axis.NAVIGATOR,
-                    inferred_touch_points(
-                        get_preset_by_model(build.model) or _TOUCH_FALLBACK
-                    ),
-                    context="touch",
-                )
-            ),  # type: ignore[arg-type]
+            max_touch_points=touch_points,  # type: ignore[arg-type]
+            # The range the model could report.  The core draws the
+            # reported value out of these lists, out of the profile's
+            # own seed, so that two units of the same model differ from
+            # one another without either of them reporting something
+            # the hardware could not.
+            #
+            # The value above is one of the list's own members, so the
+            # control plane and the browser agree about what the family
+            # is able to report.
+            hardware_concurrency_options=[int(value) for value in preset_cpu_options],
+            device_memory_options=[int(value) for value in memory_options],
+            max_touch_points_options=[int(value) for value in touch_options],
             language=geo.locale,
             languages=list(geo.languages),
             cookie_enabled=True,
@@ -1440,6 +1608,21 @@ class ProfileGenerator:
         # have.
         model = build.model if caps.has_client_hint("Sec-CH-UA-Model") else ""
 
+        # The full version of the browser, as the high-entropy hint
+        # ``uaFullVersion`` carries it.
+        #
+        # The hint arrived in major 101, two years before the full
+        # version *list* did, and the two are separate: a core that
+        # answers ``uaFullVersion`` does not necessarily send the
+        # ``Sec-CH-UA-Full-Version-List`` header.  The rule is the same
+        # as for the other high-entropy hints -- before the major that
+        # has it, the core reports nothing, and a profile that carries
+        # one anyway is claiming a capability the running core does not
+        # have.
+        ua_full_version = (
+            browser_full if caps.has_feature("ua_data_full_version") else ""
+        )
+
         return UserAgentData(
             brands=brands,
             full_version_list=full_version_list,
@@ -1450,6 +1633,7 @@ class ProfileGenerator:
             bitness=bitness,
             model=model,
             wow64=False,
+            ua_full_version=ua_full_version,
         )
 
     def _build_plugins(self) -> PluginsMime:
@@ -1665,7 +1849,9 @@ class ProfileGenerator:
         )
 
     def _build_geolocation(self, deriver: SeedDeriver, geo: GeoTarget) -> Geolocation:
-        if not deriver.derive_bool(Axis.GEO_TIMEZONE, 0.45, context="geo.enabled"):
+        if not self._precise_geolocation and not deriver.derive_bool(
+            Axis.GEO_TIMEZONE, 0.45, context="geo.enabled"
+        ):
             return Geolocation(mode="prompt")
 
         # The coordinate belongs to the place the time zone names.
@@ -1682,11 +1868,47 @@ class ProfileGenerator:
         # and the accuracy radius has to cover the jitter, or the two
         # contradict each other.
         from .geo_coordinates import coordinates_for
+        from .geo_vietnam import (
+            VIETNAM_COORDINATES,
+            VIETNAM_LOCALE,
+            VIETNAM_TIMEZONE,
+        )
 
-        base_lat, base_lng = coordinates_for(geo.timezone)
-        # The jitter stays inside a few kilometres, which is what a
-        # city-level geolocation fix looks like.
-        jitter_km = deriver.derive_float(Axis.GEO_TIMEZONE, 0.0, 8.0, context="geo.jitter_km")
+        if geo.timezone == VIETNAM_TIMEZONE:
+            # A Vietnamese profile is placed in a *province*, not in the
+            # middle of the reference point of Ho Chi Minh City.
+            #
+            # The fleet is large and the country is not: a hundred
+            # million profiles cannot all live in one province, and a
+            # site that sees them all in one province knows it is
+            # looking at a farm.  The province is therefore drawn from
+            # the table, and the jitter inside the province separates
+            # two profiles that landed in the same one.
+            #
+            # The caller may pin the province -- that is how the
+            # collision guard moves a profile off a province another
+            # profile already occupies.
+            if self._geo_province is None:
+                province_index = deriver.derive_int(
+                    Axis.GEO_TIMEZONE,
+                    0,
+                    len(VIETNAM_COORDINATES) - 1,
+                    context="geo.province",
+                )
+            else:
+                province_index = self._geo_province % len(VIETNAM_COORDINATES)
+            _province, base_lat, base_lng = VIETNAM_COORDINATES[province_index]
+            # The jitter is wider than in the generic path: a province
+            # is a hundred kilometres across, so a fix that is precise
+            # to the metre would contradict the province it claims.
+            jitter_km = deriver.derive_float(
+                Axis.GEO_TIMEZONE, 0.0, 45.0, context="geo.jitter_km"
+            )
+        else:
+            base_lat, base_lng = coordinates_for(geo.timezone)
+            # The jitter stays inside a few kilometres, which is what a
+            # city-level geolocation fix looks like.
+            jitter_km = deriver.derive_float(Axis.GEO_TIMEZONE, 0.0, 8.0, context="geo.jitter_km")
         lat_jitter = deriver.derive_float(
             Axis.GEO_TIMEZONE, -jitter_km, jitter_km, context="geo.lat_jitter"
         )

@@ -191,6 +191,12 @@ FEATURES: dict[str, str] = {
     "user_agent_client_hints": "navigator.userAgentData",
     "ua_data_brands": "navigator.userAgentData.brands",
     "ua_data_full_version_list": "navigator.userAgentData.getHighEntropyValues",
+    # The full version of the browser, as the high-entropy hint
+    # ``uaFullVersion`` carries it.  It arrived in major 101, two
+    # years before the full version *list* did, and it is a hint of
+    # its own: a core that answers it does not necessarily send the
+    # list header.
+    "ua_data_full_version": "navigator.userAgentData.getHighEntropyValues(['uaFullVersion'])",
     "ua_data_platform_version": "Sec-CH-UA-Platform-Version",
     "ua_data_model": "Sec-CH-UA-Model",
     "ua_data_architecture": "Sec-CH-UA-Arch",
@@ -414,6 +420,7 @@ def _capabilities_for(major: int) -> VersionCapabilities:
     additions: tuple[tuple[int, str], ...] = (
         (103, "webgpu"),
         (103, "webgpu_adapters"),
+        (101, "ua_data_full_version"),
         (106, "privacy_sandbox_ads"),
         (108, "js_array_group"),
         (109, "css_relative_colors"),

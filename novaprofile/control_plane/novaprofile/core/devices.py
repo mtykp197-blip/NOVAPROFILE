@@ -12,6 +12,7 @@ silent fingerprint anomaly.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from ..schema.hardware import AndroidAbiSoc, AndroidBuild, Screen
@@ -364,6 +365,37 @@ class DevicePreset:
     #: vendor's own device list can contradict.
     model_variants: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        """Every option list is a list, even when one value was named.
+
+        A preset that declares a single value is a preset that has one
+        option, and the fleet has to be able to *count* the options of
+        every preset the same way.  A list that is sometimes a number
+        and sometimes a tuple makes every reader of it carry a branch,
+        and the branch is where a fleet ends up with one reading for
+        all of its units.
+        """
+
+        for name in (
+            "ram_options",
+            "cpu_options",
+            "dpr_options",
+            "density_options",
+            "touch_points_options",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, (int, float)):
+                normalised: tuple = (value,)
+            elif value is None:
+                normalised = ()
+            elif isinstance(value, tuple):
+                normalised = value
+            else:
+                normalised = tuple(value)
+            # The dataclass is frozen, so the fields are written through
+            # the base class.
+            object.__setattr__(self, name, normalised)
+
     # ---------------- derived helpers ----------------
 
     @property
@@ -503,6 +535,23 @@ def inferred_touch_points(preset: "DevicePreset | None") -> tuple[int, ...]:
     the catalogue at all falls back to the modern five-point answer,
     which is what the overwhelming majority of handsets in the field
     report.
+
+    **The set, not the single value.**  A handset reports the number
+    its digitiser *can* do, and a line of handsets is not one
+    digitiser: the entry units of a line that moved to ten-point
+    panels in its second year shipped with the five-point one, and the
+    platform answered five for those.
+
+    So the line's set is the one the year allows, and the unit draws
+    from it.  The draw is inside the radix that walks the whole space
+    of the device, so the combination -- the panel, the density, the
+    release, the cores, the memory, the touch points -- repeats only
+    when the space in front of it is exhausted.
+
+    The alternative is worse than useless.  A fleet whose units all
+    report ten and all report eight cores and all report eight
+    gigabytes is a fleet that a script groups with three numbers, and
+    the number of handsets in the world does not enter into it.
     """
 
     if preset is None:
@@ -512,8 +561,90 @@ def inferred_touch_points(preset: "DevicePreset | None") -> tuple[int, ...]:
         return preset.touch_points_options
 
     if preset.year <= 2018:
+        # The five-point panel was the standard for a decade, and a
+        # line that never moved to ten points has one answer.
         return (5,)
-    return (10,)
+
+    # A line that moved to ten-point panels in its second year shipped
+    # with the five-point one in its first, and both are real.
+    return (5, 10)
+
+
+#: The cluster layout of a system-on-chip, in the form the vendors write
+#: it: ``1x3x4 Cortex-A78/A55/A55`` is one prime core, three big cores
+#: and four little ones.
+_CLUSTER_PATTERN = re.compile(r"(\d+)x(\d+)x(\d+)")
+
+
+def cores_from_cluster_layout(layout: str) -> int:
+    """The number of logical cores a cluster layout describes.
+
+    A system-on-chip is built from clusters, and the vendors write the
+    layout down: ``1x3x4 Cortex-A78/A55/A55`` is one prime core, three
+    big cores and four little ones, which is eight cores in total.
+
+    The count the platform reports is the total, and it is the number
+    that Chromium hands to the page as
+    ``navigator.hardwareConcurrency``.  So the layout is the
+    authoritative source for the count, and a layout that names no
+    clusters falls back to the eight cores that a handset of this class
+    has when nothing else says.
+    """
+
+    if not layout:
+        return 8
+
+    match = _CLUSTER_PATTERN.search(layout)
+    if match:
+        total = sum(int(part) for part in match.groups())
+        if 2 <= total <= 16:
+            return total
+
+    # A layout that names the cores one by one -- "4x Cortex-A53" --
+    # is still a count.
+    match = re.search(r"(\d+)\s*x\s*Cortex", layout, re.IGNORECASE)
+    if match:
+        value = int(match.group(1))
+        if 2 <= value <= 16:
+            return value
+
+    return 8
+
+
+def cpu_options_for(preset: "DevicePreset | None") -> tuple[int, ...]:
+    """The core counts a physical unit of this model may report.
+
+    A handset reports the *logical* core count of the system-on-chip it
+    shipped with, and a model that shipped with one chip reports one
+    number.
+
+    The catalogue records two different numbers and they are not the
+    same thing:
+
+    * ``cpu_options`` is the logical core count -- the number Chromium
+      hands to the page.
+    * ``cpu_cluster_layout`` is the number of CPU *clusters* the chip
+      is built from.
+
+    A Snapdragon 8 Gen 1 is built from three clusters -- one X1, two
+    A78, two A55 -- and it has **eight** logical cores, because the
+    prime cluster counts its threads twice.  Reading the cluster count
+    as the core count would report six, and no Snapdragon has ever had
+    six.
+
+    So the count comes from the layout, and the layout is the number
+    the vendors publish.
+    """
+
+    if preset is None:
+        return (8,)
+
+    options = tuple(int(value) for value in preset.cpu_options)
+    if options:
+        return options
+
+    return (cores_from_cluster_layout(preset.abi.cpu_cluster_layout),)
+
 
 
 def _abi(

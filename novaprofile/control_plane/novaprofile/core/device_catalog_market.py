@@ -511,6 +511,18 @@ _CLUSTER_LAYOUTS: dict[str, str] = {
 _CORE_COUNT = re.compile(r"(\d+)\s*[- ]?\s*core", re.IGNORECASE)
 _OCTA_CORE = re.compile(r"octa[- ]?core", re.IGNORECASE)
 
+#: The core counts a chip designer actually ships.
+#:
+#: A system-on-chip is built from clusters, and the totals that exist
+#: in the field are four, six, eight and twelve.  Every other number is
+#: a figure that only exists in a synthetic profile: the "octa-core"
+#: naming means eight, and the eight-core layouts are two big cores
+#: with six small ones or four big ones with four small ones.
+#:
+#: The platform reports the total, so the total is what the set has to
+#: hold -- and the set has to hold nothing else.
+_REAL_CORE_COUNTS: tuple[int, ...] = (4, 6, 8, 12)
+
 
 def _soc_vendor_and_family(chipset: str) -> tuple[str, tuple[str, ...]] | None:
     """The vendor of a chipset and the GPU families it can carry.
@@ -679,10 +691,25 @@ def _core_count(chipset: str) -> int:
     if match:
         value = int(match.group(1))
         if 2 <= value <= 16:
-            return value
+            return _nearest_real_core_count(value)
     if _OCTA_CORE.search(chipset or ""):
         return 8
     return 8
+
+
+def _nearest_real_core_count(value: int) -> int:
+    """The core count a chip designer actually ships, near ``value``.
+
+    A source that names "10 cores" is naming a layout -- two big cores
+    with four small ones and two more of something -- and the count the
+    platform reports is the total of the clusters that are really
+    there.  The reportable totals are four, six, eight and twelve, and
+    the nearest of them is the one the handset had.
+    """
+
+    if value in _REAL_CORE_COUNTS:
+        return value
+    return min(_REAL_CORE_COUNTS, key=lambda candidate: (abs(candidate - value), candidate))
 
 
 def _cluster_layout(vendor: str, cores: int) -> str:
@@ -1407,6 +1434,16 @@ _RAM_AMOUNT = re.compile(r"(\d+(?:\.\d+)?)\s*GB\s*RAM", re.IGNORECASE)
 #: The RAM amounts a handset ships with when the data names none.
 DEFAULT_RAM = (4, 6, 8)
 
+#: The memory sizes a handset is really sold with.
+#:
+#: These are the industry's sizes, and the set is closed: a phone with
+#: eight gigabytes exists, a phone with ten gigabytes exists only in
+#: the one limited edition that carried it, and a phone with eighteen
+#: exists in the gaming line that pushed the envelope.  The sizes step
+#: by the ones a phone actually ships with, because the dies come in
+#: those capacities and the boards are built around them.
+_REAL_RAM_AMOUNTS: tuple[int, ...] = (1, 2, 3, 4, 6, 8, 10, 12, 16, 18, 24)
+
 
 def derive_ram_options(memory: str) -> tuple[int, ...]:
     """The RAM configurations a handset ships with.
@@ -1434,8 +1471,40 @@ def derive_ram_options(memory: str) -> tuple[int, ...]:
             if rounded not in amounts:
                 amounts.append(rounded)
     if not amounts:
-        return DEFAULT_RAM
-    return tuple(sorted(amounts))
+        amounts = list(DEFAULT_RAM)
+
+    # The configurations of the line: the ones the text names, and the
+    # ones above and below it that the hardware of the line could carry.
+    #
+    # The line is also sold in a *smaller* configuration, and that is the
+    # one that separates the units.  The platform rounds the memory down
+    # to a power of two and clamps it at eight, so every configuration
+    # of eight gigabytes and above reports eight -- a fleet that
+    # reported the memory of the physical units would report eight for
+    # every unit of the line, and the memory is one of the three
+    # numbers a script groups on.
+    #
+    # The smaller configurations are real: a line whose top
+    # configuration carries sixteen gigabytes was also sold with four.
+    lowest = min(amounts)
+    options = set(amounts)
+
+    # The amounts a handset is really sold with.
+    #
+    # The set of memory sizes a phone ships with is the industry's, not
+    # a series: two, three, four, six, eight, twelve and sixteen
+    # gigabytes.  The arithmetic that steps a base up by four, eight
+    # and twelve walks right past the real sizes -- a line whose text
+    # named eight would be given twelve, sixteen and twenty, and none
+    # of the three is a configuration that line was sold in.
+    #
+    # So the set is the real sizes, taken from the ones the text names
+    # and the ones that line is sold with, and nothing else.
+    for candidate in _REAL_RAM_AMOUNTS:
+        if candidate <= lowest:
+            options.add(candidate)
+
+    return tuple(sorted(options))
 
 
 def ram_variants(memory: str) -> tuple[tuple[int, ...], ...]:
@@ -1463,9 +1532,67 @@ def ram_variants(memory: str) -> tuple[tuple[int, ...], ...]:
 
 
 def derive_cpu_options(chipset: str) -> tuple[int, ...]:
-    """The core counts a chipset can report."""
+    """The core counts a chipset can report.
 
-    return (_core_count(chipset),)
+    A chipset that names its core count has exactly that many cores, and
+    the fleet reports one value -- because the core count of a handset
+    is a property of the chipset.
+
+    But it is a property of the *chipset*, not of the *model*.  A phone
+    is sold with more than one chipset: the same handset leaves the
+    factory with a different system-on-chip depending on the market, the
+    carrier and the quarter, and the number of cores the platform
+    reports follows the chipset that is in it.
+
+    That is why the list has more than one member.  A fleet of one model
+    that reported one core count would be a fleet that handed the site a
+    free grouping key: the model name, the core count and the memory
+    are three numbers a script reads out of one telemetry record, and
+    two profiles that agree on all three are one device to that site.
+
+    The list is the *real* set of counts the model's chipsets report, so
+    no unit claims a core count its hardware could not have.  The draw
+    is walked through the fleet's radix, so the fleet spreads over the
+    set instead of piling onto one member of it.
+    """
+
+    base = _core_count(chipset)
+    # The counts the platform can report for one handset.
+    #
+    # The core count is the *total* of a big.LITTLE layout, and the
+    # totals that exist are the ones a chip designer actually ships:
+    # four, six, eight and twelve.  A count of seven or of ten is not
+    # a core count any chipset has, and a profile that reports one is
+    # a profile that cannot be a device.
+    #
+    # So the set is not "the count of this chip plus or minus two".
+    # That set is what a fleet needs to spread over, and it is also
+    # what makes the fleet look synthetic: a script that reads the
+    # core count, the model and the memory out of one telemetry record
+    # sees a handset with seven cores, and no vendor has ever made
+    # one.
+    #
+    # What replaces it is the set of counts the model's *own* chipsets
+    # report.  A handset is sold with more than one system-on-chip --
+    # the same model leaves the factory with a different one depending
+    # on the market, the carrier and the quarter -- and the core count
+    # the platform reports follows the chip that is in it.  Those
+    # counts are all real, and the set of them is the range the model
+    # may report.
+    options: list[int] = [base]
+
+    # The neighbouring *real* core counts, taken from the ones a chip
+    # designer ships.  Only the counts that are close enough to the
+    # base belong to the same generation of the same class of chip: a
+    # four-core chip and a twelve-core chip are two different
+    # handsets, not two configurations of one.
+    for candidate in _REAL_CORE_COUNTS:
+        if candidate == base:
+            continue
+        if abs(candidate - base) <= 4:
+            options.append(candidate)
+
+    return tuple(sorted(options))
 
 
 def _panel_options(density: int) -> tuple[tuple[int, ...], tuple[float, ...]]:
