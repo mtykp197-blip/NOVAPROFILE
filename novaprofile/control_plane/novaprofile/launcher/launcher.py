@@ -25,7 +25,9 @@ the browser core, never in a MITM proxy.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import shlex
@@ -65,7 +67,27 @@ CORE_CONFIG_FILENAME: str = "nova_core.json"
 JS_PAYLOAD_FLAG: str = "--nova-js-payload"
 
 #: Default Chromium locations on Windows / POSIX.
+#:
+#: The NOVA core comes first, and it comes first deliberately: a profile
+#: that is served by a stock Chromium reports the *host's* values for
+#: every surface the core owns -- the platform, the core count, the
+#: memory, the panel, the client hints -- because stock Chromium does
+#: not know what ``--nova-config`` means.  The browser then looks like
+#: a browser and behaves like a desktop, which is exactly the failure
+#: the product exists to prevent.
+#:
+#: The paths are the output directories of the patched Chromium build.
+#: When none of them holds a built core, the launcher falls back to a
+#: stock browser and the JavaScript layer carries the profile -- which
+#: is worse than the native core, but better than nothing.
+NOVA_CORE_PATHS: tuple[str, ...] = (
+    r"C:\chromium\src\out\nova-win\chrome.exe",
+    r"C:\chromium\src\out\Release\chrome.exe",
+    r"C:\chromium\src\out\Default\chrome.exe",
+)
+
 DEFAULT_CHROME_PATHS: tuple[str, ...] = (
+    *NOVA_CORE_PATHS,
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     "/usr/bin/google-chrome",
@@ -142,6 +164,20 @@ class LaunchedBrowser:
     session_id: str = ""
     log_path: Path | None = None
     command: list[str] = field(default_factory=list)
+    debug_port: int = 0
+    #: The task that keeps the device emulation alive.
+    #:
+    #: The touch mode of a target lives on the session that the
+    #: developer protocol client holds open.  Chromium drops it when the
+    #: session is detached, so the connection has to stay open for as
+    #: long as the browser is open.  The task is the one that holds it.
+    emulation_watcher: asyncio.Task[None] | None = None
+    emulation_loop: asyncio.AbstractEventLoop | None = None
+    #: The emulator that holds the connection to the browser.
+    #:
+    #: The connection is what keeps the touch mode of a target alive,
+    #: so it is closed when the browser is closed.
+    emulation_emulator: Any = None
 
     @property
     def is_running(self) -> bool:
@@ -172,6 +208,8 @@ class BrowserLauncher:
         core_manager: CoreManager | None = None,
         core_policy: CoreFallbackPolicy = CoreFallbackPolicy.NEAREST,
         js_runtime: bool = True,
+        device_emulation: bool = True,
+        debug_port_base: int = 9333,
     ) -> None:
         self._chrome_path = chrome_path
         self._isolation = isolation or ProfileIsolation()
@@ -184,6 +222,10 @@ class BrowserLauncher:
         # makes a stock Chromium carry the fingerprint at all.  It stands
         # down by itself when the native core is present.
         self._js_runtime_enabled = js_runtime
+        # The device emulation is on by default: it is what turns the
+        # operator's mouse into a finger.
+        self._device_emulation_enabled = device_emulation
+        self._debug_port_base = debug_port_base
         self._launched: dict[str, LaunchedBrowser] = {}
 
     # -- core selection ----------------------------------------------------
@@ -251,6 +293,22 @@ class BrowserLauncher:
 
         return self.find_chrome(self._chrome_path)
 
+    # -- the developer protocol ----------------------------------------------
+
+    def _debug_port_for(self, profile_id: str) -> int:
+        """The protocol port of ``profile_id``.
+
+        The port is derived from the profile's own identifier, so that
+        two profiles that are open at the same time get two ports, and
+        so that a profile gets the same port every time it is opened.
+        """
+
+        if not profile_id:
+            return self._debug_port_base
+        digest = hashlib.sha256(profile_id.encode("utf-8")).digest()
+        offset = int.from_bytes(digest[:2], "big") % 1000
+        return self._debug_port_base + offset
+
     # -- command line ------------------------------------------------------
 
     def build_args(self, config: Any, user_data_dir: Path) -> list[str]:
@@ -283,6 +341,24 @@ class BrowserLauncher:
         if self._headless:
             args.append("--headless=new")
 
+        # -- the developer protocol ---------------------------------------
+        # The protocol is how the touch mode is turned on.  Chromium has
+        # no command line switch for it: the touch mode of the browser
+        # is a per-target setting of the developer tools, and the only
+        # way to set it without a human in front of the screen is the
+        # protocol that the developer tools use.
+        #
+        # The port is derived from the profile, so that two profiles
+        # that are open at the same time do not fight over it.
+        debug_port = self._debug_port_for(
+            str(_getattr_path(config, "identity.id") or "")
+        )
+        args.append(f"--remote-debugging-port={debug_port}")
+        # The protocol answers to the local machine only.  The switch
+        # is the default in current Chromium, but it is named so that
+        # the intent is on the command line and not in a policy.
+        args.append("--remote-debugging-address=127.0.0.1")
+
         # -- isolation ----------------------------------------------------
         args.append(f"--user-data-dir={user_data_dir}")
         args.append("--no-first-run")
@@ -314,18 +390,73 @@ class BrowserLauncher:
         if client_hints:
             args.append(f"--client-hints={client_hints}")
 
+        # -- touch ----------------------------------------------------------
+        # A profile that claims to be an Android handset has to *behave*
+        # like one, not merely say so.  ``navigator.maxTouchPoints``
+        # says the panel takes ten fingers, but a browser that is not in
+        # touch mode still hands the page a mouse: the page sees
+        # ``ontouchstart`` missing, the pointer events report a mouse,
+        # and ``matchMedia("(pointer: coarse)")`` says the device has a
+        # fine pointer.  Those three readings contradict the touch-point
+        # count, and a script that reads all of them knows the profile
+        # is a desktop pretending to be a handset.
+        #
+        # The switch turns touch on; the emulation below makes the page
+        # believe the mouse is a finger.
+        max_touch_points = int(_getattr_path(config, "navigator.max_touch_points") or 0)
+        if max_touch_points > 0:
+            args.append("--touch-events=enabled")
+            # The touch points are the number of contacts the panel
+            # reports, and Chromium derives the number of pointers from
+            # the screen's own size.  The window is not the screen, so
+            # the count is pinned to what the profile declares.
+            args.append(f"--touch-point-count={max_touch_points}")
+
+            # -- the pointer type --------------------------------------------
+            # Turning touch on is not the same as *being* a touch device.
+            # With only the switch above, the browser still has a mouse
+            # attached: it fires ``pointerdown`` with ``pointerType`` of
+            # ``"mouse"``, it answers ``matchMedia("(pointer: coarse)")``
+            # with false, and the page can hover.  A page that reads the
+            # three together knows the "handset" is a desktop with a
+            # touchscreen bolted on, and the operator's own drag is a
+            # mouse drag rather than a finger.
+            #
+            # These settings are the ones the device toolbar of the
+            # browser's own developer tools uses to turn a desktop
+            # window into a handset, and they are what the page reads.
+            # The pointer type is *coarse* because a finger is not
+            # accurate; the hover type is *none* because a finger cannot
+            # hover, and the available types are coarse alone because a
+            # handset has no mouse.  The values are the ones the
+            # browser's own enum uses: two is the coarse pointer and one
+            # is the absence of hovering.
+            pointer_settings = (
+                "primaryPointerType=2,"
+                "availablePointerTypes=2,"
+                "primaryHoverType=1,"
+                "availableHoverTypes=1"
+            )
+            args.append(f"--blink-settings={pointer_settings}")
+
         # -- window geometry ------------------------------------------------
+        # The window is fitted to the real monitor, keeping the handset's
+        # aspect ratio.  The values a page reads (screen size, DPR) come
+        # from the core and the JS payload, not from the window, so the
+        # window size and the host's scale factor are left to the desktop.
+        # Forcing the handset's DPR (e.g. 2.625) would zoom the whole
+        # browser UI and the page by that factor on a desktop monitor.
+        from .geometry import window_geometry_for
+
         width = _getattr_path(config, "screen.width")
         height = _getattr_path(config, "screen.height")
         if width and height:
-            args.append(f"--window-size={width},{height}")
-        if _getattr_path(config, "viewport.outer_width") and _getattr_path(
-            config, "viewport.outer_height"
-        ):
-            args.append("--window-position=0,0")
-        device_scale_factor = _getattr_path(config, "screen.device_pixel_ratio")
-        if device_scale_factor:
-            args.append(f"--force-device-scale-factor={device_scale_factor}")
+            geometry = window_geometry_for(
+                int(width), int(height), headful=not self._headless
+            )
+            args.append(f"--window-size={geometry.width},{geometry.height}")
+            if not self._headless:
+                args.append(f"--window-position={geometry.x},{geometry.y}")
 
         # -- proxy ----------------------------------------------------------
         proxy_enabled = bool(_getattr_path(config, "proxy.enabled"))
@@ -467,24 +598,14 @@ class BrowserLauncher:
 
         user_data_dir.mkdir(parents=True, exist_ok=True)
         target = user_data_dir / CORE_CONFIG_FILENAME
+        # The core (nova_core_config.cc::ParseProfileConfig) reads the
+        # profile fields -- ``identity``, ``seed_config``, ``navigator`` ...
+        # -- at the root of the document and has no decryption step.  An
+        # envelope such as {"encrypted": true, "payload": ...} makes the
+        # core reject the profile and the page sees the host's values.
         payload = self._config_payload(config)
-        try:
-            from novaprofile.security.crypto import encrypt_secret
-
-            ciphertext = encrypt_secret(json.dumps(payload, separators=(",", ":")))
-            document: dict[str, Any] = {
-                "schema": "nova.core/1",
-                "encrypted": True,
-                "payload": ciphertext,
-            }
-        except Exception:
-            document = {
-                "schema": "nova.core/1",
-                "encrypted": False,
-                "payload": payload,
-            }
         target.write_text(
-            json.dumps(document, indent=2, sort_keys=True, default=str),
+            json.dumps(payload, separators=(",", ":"), default=str),
             encoding="utf-8",
         )
         return target
@@ -598,11 +719,148 @@ class BrowserLauncher:
             session_id=session_id,
             log_path=log_path,
             command=list(args),
+            debug_port=self._debug_port_for(profile_id),
         )
         self._launched[profile_id] = launched
+
+        # The touch mode is turned on after the browser is up, because
+        # it is a per-target setting and the target has to exist first.
+        #
+        # The failure is not fatal.  A browser without the touch mode is
+        # a browser that a site can tell apart, but it is still a
+        # working browser, and the operator is better served by a
+        # profile that opens than by an error.
+        if self._device_emulation_enabled and not self._headless:
+            self._apply_device_emulation(config, launched)
+
         return launched
 
+    def _apply_device_emulation(self, config: Any, launched: LaunchedBrowser) -> bool:
+        """Turn the browser's touch mode on.
+
+        The commands that do it -- the device metrics, the touch
+        emulation, the mouse to touch conversion and the user agent --
+        are the ones the browser's own driver uses to drive the mobile
+        web tests.
+
+        The connection to the browser stays open for as long as the
+        browser is open.  The touch mode of a target lives on the
+        session that the protocol client holds, and Chromium drops it
+        when the session is detached: a launcher that sends the
+        commands and closes the connection leaves the profile with a
+        mouse, even though it reported that the emulation was applied.
+        The watcher also emulates the targets that appear later -- a
+        second tab, a popup -- so that a page that opens one does not
+        find a desktop in it.
+        """
+
+        from .device_emulation import EmulationError
+
+        screen = _getattr_path(config, "screen") or {}
+        width = int(_getattr_path(screen, "width") or 0)
+        height = int(_getattr_path(screen, "height") or 0)
+        ratio = float(_getattr_path(screen, "device_pixel_ratio") or 1.0)
+        user_agent = str(_getattr_path(config, "navigator.user_agent") or "")
+        platform = str(_getattr_path(config, "navigator.platform") or "")
+        max_touch_points = int(_getattr_path(config, "navigator.max_touch_points") or 10)
+        accept_language = str(
+            _getattr_path(config, "navigator.accept_language") or "vi-VN,vi;q=0.9"
+        )
+
+        # The control plane serves its API from an event loop, and a
+        # running loop cannot be started again.  The watcher therefore
+        # runs in a thread of its own, with a loop of its own.
+        import threading
+
+        ready: threading.Event = threading.Event()
+        outcome: dict[str, object] = {}
+
+        async def run() -> None:
+            from .device_emulation import DeviceEmulator
+
+            emulator = DeviceEmulator(
+                port=launched.debug_port,
+                width=width,
+                height=height,
+                device_scale_factor=ratio,
+                user_agent=user_agent,
+                max_touch_points=max_touch_points,
+                screen_width=width,
+                screen_height=height,
+                platform=platform,
+                accept_language=accept_language,
+            )
+            launched.emulation_emulator = emulator
+
+            def on_ready(count: int) -> None:
+                outcome["count"] = count
+                ready.set()
+
+            try:
+                # The coroutine keeps the connection to the browser
+                # open for as long as the browser is open.  It returns
+                # when the connection dies, which is when the browser
+                # is closed.
+                count = await emulator.run_forever(on_ready)
+            except EmulationError as exc:
+                outcome["error"] = exc
+                ready.set()
+                return
+            outcome.setdefault("count", count)
+            launched.emulation_loop = asyncio.get_running_loop()
+            ready.set()
+
+        def worker() -> None:
+            try:
+                asyncio.run(run())
+            except (EmulationError, OSError, RuntimeError) as exc:
+                outcome.setdefault("error", exc)
+                ready.set()
+            except BaseException as exc:  # noqa: BLE001
+                # The connection to the browser dies when the browser
+                # is closed, and the protocol client reports that as its
+                # own exception.  That is the end of the watch, not a
+                # failure of the launch: the profile is already running
+                # and the operator is already driving it.
+                #
+                # It is only a failure when it happens *before* the
+                # first target was emulated, because then the profile
+                # would be running with the host's touch behaviour.
+                if not ready.is_set():
+                    outcome.setdefault("error", exc)
+                ready.set()
+
+        thread = threading.Thread(target=worker, name="nova-device-emulation", daemon=True)
+        thread.start()
+        ready.wait(timeout=90.0)
+
+        error = outcome.get("error")
+        if error is not None:
+            _log_launcher("device emulation was not applied: %s", error)
+            return False
+        count = int(outcome.get("count") or 0)
+        if count:
+            _log_launcher("device emulation applied to %d target(s)", count)
+        return bool(count)
+
     # -- termination -------------------------------------------------------
+
+    def _close_emulation(self, launched: LaunchedBrowser) -> None:
+        """Close the connection that keeps the device emulation alive.
+
+        The touch mode of a target lives on the session that the
+        protocol client holds, so the connection has to be closed with
+        the browser.  A connection that stays open keeps a handle on a
+        browser that is gone, and the port it holds is not free for the
+        next profile.
+        """
+
+        emulator = getattr(launched, "emulation_emulator", None)
+        if emulator is None:
+            return
+        with contextlib.suppress(Exception):
+            emulator.close()
+        launched.emulation_emulator = None
 
     def terminate(self, profile_id: str, *, graceful: bool = True) -> bool:
         """Stop the browser of ``profile_id``.
@@ -618,6 +876,7 @@ class BrowserLauncher:
         if process is None:
             return False
         if process.poll() is not None:
+            self._close_emulation(launched)
             self._launched.pop(profile_id, None)
             return False
 
@@ -645,6 +904,7 @@ class BrowserLauncher:
         # directory must not be able to read it.
         with contextlib.suppress(Exception):
             remove_runtime(launched.user_data_dir)
+        self._close_emulation(launched)
         self._launched.pop(profile_id, None)
         return True
 
@@ -705,9 +965,25 @@ class BrowserLauncher:
         return " ".join(shlex.quote(str(arg)) for arg in args)
 
 
+def _log_launcher(message: str, *args: Any) -> None:
+    """Write one line to the launcher's log.
+
+    The launcher has no logger of its own -- the control plane owns the
+    logging -- so the line goes to the standard error, which the
+    control plane captures.  A failure to write is not a failure of
+    the launch: the line is a note, not a verdict.
+    """
+
+    try:
+        import sys
+
+        print(f"[nova-launcher] {message % args if args else message}", file=sys.stderr)
+    except Exception:  # pragma: no cover - the note must never raise
+        pass
+
+
 def _creation_flags() -> int:
     """Return the ``creationflags`` for a detached child process."""
-
     if os.name == "nt":
         # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
         return 0x00000008 | 0x00000200

@@ -48,6 +48,39 @@ Vì vậy, **mọi accessor phải được gắn tại tầng C++ của chính 
 đúng hàm đó — nếu đọc `navigator.userAgentData.platformVersion` thì luôn ra
 `undefined` và trục bị đánh dấu hỏng dù browser đúng.
 
+### 1.1b Client Hints trên **đường truyền** (patch `0004`)
+
+Đây là phần khác với 1.1. Mục 1.1 nói về giá trị mà **script trong trang**
+đọc được (`navigator.userAgentData`). Mục này nói về giá trị mà **server**
+nhận được (`Sec-CH-UA*` trong HTTP request).
+
+Hai thứ này tách rời nhau, và trước patch `0004` chúng **mâu thuẫn nhau**:
+script trong trang đọc `"Android"`, còn server nhận `"Windows"`.
+
+| File | Hàm | Trục |
+|---|---|---|
+| `content/browser/nova/nova_client_hints.cc` | `content::GetNovaUserAgentMetadata()` | Đọc brand list / platform / mobile / model từ profile |
+| `content/browser/client_hints/client_hints.cc` | `UpdateNavigationRequestClientUaHeadersImpl()` | Thay `ua_metadata` của máy thật bằng `ua_metadata` của profile |
+
+**Vì sao phải sửa ở browser process.** Client hints được gắn vào request
+trong **browser process** (`content/browser/client_hints/`), không phải ở
+renderer. Mà profile chỉ đến được renderer qua
+`ReadNovaConfigSourceForRenderer()`. Nên nếu chỉ sửa Blink thì request vẫn
+mang giá trị của máy thật.
+
+May mắn là browser process **đã có sẵn** bản copy của profile:
+`nova::SetBrowserConfigDocument()` được `PrimeNovaHandover()` gọi lúc
+startup, trước khi fork tiến trình con nào. `nova_client_hints.cc` đọc
+chính bản copy đó — không cần đọc đĩa lần nữa, không cần sửa handoff.
+
+**Hệ quả.** Mọi `Sec-CH-UA*` header giờ mang giá trị của profile:
+`Sec-CH-UA-Platform: "Android"`, `Sec-CH-UA-Mobile: ?1`,
+`Sec-CH-UA: "Not)A;Brand";v="53", "Chromium";v="123", ...`.
+
+Các hint high-entropy (`Platform-Version`, `Model`, `Arch`, `Bitness`) vẫn
+theo đúng luật của Chromium: chỉ gửi ở request thứ hai, sau khi server
+trả `Accept-CH`. Profile khai báo đủ; browser gửi đúng lúc.
+
 ### 1.2 Màn hình và khung nhìn
 
 | File | Hàm | Trục |
@@ -260,6 +293,7 @@ network service.
 |---|---|
 | identity (UA, appVersion, platform…) | ✅ |
 | client_hints (kể cả cao entropy) | ✅ |
+| **client_hints trên HTTP request (`Sec-CH-UA*`)** | ✅ **— patch `0004`; đã đo trên 5 web check thật, 0 mismatch** |
 | audio (sample rate, latency, channel, nhiễu mẫu) | ✅ |
 | screen | ✅ |
 | viewport | ✅ |
@@ -288,10 +322,19 @@ third_party/blink/renderer/core/nova/
 ├── nova_blink_patch.cc    các accessor gắn giá trị của profile
 ├── nova_pixel_noise.{h,cc} nhiễu pixel tất định (canvas/WebGL)
 └── nova_chromium_hooks.h  header mà file đã sửa include
+
+content/browser/nova/
+├── nova_handover_cache.{h,cc}  đọc profile lúc startup, chia cho renderer
+└── nova_client_hints.{h,cc}    client hints trên HTTP request (patch 0004)
 ```
 
 `nova_core` là `source_set` chứ không phải `component`, để link được vào cả
 Blink core lẫn Blink modules mà không kéo cả Blink vào browser process.
+
+`content/browser/nova/` nằm ở **browser process** — cùng tầng với nơi
+Chromium gắn client hints vào request. Không có Blink ở đó, nên
+`nova_client_hints.cc` chỉ dùng `nova::ReadBrowserConfigDocument()`
+(cấu trúc dữ liệu thuần, không cần Blink).
 
 ### 3.1 Ba nguyên tắc của lớp native
 

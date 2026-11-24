@@ -555,6 +555,43 @@ class SeedDeriver:
 
         return tuple(chosen)
 
+    def derive_mixed_radix_indices(
+        self,
+        axis: Axis,
+        sizes: Sequence[int],
+        context: str,
+        stratum: int,
+    ) -> tuple[int, ...]:
+        """Walk a space of combinations and report the *index* in each.
+
+        This is :meth:`derive_mixed_radix` for spaces whose members are
+        of different kinds -- a release name, a density, a core count --
+        so the caller has to pick the member itself and only needs the
+        place of that member in its own list.
+
+        The walk is the same, and the guarantee is the same: the
+        combination of the indices repeats only when the space in front
+        of it is exhausted.  Two units of a family therefore never
+        land on the same combination, and the fleet spreads over the
+        space in order instead of clustering on the first members of
+        every list.
+        """
+
+        if not sizes:
+            raise SeedError("cannot choose from an empty set of dimensions")
+
+        for size in sizes:
+            if size <= 0:
+                raise SeedError("cannot choose from an empty sequence")
+
+        index = stratum
+        chosen: list[int] = []
+        for size in sizes:
+            chosen.append(index % size)
+            index //= size
+
+        return tuple(chosen)
+
     # ------------------------------------------------------------------
     # WebGL image value -- the anti cross-GPU-collision axis
     # ------------------------------------------------------------------
@@ -653,6 +690,19 @@ def new_uuid7() -> str:
     value |= 0x8000 << 48
     raw = value.to_bytes(16, "big")
     hexed = raw.hex()
+    return f"{hexed[0:8]}-{hexed[8:12]}-{hexed[12:16]}-{hexed[16:20]}-{hexed[20:32]}"
+
+
+def new_profile_id() -> str:
+    """Generate a fresh profile identifier.
+
+    128 bits straight from the OS CSPRNG, written in the usual 8-4-4-4-12
+    form.  No timestamp and no fixed version nibble, so a batch created in
+    one sitting shares no prefix and the creation time cannot be read back
+    from the id.
+    """
+
+    hexed = os.urandom(16).hex()
     return f"{hexed[0:8]}-{hexed[8:12]}-{hexed[12:16]}-{hexed[16:20]}-{hexed[20:32]}"
 
 

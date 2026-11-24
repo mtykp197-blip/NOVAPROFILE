@@ -532,11 +532,33 @@ class CollisionGuard:
     # ------------------------------------------------------------------
 
     def _geo_index(self, candidate: ProfileConfig) -> int:
-        """Which entry of the geo catalogue the candidate is anchored to.
+        """Which place on the earth the candidate is anchored to.
 
         The index is the anchor's *address*, so a rebuilt profile that
         keeps the same index keeps the same place on the earth.
+
+        A Vietnamese profile is addressed by its province, because that
+        is the granularity the walk moves over -- see
+        :meth:`_next_geo_index`.  The catalogue of the world is not
+        consulted for it: every Vietnamese profile shares one clock, so
+        the timezone would give every profile of the fleet the same
+        address and the guard would believe they all stand in one
+        place.
         """
+
+        from .geo_vietnam import VIETNAM_COORDINATES, VIETNAM_TIMEZONE
+
+        if candidate.timezone.iana_name == VIETNAM_TIMEZONE and VIETNAM_COORDINATES:
+            latitude = candidate.geolocation.latitude
+            longitude = candidate.geolocation.longitude
+            best_index = 0
+            best_distance = float("inf")
+            for index, (_province, province_lat, province_lng) in enumerate(VIETNAM_COORDINATES):
+                distance = (province_lat - latitude) ** 2 + (province_lng - longitude) ** 2
+                if distance < best_distance:
+                    best_distance = distance
+                    best_index = index
+            return best_index
 
         from .geo_catalog import GEO_CATALOGUE
 
@@ -1055,13 +1077,30 @@ class ConsistencyRejectedError(RuntimeError):
 
 
 def _machine_of(profile: ProfileConfig) -> tuple:
-    """The hardware identity of a profile.
+    """The identity of a physical unit.
 
-    The same values the machine signature is built from, read straight
-    off the profile.  The guard uses this to tell whether two attempts
-    of an allocation produced the *same* machine -- and a machine that
-    has been seen before is a machine that has been refused, so the
-    walk has to move on.
+    The readings that say *which phone this is*: the graphics part, the
+    model, the panel, the chip count, the memory, the touch count and
+    the serial.
+
+    The serial is the last one and it is the one that matters most.
+    A catalogue of handsets has a few thousand distinct *models*, but a
+    country has tens of millions of *phones*: a shop in Ho Chi Minh
+    City owns hundreds of them, and they are all the same model with
+    the same panel and the same chip.  Two units that share every
+    hardware reading are two phones of one line -- and the thing that
+    tells them apart, the thing a site reads to know that it is
+    looking at two people rather than at one phone seen twice, is the
+    serial, the build fingerprint and the incremental build number.
+
+    So the serial is part of the identity.  Without it the guard would
+    call two real phones one machine and spend its whole budget
+    moving the fleet to other models, which would cap the fleet at
+    the size of the catalogue and leave the far more useful reading
+    -- same model, different phone -- unclaimed.
+
+    The readings that are *not* here are the ones that are the same
+    on every phone of the world: the gravity, the locale, the clock.
     """
 
     return (
@@ -1074,6 +1113,11 @@ def _machine_of(profile: ProfileConfig) -> tuple:
         profile.navigator.device_memory,
         profile.navigator.max_touch_points,
         profile.screen.color_depth,
+        # The serial of the unit, and the incremental build number
+        # that travels with it.  Two units of one model carry
+        # different ones.
+        profile.android_build.serial,
+        profile.android_build.version_incremental,
     )
 
 

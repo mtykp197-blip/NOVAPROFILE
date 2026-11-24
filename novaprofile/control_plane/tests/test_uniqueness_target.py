@@ -416,11 +416,23 @@ def test_catalogue_separates_users_within_a_country():
 
 
 def test_locale_and_timezone_vary_within_a_country(gen):
-    """Users of the same country do not all share a timezone."""
+    """The fleet stands in one country, and it spreads over it.
 
-    profiles = [p for p in _sample(gen, 400) if p.geo_intelligence.country_code == "US"]
+    Every profile of this fleet is in Vietnam, so the clock cannot be
+    what tells two profiles apart -- the country has one.  What tells
+    them apart is the *province* they stand in, and the timezone has
+    to be the country's own, because a profile that claims Vietnamese
+    coordinates and a European clock is a profile a page takes apart
+    in one comparison.
+    """
+
+    profiles = [p for p in _sample(gen, 400) if p.geo_intelligence.country_code == "VN"]
     assert len(profiles) >= 10
-    assert len({p.timezone.iana_name for p in profiles}) >= 2
+    assert {p.timezone.iana_name for p in profiles} == {"Asia/Ho_Chi_Minh"}
+    assert len({p.geolocation.region for p in profiles}) >= 10, (
+        "the fleet stands in a handful of provinces; a site that reads "
+        "the province sees one farm"
+    )
 
 
 def test_language_list_is_not_the_whole_fleet(gen):

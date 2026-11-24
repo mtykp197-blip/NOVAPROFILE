@@ -30,18 +30,17 @@
     ],
     "extraResources": [
       {
-        "from": "../control_plane/dist/nova-backend",
-        "to": "backend",
-        "filter": [
-          "**/*"
-        ]
+        "from": "../control_plane/dist/nova-backend.exe",
+        "to": "backend/nova-backend.exe"
       },
       {
-        "from": "../../core/build/nova-win",
+        "from": "../../core/build/cores/160.0.8177.0",
         "to": "core",
         "filter": [
           "chrome.exe",
+          "NOVAPROFILE.exe",
           "chrome.dll",
+          "chrome_elf.dll",
           "icudtl.dat",
           "resources.pak",
           "snapshot_blob.bin",
@@ -50,7 +49,9 @@
           "swiftshader/**/*",
           "*.bin",
           "*.dat",
-          "*.pak"
+          "*.pak",
+          "*.dll",
+          "*.json"
         ]
       }
     ],

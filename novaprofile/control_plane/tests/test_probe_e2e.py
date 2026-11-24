@@ -89,11 +89,22 @@ SIGNATURE_PART_TO_AXIS: dict[str, str] = {
     "sig_math": "math",
     "sig_heap": "heap",
     "sig_media_decode": "media_decode",
+    # The geographic anchor: the clock, the language and the position.
+    "sig_geo": "timezone",
 }
 
 #: The axes that are guarded *through* ``sig_device`` rather than through
 #: a signature key of their own.
 AXES_GUARDED_THROUGH_DEVICE: frozenset[str] = frozenset({"client_hints", "screen"})
+
+#: The axes that are guarded *through* ``sig_geo``.
+#:
+#: ``sig_geo`` is the geographic anchor: the clock, the language and the
+#: position together.  The page reads them through two different doors --
+#: ``Intl`` for the clock and the calendar, the geolocation API for the
+#: position -- so the harness guards them as two axes, and the one
+#: signature key covers both.
+AXES_GUARDED_THROUGH_GEO: frozenset[str] = frozenset({"geolocation"})
 
 #: The signature keys that are guarded **outside** the page.
 #:
@@ -127,9 +138,9 @@ def _signature_keys() -> set[str]:
 
 
 class TestSurfaceExtractor:
-    def test_covers_exactly_the_fifteen_guarded_axes(self) -> None:
-        assert len(GUARDED_AXES) == 15
-        assert len(set(GUARDED_AXES)) == 15
+    def test_covers_exactly_the_guarded_axes(self) -> None:
+        assert len(GUARDED_AXES) == 17
+        assert len(set(GUARDED_AXES)) == 17
         assert set(GUARDED_AXES) == {
             "identity",
             "client_hints",
@@ -146,6 +157,8 @@ class TestSurfaceExtractor:
             "math",
             "heap",
             "media_decode",
+            "timezone",
+            "geolocation",
         }
 
     def test_every_axis_has_a_surface_spec(self) -> None:
@@ -174,9 +187,12 @@ class TestSurfaceExtractor:
         # Every signature part maps onto an axis of the harness ...
         assert guarded <= set(GUARDED_AXES)
         # ... and the only axes that are not the target of a signature key
-        # of their own are the two that are guarded through
-        # ``sig_device`` -- the device identity.
-        assert set(GUARDED_AXES) - guarded == set(AXES_GUARDED_THROUGH_DEVICE)
+        # of their own are the ones guarded through ``sig_device`` -- the
+        # device identity -- and the ones guarded through ``sig_geo`` --
+        # the geographic anchor.
+        assert set(GUARDED_AXES) - guarded == (
+            set(AXES_GUARDED_THROUGH_DEVICE) | set(AXES_GUARDED_THROUGH_GEO)
+        )
 
     def test_the_script_contains_the_documented_expressions(self) -> None:
         script = SurfaceExtractor(make_config()).script()
@@ -475,6 +491,18 @@ _SAMPLE_PAYLOAD: dict[str, dict[str, Any]] = {
             'video/webm;codecs="vp9"',
         ],
     },
+    "timezone": {
+        "timeZone": "Asia/Ho_Chi_Minh",
+        "locale": "vi-VN",
+        "hourCycle": "h23",
+        "calendar": "gregory",
+        "numberingSystem": "latn",
+    },
+    "geolocation": {
+        "latitude": 10.7769,
+        "longitude": 106.7009,
+        "accuracy": 1200.0,
+    },
 }
 
 
@@ -592,7 +620,7 @@ class TestComparisonEngine:
         payload = report.to_dict()
         assert payload["passed"] is False
         assert payload["profile_id"] == "p-1"
-        assert payload["metrics"]["axes_total"] == 15
+        assert payload["metrics"]["axes_total"] == 17
         assert payload["metrics"]["axes_mismatch"] == 1
         assert payload["conclusion"]
         # The report must be JSON-serialisable -- it is filed into the
@@ -643,7 +671,7 @@ class TestComparisonEngine:
                 assert measurements.verify() == []
                 record = measurements.latest(payload["slug"])
                 assert record is not None
-                assert record.metrics["axes_total"] == 15
+                assert record.metrics["axes_total"] == 17
                 assert record.metrics["axes_mismatch"] == 1
                 assert record.reusable is True
             finally:

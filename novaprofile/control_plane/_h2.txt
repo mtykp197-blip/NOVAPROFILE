@@ -1,0 +1,3 @@
+Serving NOVA control plane on http://127.0.0.1:8799
+Authentication is on; send the key in the X-Nova-Key header.
+{"port": 8799, "api_key": "Je9-mYNZkc1I_eSG48dYoUbPI_ccTtIf_HS_cAr5myc", "host": "127.0.0.1"}

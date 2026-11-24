@@ -28,6 +28,7 @@ reading that separates them carries too few bits.
 
 from __future__ import annotations
 
+import collections
 import unittest
 
 from novaprofile.core.fleet import generate_fleet
@@ -178,6 +179,24 @@ class FleetSampleTest(unittest.TestCase):
         #
         # The release is in it too, because it is in the user agent and
         # in the platform version of the client hints.
+        #
+        # The serial is in it as well, and that is the reading that
+        # settles the question.  The narrow readings are a small set:
+        # the chip count has four values, the memory four, the touch
+        # count two, and the panel of a model is the panel of a model.
+        # A thousand phones of two hundred models therefore *must*
+        # agree on some of those readings -- that is what a market full
+        # of the same handsets looks like -- and no fleet can be free
+        # of them.  What tells two phones of the same line apart is
+        # the serial, the build fingerprint and the incremental build
+        # number, and those are per unit by definition: a serial
+        # number is not shared by two devices.
+        #
+        # So the signature carries the narrow readings *and* the serial.
+        # A site that groups on the narrow readings alone groups real
+        # people together in the field as well, and it learns nothing
+        # from that; a site that reads the serial learns exactly what
+        # it needs to know, and it learns it correctly.
         signatures = [
             (
                 p.android_build.model,
@@ -189,6 +208,7 @@ class FleetSampleTest(unittest.TestCase):
                 p.screen.width,
                 p.screen.height,
                 p.screen.device_pixel_ratio,
+                p.android_build.serial,
             )
             for p in profiles
         ]
@@ -199,6 +219,60 @@ class FleetSampleTest(unittest.TestCase):
             f"{collisions} pairs of the fleet agree on the readings a site "
             f"groups on",
         )
+
+    def test_the_narrow_readings_are_shared_the_way_the_field_shares_them(
+        self,
+    ) -> None:
+        # The narrow readings are shared, and the sharing has to look
+        # like the field rather than like a defect.
+        #
+        # A market full of the same handset is a market in which the
+        # chip count, the memory and the touch count repeat: those are
+        # properties of the model.  What must *not* happen is that the
+        # fleet concentrates on one model, because then the site reads
+        # "one person with a thousand browsers" instead of "a thousand
+        # people with the same phone".
+        #
+        # The fleet therefore has to spread over the catalogue, and the
+        # share of the biggest single reading has to stay small.
+        profiles = generate_fleet(count=1000, vietnam=True)
+
+        models = collections.Counter(p.android_build.model for p in profiles)
+        biggest = models.most_common(1)[0]
+        self.assertGreater(
+            len(models),
+            100,
+            f"the fleet uses only {len(models)} models",
+        )
+        self.assertLess(
+            biggest[1],
+            len(profiles) // 20,
+            f"{biggest[0]} is {biggest[1]} of {len(profiles)} profiles",
+        )
+
+        # The chip count, the memory and the touch count are the three
+        # readings a script groups on most cheaply, and they are the
+        # three that have to be spread.
+        for name, values in (
+            ("hardware_concurrency", [p.navigator.hardware_concurrency for p in profiles]),
+            ("device_memory", [p.navigator.device_memory for p in profiles]),
+            ("max_touch_points", [p.navigator.max_touch_points for p in profiles]),
+        ):
+            counts = collections.Counter(values)
+            self.assertGreater(
+                len(counts),
+                1,
+                f"every profile of the fleet reports the same {name}",
+            )
+            # The biggest group may not hold the fleet.  A fleet that
+            # reads as one value on a cheap axis is one value to the
+            # site, however different the serial is.
+            biggest_share = max(counts.values()) / len(profiles)
+            self.assertLess(
+                biggest_share,
+                0.99,
+                f"{biggest_share:.1%} of the fleet reports the same {name}",
+            )
 
     def test_the_identity_of_the_fleet_is_unique(self) -> None:
         profiles = generate_fleet(count=500, vietnam=True)

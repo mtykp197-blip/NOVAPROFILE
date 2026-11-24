@@ -34,7 +34,10 @@ import sys
 from pathlib import Path
 
 #: The repository root, derived from this file's location.
-ROOT = Path(__file__).resolve().parents[2]
+#:
+#: The file lives in ``novaprofile/control_plane/tools``, so the repository
+#: root is three levels up.
+ROOT = Path(__file__).resolve().parents[3]
 
 #: Where the series lives.
 PATCH_DIR = ROOT / "novaprofile" / "core_patch" / "patches"
@@ -116,6 +119,15 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "content/browser/client_hints/client_hints.cc",
             "content/browser/nova/nova_client_hints.cc",
             "content/browser/nova/nova_client_hints.h",
+            # The hand-over cache.
+            #
+            # The browser process fills this while it is still the
+            # process that owns the command line, and the renderer
+            # reads it later.  It is included by name from
+            # ``content/app``, so it has to travel with the series --
+            # a series that leaves it out does not build.
+            "content/browser/nova/nova_handover_cache.cc",
+            "content/browser/nova/nova_handover_cache.h",
             "content/browser/service_host/utility_process_host.cc",
         ),
     ),
@@ -180,17 +192,52 @@ def _git(chromium: Path, *args: str) -> str:
     return result.stdout
 
 
-def _diff(chromium: Path, paths: tuple[str, ...]) -> str:
-    """Return the diff of the given paths, as a patch."""
+def _diff(chromium: Path, paths: tuple[str, ...], base: str | None) -> str:
+    """Return the diff of the given paths, as a patch.
 
-    # The untracked files are the NOVA sources the build adds; they are
-    # staged first so that the diff carries them as new files.
+    The diff is taken against the *base* -- the commit the NOVA work
+    started from -- rather than against the working tree.
+
+    The difference matters.  A diff against the working tree only
+    carries what is not committed yet, so a file that was added by an
+    earlier NOVA commit and has not been touched since is left out of
+    the series.  The series is meant to be applied to a checkout that
+    has never seen the NOVA work, so every file the build needs has
+    to be in it, whether it was written yesterday or a month ago.
+    """
+
     existing = [p for p in paths if (chromium / p).exists()]
     missing = [p for p in paths if p not in existing]
     if missing:
         raise RuntimeError(f"the checkout does not have: {', '.join(missing)}")
 
+    if base:
+        return _git(chromium, "diff", "--binary", "--no-color", base, "--", *existing)
     return _git(chromium, "diff", "--binary", "--no-color", "--", *existing)
+
+
+def _base_commit(chromium: Path) -> str | None:
+    """The commit the NOVA work started from.
+
+    It is the commit before the first one that touched a NOVA file.
+    The series is the difference between that commit and the tree
+    that was compiled, so the series has to be taken against it.
+    """
+
+    output = _git(
+        chromium,
+        "log",
+        "--reverse",
+        "--format=%H",
+        "--",
+        "third_party/blink/renderer/core/nova",
+        "content/browser/nova",
+    ).strip()
+    if not output:
+        return None
+    first = output.splitlines()[0]
+    parent = _git(chromium, "rev-parse", f"{first}^").strip()
+    return parent or None
 
 
 def main() -> int:
@@ -213,8 +260,11 @@ def main() -> int:
         return 2
 
     headers = dict(HEADERS)
+    base = _base_commit(chromium)
+    if base:
+        print(f"the series is taken against {base[:12]}")
     for name, paths in GROUPS:
-        body = _diff(chromium, paths)
+        body = _diff(chromium, paths, base)
         if not body.strip():
             print(f"{name}: no differences")
             continue

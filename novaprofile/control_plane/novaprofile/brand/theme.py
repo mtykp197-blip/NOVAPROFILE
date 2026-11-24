@@ -20,6 +20,11 @@ class Colour:
     #: What the colour is for.
     name: str
 
+    def __str__(self) -> str:
+        """The hex value, so a toolkit that formats a colour gets a colour."""
+
+        return self.hex
+
     @property
     def rgb(self) -> tuple[int, int, int]:
         """The colour as a red, green and blue triple."""

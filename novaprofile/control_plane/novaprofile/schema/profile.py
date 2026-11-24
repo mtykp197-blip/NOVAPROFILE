@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ..core.seed import SeedDeriver, new_master_seed, new_uuid7
+from ..core.seed import SeedDeriver, new_master_seed, new_profile_id
 from .enums import ProfileStatus
 from .hardware import (
     AndroidAbiSoc,
@@ -36,12 +36,12 @@ from .identity import (
 )
 from .network import (
     Dns,
-    Tls,
     GeoIntelligence,
     GeoSync,
     HttpHeaders,
     Proxy,
     ProxyRotation,
+    Tls,
     WebRtc,
 )
 from .signals import (
@@ -162,7 +162,7 @@ class ProfileIdentity(BaseModel):
     @classmethod
     def create(cls, name: str, *, profile_id: str | None = None, **kwargs) -> ProfileIdentity:
         """Build a fresh identity with a UUIDv7."""
-        return cls(id=profile_id or new_uuid7(), name=name, **kwargs)
+        return cls(id=profile_id or new_profile_id(), name=name, **kwargs)
 
 
 class ProfileConfig(BaseModel):
@@ -355,6 +355,35 @@ class ProfileConfig(BaseModel):
                 str(self.storage_network.rtt),
                 str(self.storage_network.downlink),
                 self.storage_network.connection_type,
+            ],
+            "sig_geo": [
+                # The geographic anchor.  The timezone and the locale are
+                # read straight off the page, so two profiles that share
+                # them are clustered by any script that wants to.  The
+                # coordinates are included at a precision finer than a
+                # city, because a hundred million profiles cannot be
+                # spread over a hundred timezones without a site seeing
+                # a million profiles in one city.
+                #
+                # The geolocation fix itself is not part of the
+                # signature: it is a randomised point inside the city's
+                # radius, and the radius is wide enough that two profiles
+                # of the same city land on different points anyway.
+                self.timezone.iana_name,
+                str(self.timezone.offset_minutes),
+                self.locale.primary,
+                self.locale.currency,
+                self.locale.hour_cycle,
+                (
+                    f"{self.geolocation.latitude:.5f}"
+                    if self.geolocation.latitude is not None
+                    else ""
+                ),
+                (
+                    f"{self.geolocation.longitude:.5f}"
+                    if self.geolocation.longitude is not None
+                    else ""
+                ),
             ],
             "sig_webgpu": [
                 # ``navigator.gpu.requestAdapter()`` returns the adapter

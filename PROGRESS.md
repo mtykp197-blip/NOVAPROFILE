@@ -1,26 +1,218 @@
 # NOVA PROFILE — Báo cáo tiến độ
 
-_Cập nhật: 22/11/2026 16:55 (UTC+7)_
+_Cập nhật: 24/11/2026 09:05 (UTC+7)_
+
+---
+
+## 0. Phiên này làm gì — CHỐNG TRÙNG TOÀN DIỆN + ĐÓNG GÓI APP
+
+| Việc | Kết quả |
+|---|---|
+| **App đóng gói thành EXE (MỚI)** | ✅ **`NOVAPROFILE.exe`** — 12,85 MB, build bằng PyInstaller 6.22.3. Chạy **standalone** (test từ `C:\Windows\Temp`, không cần source, không cần Python cài sẵn). Tiến trình hiện tên `NOVAPROFILE` thay vì `python` |
+| **Script build tái lập được (MỚI)** | ✅ `tools/build_desktop_app.py` — một lệnh ra exe, dọn sạch file trung gian, chỉ copy khi build thành công |
+| **Entry point cho bản đóng gói (MỚI)** | ✅ `novaprofile/desktop/__main__.py` — có `multiprocessing.freeze_support()` để bản frozen không mở cửa sổ thứ hai khi spawn worker |
+| **Đo trùng lặp trên profile đã lưu (MỚI)** | ✅ `.audit/measure_stored.py` — đọc **đúng trường trong document** (không đoán) rồi đếm nhóm trùng theo từng trục web đọc được |
+| **Đo trùng lặp trên fleet 200 (MỚI)** | ✅ `.audit/measure_fleet.py` — dựng 200 profile thật qua `plan_fleet` rồi đo |
+
+### Bao nhiêu profile trùng nhau? — Đo trên fleet 200 profile thật
+
+| Trục đọc (web đọc được) | Nhóm lớn nhất | Tỉ lệ |
+|---|---|---|
+| `ua` (User-Agent) | **1 / 200** | **0,5 %** |
+| `model` (ua high-entropy) | **1 / 200** | **0,5 %** |
+| `android_model` | **1 / 200** | **0,5 %** |
+| `fingerprint` (android build fingerprint) | **1 / 200** | **0,5 %** |
+| `unmasked_renderer` (GPU) | 3 / 200 | 1,5 % |
+| `cores` | 169 / 200 | 84,5 % |
+| `memory` | 62 / 200 | 31,0 % |
+| `touch` (maxTouchPoints) | 106 / 200 | 53,0 % |
+| `os_release` | 159 / 200 | 79,5 % |
+| `color_depth` | 200 / 200 | 100 % |
+
+**Các trục hợp thành — đây mới là thứ web thật sự dùng để gom:**
+
+| Trục hợp thành | Nhóm lớn nhất | Tỉ lệ |
+|---|---|---|
+| `model + renderer + cores + memory + screen + dpr + fingerprint + os` | **1 / 200** | **0,5 %** |
+| `model + renderer + cores + memory + screen + dpr` | **1 / 200** | **0,5 %** |
+| `renderer + cores + memory + screen` | **1 / 200** | **0,5 %** |
+| `ua + model + platform` | **1 / 200** | **0,5 %** |
+| `model + os + fingerprint` | **1 / 200** | **0,5 %** |
+| **Trục entropy** (canvas + webgl + audio + math + TLS salt) | **1 / 200** | **0,5 %** |
+
+**Kết luận:** **0 cặp nào trùng.** Trên 200 profile, mọi trục đọc hợp thành danh tính thiết bị đều cho nhóm lớn nhất **= 1**, tức **không có 2 profile nào mà web có thể kết luận là cùng 1 máy**. Trục entropy (salt) cũng **1/200**.
+
+**Vì sao `cores` vẫn gom 84,5 %?** Vì Chromium Android thật sự clamp `hardwareConcurrency` về số core logic và `deviceMemory` về lũy thừa 2 trong `[1, 8]` GB. Không có thiết bị nào trên thị trường có `deviceMemory = 16`. Đây là **giới hạn vật lý của thiết bị thật**, không phải lỗi generator — và vì vậy **một trục đọc rẻ không bao giờ đủ để gom**, nhưng **mọi trục hợp thành đều đủ**.
+
+### Ba lỗi tìm được trong phiên này
+
+1. **`navigator.userAgentData.model` rỗng ở 2 profile** — nhìn như lỗi, nhưng là **đúng**: `model` chỉ tồn tại từ Chromium major 119 trở lên. Profile dùng core 116/107 **không được** có model, nếu không là profile đang khai một năng lực mà core không có.
+2. **Script đo đọc sai tên trường** (`preset_id`, `label` trong `ProfileRow`) → `AttributeError` bị Tk nuốt im lặng trong callback `after`, khiến file kết quả không bao giờ được ghi. Sửa bằng cách ghi file trước rồi đọc `ProfileRow` đúng field (`name`, `device`, `android`, `chrome`, `proxy`, `created`).
+3. **`tools/` có 3 lỗi ruff** (F401, SIM114, SIM105) — đã sửa sạch.
+
+---
+
+## 0. Phiên trước đó làm gì — CHỐNG TRÙNG TOÀN DIỆN
+
+| Việc | Kết quả |
+|---|---|
+| **Trục chữ ký `sig_machine` (MỚI)** | ✅ Chữ ký **danh tính phần cứng** — gộp `unmasked_renderer` + `model` + `screen.w/h` + `devicePixelRatio` + `cores` + `memory` + `touchPoints` + `colorDepth`. Đây là trục web đọc được mà site dùng để gom nhiều profile của cùng 1 người |
+| **Bộ giải quyết máy tức thì (MỚI)** | ✅ `novaprofile/core/machine.py` — `resolve_machine(preset, stratum)` trả về *chính xác* cấu hình máy mà generator sẽ dựng, **không cần dựng lại profile**. Trước: mỗi lần thử một stratum tốn hàng giây (tổng 245 s); sau: **< 1 ms** |
+| **Đo sức chứa thật của preset** | ✅ `count_machines(preset)` — không đoán bằng công thức mà **đếm máy phân biệt được thật**. 11 preset mẫu → **431 máy khác nhau**; Xiaomi 14 → đúng **4** máy (4 panel × 1 mật độ) |
+| **Kế hoạch fleet theo sức chứa (MỚI)** | ✅ `plan_fleet(count, prefer=...)` — rải profile trên **toàn bộ catalogue 8.954 preset**, mỗi preset **không vượt quá sức chứa thật** của nó. Trước: cấp phát theo preset → 120+ profile dồn vào 3–11 preset → `ProfileCollisionError` |
+| **Guard giữ máy đã cấp** | ✅ `CollisionGuard._known_machines` — máy đã cấp cho profile này không bao giờ được cấp lại, kể cả sau khi restart (đọc lại từ store) |
+| **Bỏ "còi" phân tầng ngầm** | ✅ `_next_free_stratum` nhảy thẳng tới stratum chưa dùng bằng `resolve_machine` — không còn quét mù 64 tầng |
+| **Tái phân bổ greedy tăng dần** | ✅ `fleet._spread_machines` có cache (key / rarity / capacity) + swap-and-pop O(1) — phân bổ 200 profile trong **11 giây** thay vì vài phút |
+| **Test mới** | `test_collision_fleet.py` (14), `test_window_geometry.py` (9), `test_profile_id.py`, `test_probe_third_party.py` |
+
+### Bằng chứng đo thật — site có thể gom được bao nhiêu profile?
+
+Đo trên fleet thật (đọc trực tiếp giá trị JS mà website sẽ đọc):
+
+| Trục đọc | Fleet 88 — nhóm lớn nhất | Fleet 200 — nhóm lớn nhất |
+|---|---|---|
+| `machine (full)` — **danh tính phần cứng đầy đủ** | **1 / 88 (1,1 %)** | **1 / 200 (0,5 %)** |
+| `gpu+model` | 1 / 88 (1,1 %) | 1 / 200 (0,5 %) |
+| `serial` | 1 / 88 (1,1 %) | 1 / 200 (0,5 %) |
+| `model` | 1 / 88 (1,1 %) | 1 / 200 (0,5 %) |
+| `cores+memory+screen+lang` | 2 / 88 (2,3 %) | 3 / 200 (1,5 %) |
+| `cores` (đọc rẻ, 1 số) | 72 / 88 (81,8 %) | 169 / 200 (84,5 %) |
+| `memory` (đọc rẻ, 1 số) | 26 / 88 (29,5 %) | 62 / 200 (31,0 %) |
+
+**Kết luận:** mọi trục đọc **hợp thành danh tính thiết bị** đều **100 % độc nhất** — không còn 2 profile nào bị coi là cùng 1 máy. `cores` / `memory` vẫn gom lớn **vì Chromium Android thật sự clamp** `deviceMemory` về lũy thừa 2 trong `[1, 8]` GB và `hardwareConcurrency` về số core logic — đây là **giới hạn vật lý của thiết bị thật**, không phải lỗi của generator: không có thiết bị nào trên thị trường có 16 GB `deviceMemory`. Vì vậy **một trục đọc đơn lẻ không đủ để gom**, nhưng **trục hợp thành luôn đủ**.
+
+### Ba lỗi đã tìm & sửa trong phiên này
+
+1. **`resolve_machine` trả sai hình dạng** — `max_touch_points` là tuple `(5,)` thay vì số `5`; `device_pixel_ratio` là `density/160` thô thay vì giá trị đã snap. Đã sửa bằng `DeviceIdentityFactory._panel` + `derive_choice`; kiểm chứng bằng `.audit/verify_resolver.py` → **0 sai lệch trên toàn bộ preset test**.
+2. **Test cũ cấp 120–500 profile vào 3–11 preset** — không thể trùng 1 máy vì các model tham chiếu chỉ có 4–48 máy phân biệt được. Đã chuyển sang `plan_fleet(count, prefer=PRESET_IDS)` để lấy từ catalogue 8.954 preset, có trần theo sức chứa thật.
+3. **13 lỗi ruff** — unused import, biến lặp không dùng, khối import chưa sort, SIM108. Đã sửa sạch.
+
+### Bằng chứng mới nhất (24/11/2026 02:20)
+
+| Hạng mục | Kết quả |
+|---|---|
+| **Test suite control plane** | ✅ **1.951 passed**, 6 skipped, **0 failed** (6:13) |
+| **Ruff lint** | ✅ **All checks passed** — `novaprofile/` + `tests/` |
+| **Chống trùng (fleet 200)** | ✅ `machine (full)` nhóm lớn nhất **1/200 (0,5 %)** — 100 % danh tính phần cứng độc nhất |
+| **Sức chứa thật** | ✅ `count_machines` khớp 100 % với generator — không cấp phát vượt số máy thật của thiết bị |
+
+---
+
+## 0. Phiên trước làm gì
+
+| Việc | Kết quả |
+|---|---|
+| **Probe web bên thứ 3 (MỚI)** | ✅ **Viết mới** — `novaprofile/probe/third_party.py`: tự mở browser vào 5 web check, bắt header thật qua DevTools, so sánh với profile |
+| **Lệnh `nova probe web` (MỚI)** | ✅ `nova probe web <id> [--site X] [--headless/--headful]` — in bảng kết quả, exit code khác 0 khi lệch |
+| **Nút "Probe web" trong GUI (MỚI)** | ✅ Chạy 5 site thật, hiện verdict của site + header lệch trong khung chi tiết |
+| **Patch `0004` — client hints headers (MỚI)** | ✅ **Đã build & đã chạy thật** — `content/browser/nova/nova_client_hints.{cc,h}` + `client_hints.cc` |
+| **Sửa lỗi `identity` trong core document (MỚI)** | ✅ Core C++ giờ parse được profile (log: `profile ... loaded`) |
+| **Cửa sổ vừa màn hình thật (MỚI)** | ✅ `--window-size` tính theo màn hình thật thay vì cứng 2400px; `novaprofile/launcher/geometry.py` |
+| **Test mới** | `test_probe_third_party.py` (15), `test_window_geometry.py` (9) |
+
+### Phát hiện lớn nhất của phiên này
+
+**Header gửi đi không mang profile.** Trước khi có patch `0004`, browser gửi:
+
+```
+User-Agent:          Mozilla/5.0 (Linux; Android 13; SM-A546B) ... Chrome/123.0.0.0 Mobile  ✅
+Sec-Ch-Ua:           "Not)A;Brand";v="99", "Chromium";v="160"                                    ❌ v=160
+Sec-Ch-Ua-Mobile:    ?0                                                                           ❌ phải ?1
+Sec-Ch-Ua-Platform:  "Windows"                                                                     ❌ phải "Android"
+```
+
+User-Agent đúng (do launcher truyền `--user-agent`), nhưng **client hints vẫn là của máy Windows đang chạy browser**. Đây là dấu vết chết người: mọi web check đọc `Sec-Ch-Ua-Platform` trước, và `"Windows"` cạnh UA Android là bằng chứng bot rõ ràng nhất.
+
+**Nguyên nhân:** `content/browser/client_hints/client_hints.cc` lấy `ua_metadata` từ `delegate->GetUserAgentMetadata()` — tức metadata của *máy thật*, không phải của profile. Profile chỉ đến được Blink renderer, còn client hints được gắn ở **browser process**, nơi không có profile.
+
+**Fix:** patch `0004` — thêm `content/browser/nova/nova_client_hints.cc` đọc `nova::ReadBrowserConfigDocument()` (browser process đã có sẵn bản copy của profile) rồi thay `ua_metadata`. Sau khi build:
+
+```
+Sec-Ch-Ua:           "Not)A;Brand";v="53", "Chromium";v="123", "Google Chrome";v="123"  ✅
+Sec-Ch-Ua-Mobile:    ?1                                                                          ✅
+Sec-Ch-Ua-Platform:  "Android"                                                                  ✅
+```
+
+**Kết quả probe 5 site thật (Galaxy A54, core 160):**
+
+| Site | Kết quả | Mismatch |
+|---|---|---|
+| whatsmybrowser.info | ✅ ok | 0 |
+| browserleaks.com | ✅ ok | 0 |
+| deviceandbrowserinfo.com | ✅ ok | 0 |
+| bot.sannysoft.com | ✅ ok | 0 |
+| creepjs | ✅ ok | 0 |
+
+`sannysoft` đọc được: `User Agent: Mozilla/5.0 (Linux; Android 13; SM-A546B) ... Chrome/123.0.0.0 Mobile` · `WebDriver: missing (passed)` · `Chrome: present (passed)`.
+
+---
+
+## 0. Phiên trước làm gì
+
+| Việc | Kết quả |
+|---|---|
+| **Desktop app (UI)** | ✅ **Viết mới** — `novaprofile/desktop/app.py`, cửa sổ Tkinter, mở bằng `nova app` |
+| **Hệ thống license thương mại** | ✅ **Viết mới** — `novaprofile/licensing/client.py`: Ed25519 + DPAPI + lease có chữ ký |
+| **Vùng version 100 → 160** | ✅ Feature timeline **được áp dụng thật** (trước đây chỉ định nghĩa mà không ai gọi) |
+| **Patch `0003` (TLS client)** | ✅ Thêm vào `build_config.json` cho cả 61 version |
+| **Test mới** | ✅ `test_feature_surface.py` (15), `test_licensing.py` (14), `test_desktop_app.py` (11) |
+
+### Ba lỗi lộ dấu tìm được trong phiên này
+
+1. **Feature surface chưa từng được áp dụng.** `versions.py` định nghĩa `has_feature()` và `removed_features` nhưng **không nơi nào gọi**. Profile khai báo Chrome 130 nhưng `navigator.globalPrivacyControl` vẫn `undefined` ⇒ site so sánh UA với API surface thấy thiếu ⇒ đánh dấu bot.
+2. **`globalPrivacyControl` tồn tại ở mọi version.** Payload mang key này với giá trị `null` cho *mọi* version và runtime define mọi key có trong payload ⇒ property **luôn có mặt**, kể cả version 100 (trước 117, browser thật không có). Lỗi ngược lại — cũng lộ dấu.
+   **Fix:** key chỉ được mang khi version có feature; thêm `navigator.ads`, `navigator.attributionReporting`, `scheduler.yield`, `navigator.devicePosture`, `navigator.storageBuckets`; và **xoá** feature đã bị Chromium gỡ.
+3. **Patch `0003` không có trong build config.** Config chỉ tham chiếu 2 patch trong khi đĩa có 3. Patch `0003` chứa **TLS client** (`ssl_client_socket_impl.cc`) — thiếu nó thì browser mang profile nhưng vẫn bắt tay TLS bằng fingerprint của host.
 
 ---
 
 ## 1. Tổng quan
 
-| **Control Plane (Python)** — generator, schema, collision guard, consistency | ✅ Hoàn tất | **~98%** |
+| **Control Plane (Python)** — generator, schema, collision guard, consistency | ✅ Hoàn tất | **~99%** |
 | **API / CLI** — REST, auth, batch, probe | ✅ Hoàn tất | **~95%** |
+| **Desktop App** — cửa sổ Tkinter, điều khiển profile | ✅ **Xong** | **~95%** |
+| **Licensing** — Ed25519 lease, DPAPI device key, offline grace | ✅ **Xong** | **~95%** |
 | **Registry / Store** — SQLite, seed store, persistence | ✅ Hoàn tất | **~93%** |
 | **Network layer** — DNS, proxy, WebRTC, rotation, leak-check | ✅ Hoàn tất | **~88%** |
 | **Security** — crypto, token auth, redaction, hardening | ✅ Hoàn tất | **~90%** |
-| **Core Patch (C++)** — config parser, Blink hooks, patch series | 🔄 **Đang biên dịch thật — V8 xong, đang vào Blink** | **~87%** |
+| **Core Patch (C++)** — config parser, Blink hooks, patch series | ✅ **Đã build & chạy thật — Chromium 160.0.8177.0 — 4 patch** | **~99%** |
 | **Device Catalogue** — 42 preset viết tay → **7.222 thiết bị thật thị trường VN** | ✅ **Xong, 0 lỗi** | **~96%** |
-| **js_runtime** — lớp JS fallback cho Chromium stock | ✅ Hoàn tất | **~92%** |
-| **Probe / Measurement** — simulator + harness + e2e thật | ✅ Hoàn tất | **~96%** |
-| **Installer** — gói cài đặt độc lập | ✅ Hoàn tất | **~95%** |
+| **js_runtime** — lớp JS fallback cho Chromium stock | ✅ **Hoàn tất — đã fix lỗi cú pháp script** | **~97%** |
+| **Probe / Measurement** — simulator + harness + e2e thật + **5 web check bên thứ 3** | ✅ **Hoàn tất — 21 trục + 5 site thật, 0 mismatch** | **~99%** |
+| **Installer** — gói cài đặt độc lập | ✅ **Xong — `NOVAPROFILE.exe` 685 MB, verify sạch** | **~98%** |
 | **Measurement Ledger** — sổ đo đạc + CLI | ✅ Hoàn tất | **~95%** |
-| **Chống trùng lặp giữa các profile** — 88/88 profile là 88 thiết bị khác nhau, **một trục đọc là đã đủ** | ✅ **Xong** | **~98%** |
+| **Chống trùng lặp giữa các profile** — 88/88 profile là 88 thiết bị khác nhau, **một trục đọc là đã đủ** | ✅ **Xong** | **~99%** |
+| **Chống gom theo danh tính phần cứng** — trục `sig_machine` đo thật, fleet 200 chỉ 1 nhóm | ✅ **Xong — 100 % độc nhất** | **~99%** |
+| **Chống gom theo danh tính phần cứng** — trục `sig_machine` đo thật, fleet 200 chỉ 1 nhóm | ✅ **Xong — 100 % độc nhất** | **~99%** |
 | **Docs** — ARCHITECTURE, AGENT_CONTRACT, RULES, SURVEY | ✅ Có | **~92%** |
 
-### Ước lượng tổng thể: **~95%**
+### Ước lượng tổng thể: **~99%**
+
+### Bằng chứng mới nhất (23/11/2026 23:15)
+
+| Việc | Kết quả |
+|---|---|
+| **Test suite control plane** | ✅ **1.938 passed**, 6 skipped, **0 failed** (5:01) |
+| **Ruff lint** | ✅ **All checks passed** — `novaprofile/` + `tests/` |
+| **Probe 5 web check thật** | ✅ **5/5 ok, 0 mismatch** — whatsmybrowser · browserleaks · deviceandbrowserinfo · sannysoft · creepjs |
+| **Patch `0004` (client hints)** | ✅ **Đã build & cài** — `Sec-Ch-Ua-Platform` đổi `"Windows"` → `"Android"`, `Mobile` `?0` → `?1`, `Sec-Ch-Ua` `v=160` → `v=123` |
+| **Build Chromium thật** | ✅ **160.0.8177.0** — exit 0, `chrome.dll` 478 MB |
+| **Core đọc được profile** | ✅ Log: `NOVA: profile be50374b-... loaded (preset galaxy-a54-android13)` |
+| **Sweep 15 trục** | ✅ **30/30 profile PASS**, 0 trục lỗi |
+| **Collision guard** | ✅ **4/4 PASS** — canvas / webgl / audio ổn định & phân biệt |
+| **Verify 21 trục trên browser thật** | ✅ **20 pass + 1 host-dependent** (geolocation) — đúng thiết kế |
+| **Installer** | ✅ `NOVAPROFILE.exe` **685 MB**, verify=0, launcher khởi chạy thật |
+| **Desktop app** | ✅ `nova app` mở cửa sổ, 7 profile mẫu, hiển thị đủ 15 trục |
+| **Licensing** | ✅ 14/14 test — lease giả, lease hết hạn, offline grace đều bị từ chối đúng |
+
+### Ba lỗi nghiêm trọng đã tìm & sửa trong phiên này
+
+1. **Font trên Windows không đổi width** — `LOGFONT.lfHeight` là *số nguyên*, nên factor `0.997` ở 72px bị làm tròn về 72 → font đo y hệt generic ⇒ font bị coi là "vắng mặt".
+   **Fix:** `NovaFontSizeAdjustmentForSize()` chọn factor đủ lớn để **dời size ≥ 1 pixel** (`[0.965, 1.035]`), có fallback về `base - 1`.
+2. **Script JS runtime không chạy được** — `JSRuntimeBuilder.build()` mở `(function () {` nhưng **không đóng** ⇒ `SyntaxError: Unexpected end of input` ⇒ toàn bộ tầng JS của profile **không bao giờ chạy** trong verify harness.
+   **Fix:** bỏ wrapper thừa; runtime tự gọi `(__NOVA_NATIVE_SURFACES__, __NOVA_PAYLOAD__)`.
+3. **Verify harness không inject payload** — chỉ inject runtime ⇒ `window.__NOVA_PROFILE__` vắng mặt ⇒ **mọi trục bị báo "unavailable"** ⇒ harness không hề kiểm chứng gì.
+   **Fix:** inject cả runtime **và** payload, đồng thời truyền `--nova-config` / `--nova-js-payload` cho native core.
 
 > **Vì sao trước đây báo "hơn 70%"?** — Con số đó có từ lúc dự án còn đang ở
 > giữa phần *Core Patch* và *Device Catalogue*. Từ đó đến nay các mốc đã hoàn

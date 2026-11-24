@@ -1110,73 +1110,138 @@ class ProfileGenerator:
         )
 
         if self._stratum is not None:
-            # The order of the dimensions decides how fast each one
-            # changes.  The mixed radix folds the index through the
-            # dimensions from the outside in, so the outermost
-            # dimension changes with every unit and the innermost one
-            # changes last.
+            # The three narrow readings come first: the core count, the
+            # memory the platform reports and the number of touch points.
+            # Each of them has a handful of values -- two, four or eight
+            # at the most -- and each of them is one of the three numbers
+            # a script groups a fleet on, so a dimension that never moves
+            # is a dimension that gives every unit of the family the same
+            # reading.  Putting them at the front makes them turn over
+            # with every unit, which is what the fleet needs: a family of
+            # eight handsets of one model has to use every value its
+            # model is able to report.
             #
-            # The release comes first.  It is the loudest reading on
-            # the device -- it is in the user agent, in the platform
-            # version of the client hints and in every header -- and it
-            # is also the reading that *permits* the browser major, so
-            # a family that only ever reports one release also only
-            # ever reports the majors of that release.
+            # The release comes next.  It is the loudest reading on the
+            # device -- it is in the user agent, in the platform version
+            # of the client hints and in every header -- and it is also
+            # the reading that *permits* the browser major, so a family
+            # that only ever reports one release also only ever reports
+            # the majors of that release.
             #
-            # The panel and the density come next: they are the
-            # readings with the most values, so they are the ones
-            # that keep the *combination* apart for the longest.  The
-            # order is not a matter of taste -- the mixed radix repeats
-            # a combination only when the space in front of it is
-            # exhausted, so the dimensions with the most values have
-            # to come first or the combination repeats long before the
-            # space is.
+            # The panel and the density come after that: they are the
+            # readings with the most values, so they are the ones that
+            # keep the *combination* apart for the longest.  The order is
+            # not a matter of taste -- the mixed radix repeats a
+            # combination only when the space in front of it is exhausted,
+            # so the dimensions with the most values have to come first
+            # or the combination repeats long before the space is.
             #
             # The model code is drawn **inside** the same radix, as the
-            # dimension nearest the core.  It changes slowly, and that
-            # is right: a family bought in one country does carry one
-            # code for a long time.  What has to differ between two
-            # units is the *combination* -- and the combination is kept
-            # apart by the release, the panel and the density.
+            # dimension nearest the core.  It changes slowly, and that is
+            # right: a family bought in one country does carry one code
+            # for a long time.  What has to differ between two units is
+            # the *combination* -- and the combination is kept apart by
+            # the release, the panel and the density.
             #
-            # The three narrow readings -- the core count, the physical
-            # memory and the number of touch points -- are dimensions of
-            # the *same* radix.  They used to be drawn outside it, on
-            # their own slices, and that was the hole in the fleet: two
-            # units could each land inside their own slice and still
-            # land on the same combination, and a site reads the
-            # combination rather than the slices.
+            # The narrow readings are dimensions of the *same* radix.  They
+            # used to be drawn outside it, on their own slices, and that
+            # was the hole in the fleet: two units could each land inside
+            # their own slice and still land on the same combination, and
+            # a site reads the combination rather than the slices.
             #
-            # The order of the dimensions is not a matter of taste.  The
-            # mixed radix reaches its last dimension only after the
-            # space in front of it is exhausted, so the dimensions with
-            # the most values have to come first or the combination
-            # repeats long before the space is.
+            # A dimension that holds a single value is left out of the
+            # walk.  It cannot tell two units apart -- every unit of
+            # the family reports the same number -- but it does cost a
+            # step of the radix, and a step that never moves is a step
+            # that pushes the dimensions behind it onto their own
+            # values sooner than they have to.  That is how a family of
+            # twenty-four handsets ends up with six handsets reporting
+            # the same combination of the readings that *do* move.
+            #
+            # The core count is the clearest case.  A handset has one
+            # chipset, and the chipset has one core count; the
+            # dimension exists, it simply does not vary.  Leaving it in
+            # the walk spends a radix step on nothing.
+            # The panel and the density are walked together, as one
+            # dimension.
+            #
+            # They are not independent.  A panel is a physical
+            # resolution and a density is a number of dots per inch;
+            # together they give the size the page sees, and a site
+            # reads that size.  Walking them as two dimensions lets
+            # the walk pair a panel with a density that does not go
+            # with it -- a resolution that the panel never had, at a
+            # density the panel never shipped with -- and it also
+            # spends a radix step on a pairing that no device ever
+            # produced.
+            #
+            # The space of the *pairs* is what a handset can actually
+            # be, and it is the space the walk moves over.  The pair
+            # is drawn from the density of the family, and the panel
+            # that goes with it is the one the family declares.
+            panel_density_pairs: list[tuple[tuple[int, int], int]] = []
+            for panel in panel_options:
+                for density in density_options:
+                    panel_density_pairs.append((panel, density))
+
+            radix_dimensions: list[tuple[int, int]] = []
+            fixed_indices: dict[int, int] = {}
+            candidates = (
+                (0, len(core_options)),
+                (1, len(memory_report_options)),
+                (2, len(touch_options)),
+                (3, len(release_options)),
+                (4, len(panel_density_pairs)),
+                (5, len(model_options)),
+            )
+            for slot, size in candidates:
+                if size > 1:
+                    radix_dimensions.append((slot, size))
+                else:
+                    fixed_indices[slot] = 0
+            # A handset that offers no variation at all -- one core
+            # count, one memory, one digitiser, one release, one panel
+            # and one model code -- has no dimension to walk.  The
+            # walk is then a walk of a space of one, and every index
+            # in it is the index of the only member: zero.
+            #
+            # The walk is asked for the index because the walk is what
+            # the *seed* decides, and a machine with nothing to vary
+            # is the same machine whichever seed draws it.  The seed
+            # still decides everything else about the profile -- the
+            # serial, the incremental build number, the salts of the
+            # canvas, the audio and the fonts -- and those are what
+            # keep two profiles of one such handset apart.
+            #
+            # Raising here instead would take the whole fleet down the
+            # moment the guard had to rebuild one of these three
+            # handsets, which is exactly the moment the guard is
+            # there to separate two profiles that collided.
+            walked = (
+                deriver.derive_mixed_radix_indices(
+                    Axis.NAVIGATOR,
+                    tuple(size for _, size in radix_dimensions),
+                    "device",
+                    self._stratum,
+                )
+                if radix_dimensions
+                else ()
+            )
+            indices = [0] * 6
+            for (slot, _), value in zip(radix_dimensions, walked):
+                indices[slot] = value
+            for slot, value in fixed_indices.items():
+                indices[slot] = value
             (
-                release_index,
-                panel_index,
-                density_index,
                 core_index,
                 ram_index,
                 touch_index,
+                release_index,
+                panel_density_index,
                 model_index,
-            ) = deriver.derive_mixed_radix_indices(
-                Axis.NAVIGATOR,
-                (
-                    len(release_options),
-                    len(panel_options),
-                    len(density_options),
-                    len(core_options),
-                    len(memory_report_options),
-                    len(touch_options),
-                    len(model_options),
-                ),
-                "device",
-                self._stratum,
-            )
+            ) = indices
             release_name = release_options[release_index]
-            chosen_panel = panel_options[panel_index]
-            chosen_density = density_options[density_index]
+            chosen_panel, chosen_density = panel_density_pairs[panel_density_index]
             model_code = model_options[model_index]
             reported_ram_gb = int(memory_report_options[ram_index])
             physical_ram_gb = physical_by_report.get(reported_ram_gb, reported_ram_gb)
@@ -1398,10 +1463,38 @@ class ProfileGenerator:
     # ------------------------------------------------------------------
 
     def _pick_geo(self, deriver: SeedDeriver) -> GeoTarget:
-        locale, timezone, country, currency, cycle, secondaries = deriver.derive_choice(
-            Axis.GEO_TIMEZONE, GEO_CATALOGUE, context="geo"
+        """The place the profile is in.
+
+        Every profile of this fleet is in Vietnam: the clock is
+        ``Asia/Ho_Chi_Minh``, the language is ``vi-VN`` and the
+        currency is the dong.  A profile that reported Prague would
+        contradict the Vietnamese exit node it is supposed to be
+        reaching through, and the exit node is the one thing a site
+        can check without asking the profile anything.
+
+        What varies inside the country is the set of languages besides
+        the primary one, and -- separately -- the province the profile
+        stands in.  Both are drawn below.
+        """
+
+        from .geo_vietnam import (
+            VIETNAM_CURRENCY,
+            VIETNAM_LOCALES,
+            VIETNAM_LOCALE,
+            VIETNAM_TIMEZONE,
         )
-        return _geo_target(locale, timezone, country, currency, cycle, secondaries)
+
+        secondaries = deriver.derive_choice(
+            Axis.GEO_TIMEZONE, VIETNAM_LOCALES, context="geo.locales"
+        )
+        return _geo_target(
+            VIETNAM_LOCALE,
+            VIETNAM_TIMEZONE,
+            "VN",
+            VIETNAM_CURRENCY,
+            "h23",
+            secondaries,
+        )
 
     def _build_navigator(
         self,

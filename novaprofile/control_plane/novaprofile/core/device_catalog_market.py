@@ -498,6 +498,17 @@ _SOC_RULES: tuple[tuple[tuple[str, ...], str, tuple[str, ...]], ...] = (
 )
 
 #: The CPU cluster layout of the SoC families the engine knows.
+#
+# The layout is what the platform reports and what a site reads back
+# out of ``navigator.hardwareConcurrency``, so the number of clusters
+# it names has to be the number of cores the chipset really carries.
+#
+# The eight-core layouts are the ones the table holds: one prime core,
+# three big ones and four little ones, which is eight in total.  The
+# layouts of the smaller and the larger parts are written out where
+# they are needed, because a layout that does not add up to the core
+# count of the chipset is a contradiction a site reads on the first
+# record it checks.
 _CLUSTER_LAYOUTS: dict[str, str] = {
     "Qualcomm": "1x3x4 Cortex-A78/A55/A55",
     "Samsung": "1x3x4 Cortex-A78/A55/A55",
@@ -506,6 +517,19 @@ _CLUSTER_LAYOUTS: dict[str, str] = {
     "HiSilicon": "2x2 Cortex-A76/A55",
     "Unisoc": "2x2 Cortex-A55/A55",
     "ARM": "2x2 Cortex-A76/A55",
+}
+
+#: The layouts of the core counts that are not the eight-core default.
+#:
+# Every layout here adds up to the core count it stands for, because
+# the count is read back off the layout.  A six-core part is one prime
+# core, two big ones and three little ones; a twelve-core part is one
+# prime core, two big ones, three medium ones and six little ones.
+_CLUSTER_LAYOUT_BY_CORES: dict[int, str] = {
+    4: "2x2 Cortex-A78/A55",
+    6: "1x2x3 Cortex-A78/A78/A55",
+    8: "1x3x4 Cortex-A78/A55/A55",
+    12: "1x2x3x6 Cortex-X3/A78/A55/A55",
 }
 
 _CORE_COUNT = re.compile(r"(\d+)\s*[- ]?\s*core", re.IGNORECASE)
@@ -713,13 +737,45 @@ def _nearest_real_core_count(value: int) -> int:
 
 
 def _cluster_layout(vendor: str, cores: int) -> str:
-    """A cluster layout that matches the core count and the vendor."""
+    """A cluster layout that matches the core count and the vendor.
 
-    if cores >= 8:
-        return _CLUSTER_LAYOUTS.get(vendor, "2x2 Cortex-A76/A55")
-    if cores >= 4:
-        return "2x2 Cortex-A78/A55" if vendor == "Qualcomm" else "2x2 Cortex-A76/A55"
-    return "2x2 Cortex-A55/A55"
+    The layout is the *source* of the core count the platform reports:
+    :func:`~novaprofile.core.devices.cores_from_cluster_layout` reads the
+    count back off the layout, so a layout that names a different number
+    of clusters than the chipset carries hands the site a core count
+    that contradicts the SoC it reads next to it.
+
+    The layout therefore has to add up.  A six-core part is one prime
+    core, two big ones and three little ones; a twelve-core part is one
+    prime core, two big ones, three medium ones and six little ones;
+    the four-core parts are two big ones with two little ones.
+
+    The little-core architecture follows the vendor: a Snapdragon part
+    is built out of Krait cores, a MediaTek one out of Cortex ones, and
+    the site reads the names.
+    """
+
+    layout = _CLUSTER_LAYOUT_BY_CORES.get(cores)
+    if layout is None:
+        layout = _CLUSTER_LAYOUTS.get(vendor, "2x2 Cortex-A76/A55")
+
+    if vendor in ("Qualcomm", "Samsung"):
+        return layout
+    if vendor == "MediaTek":
+        return layout.replace("Cortex-X3", "Cortex-A78")
+    if vendor == "Google":
+        return layout
+    if vendor == "HiSilicon":
+        return layout.replace("Cortex-X3", "Cortex-A76").replace(
+            "Cortex-A78", "Cortex-A76"
+        )
+    if vendor == "Unisoc":
+        return layout.replace("Cortex-X3", "Cortex-A55").replace(
+            "Cortex-A78", "Cortex-A55"
+        )
+    return layout.replace("Cortex-X3", "Cortex-A76").replace(
+        "Cortex-A78", "Cortex-A76"
+    )
 
 
 def _gpu_family(renderer: str) -> str:
@@ -849,6 +905,11 @@ SCREEN_DENSITY = (
     640,
 )
 
+#: The density a value snaps onto, remembered.
+#:
+#: The buckets do not move, so the answer does not either.
+_SNAPPED_DENSITIES: dict[float, int] = {}
+
 #: The pixel ratio each density bucket reports.
 #:
 #: The mapping is not the arithmetic quotient of the density by 160.
@@ -902,7 +963,18 @@ def screen_dpr(value: float) -> float:
 def snap_density(value: float) -> int:
     """Snap a computed density onto a bucket a real panel reports."""
 
-    return min(SCREEN_DENSITY, key=lambda allowed: (abs(allowed - value), allowed))
+    # The buckets are a fixed list and the value is a number, so the
+    # answer is a function of the number alone.  The engine asks for
+    # the same handful of densities hundreds of thousands of times
+    # while it measures the catalogue, and the walk over the buckets
+    # is the whole cost of the answer.
+    cached = _SNAPPED_DENSITIES.get(value)
+    if cached is not None:
+        return cached
+
+    snapped = min(SCREEN_DENSITY, key=lambda allowed: (abs(allowed - value), allowed))
+    _SNAPPED_DENSITIES[value] = snapped
+    return snapped
 
 
 def ratio_for_density(density: int) -> float:
@@ -1442,6 +1514,11 @@ DEFAULT_RAM = (4, 6, 8)
 #: exists in the gaming line that pushed the envelope.  The sizes step
 #: by the ones a phone actually ships with, because the dies come in
 #: those capacities and the boards are built around them.
+#:
+#: The set starts at one gigabyte because a one and a two gigabyte
+#: handset exist: they are the entry-level phones of the lines that
+#: predate the platforms this fleet reports, and the specifications
+#: that the catalogue is built from name them.
 _REAL_RAM_AMOUNTS: tuple[int, ...] = (1, 2, 3, 4, 6, 8, 10, 12, 16, 18, 24)
 
 
@@ -1526,8 +1603,14 @@ def ram_variants(memory: str) -> tuple[tuple[int, ...], ...]:
     """
 
     options = derive_ram_options(memory)
-    if options == DEFAULT_RAM and not _RAM_AMOUNT.search(memory or ""):
-        return (DEFAULT_RAM,)
+    if not _RAM_AMOUNT.search(memory or ""):
+        # The record says nothing about the memory, so the handset is
+        # described by the fallback set and it is one device.  Comparing
+        # against the fallback itself rather than against a constant
+        # keeps the two in step: the fallback is the set the rule
+        # produces for a record that names nothing, and a change to one
+        # is a change to both.
+        return (options,)
     return tuple((amount,) for amount in options)
 
 
@@ -1554,45 +1637,32 @@ def derive_cpu_options(chipset: str) -> tuple[int, ...]:
     no unit claims a core count its hardware could not have.  The draw
     is walked through the fleet's radix, so the fleet spreads over the
     set instead of piling onto one member of it.
+
+    Where the counts come from
+    --------------------------
+    The set is the set of core counts of the chipsets the row actually
+    names -- no more and no less.  A row that names one chipset gives a
+    one-member set, because one chip has one core count; a row that
+    merges the regional variants of a handset gives the counts of those
+    variants, and the set has more than one member only when those
+    counts actually differ.
+
+    This is where the earlier version of this function went wrong.  It
+    widened every chipset to the neighbouring *real* counts -- so a
+    Snapdragon 8 Gen 1, which is eight cores and has always been eight
+    cores, was offered as a four-core, a six-core and a twelve-core
+    handset as well.  A site that reads the SoC model and the core count
+    out of one record sees a contradiction on the very first device it
+    checks, and no amount of canvas noise hides it: the contradiction
+    is in the two fields that sit next to each other.
     """
 
-    base = _core_count(chipset)
-    # The counts the platform can report for one handset.
-    #
-    # The core count is the *total* of a big.LITTLE layout, and the
-    # totals that exist are the ones a chip designer actually ships:
-    # four, six, eight and twelve.  A count of seven or of ten is not
-    # a core count any chipset has, and a profile that reports one is
-    # a profile that cannot be a device.
-    #
-    # So the set is not "the count of this chip plus or minus two".
-    # That set is what a fleet needs to spread over, and it is also
-    # what makes the fleet look synthetic: a script that reads the
-    # core count, the model and the memory out of one telemetry record
-    # sees a handset with seven cores, and no vendor has ever made
-    # one.
-    #
-    # What replaces it is the set of counts the model's *own* chipsets
-    # report.  A handset is sold with more than one system-on-chip --
-    # the same model leaves the factory with a different one depending
-    # on the market, the carrier and the quarter -- and the core count
-    # the platform reports follows the chip that is in it.  Those
-    # counts are all real, and the set of them is the range the model
-    # may report.
-    options: list[int] = [base]
-
-    # The neighbouring *real* core counts, taken from the ones a chip
-    # designer ships.  Only the counts that are close enough to the
-    # base belong to the same generation of the same class of chip: a
-    # four-core chip and a twelve-core chip are two different
-    # handsets, not two configurations of one.
-    for candidate in _REAL_CORE_COUNTS:
-        if candidate == base:
-            continue
-        if abs(candidate - base) <= 4:
-            options.append(candidate)
-
-    return tuple(sorted(options))
+    counts: set[int] = set()
+    for variant in split_chipset_variants(chipset):
+        counts.add(_core_count(variant))
+    if not counts:
+        counts.add(_core_count(chipset))
+    return tuple(sorted(counts))
 
 
 def _panel_options(density: int) -> tuple[tuple[int, ...], tuple[float, ...]]:

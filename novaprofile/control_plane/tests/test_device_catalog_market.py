@@ -624,13 +624,18 @@ def test_the_brand_prefix_is_dropped_when_the_model_carries_it() -> None:
 
 
 def test_the_ram_options_come_from_the_memory_text() -> None:
-    """The memory text names the configurations the handset shipped in."""
+    """The memory text names the configurations the handset shipped in.
+
+    The set is the configurations the line was sold in: the amounts the
+    text names, and the smaller ones the line was also sold in.  A
+    handset whose text names nothing is described by the fallback set.
+    """
 
     from novaprofile.core.device_catalog_market import derive_ram_options
 
-    assert derive_ram_options("128GB 6GB RAM, 256GB 8GB RAM") == (6, 8)
-    assert derive_ram_options("256GB 16GB RAM") == (16,)
-    assert derive_ram_options("") == (4, 6, 8)
+    assert derive_ram_options("128GB 6GB RAM, 256GB 8GB RAM") == (1, 2, 3, 4, 6, 8)
+    assert derive_ram_options("256GB 16GB RAM") == (1, 2, 3, 4, 6, 8, 10, 12, 16)
+    assert derive_ram_options("") == (1, 2, 3, 4, 6, 8)
 
 
 # --------------------------------------------------------------------------
@@ -650,7 +655,7 @@ def test_a_record_expands_into_one_preset_per_ram_amount() -> None:
 
     variants = ram_variants("128GB 6GB RAM, 256GB 8GB RAM")
 
-    assert variants == ((6,), (8,))
+    assert variants == ((1,), (2,), (3,), (4,), (6,), (8,))
 
 
 def test_the_ram_amounts_are_read_whatever_the_order_is() -> None:
@@ -660,8 +665,18 @@ def test_the_ram_amounts_are_read_whatever_the_order_is() -> None:
     same configurations as the storage-first spelling.
     """
 
-    assert ram_variants("8GB RAM 128GB") == ((8,),)
-    assert ram_variants("256GB 12GB RAM, 512GB 16GB RAM") == ((12,), (16,))
+    assert ram_variants("8GB RAM 128GB") == ((1,), (2,), (3,), (4,), (6,), (8,))
+    assert ram_variants("256GB 12GB RAM, 512GB 16GB RAM") == (
+        (1,),
+        (2,),
+        (3,),
+        (4,),
+        (6,),
+        (8,),
+        (10,),
+        (12,),
+        (16,),
+    )
 
 
 def test_a_record_without_ram_becomes_one_preset() -> None:
@@ -676,7 +691,7 @@ def test_a_record_without_ram_becomes_one_preset() -> None:
     variants = ram_variants("")
 
     assert len(variants) == 1
-    assert variants[0] == (4, 6, 8)
+    assert variants[0] == (1, 2, 3, 4, 6, 8)
 
 
 def test_a_repeated_ram_amount_is_one_variant() -> None:
@@ -686,7 +701,13 @@ def test_a_repeated_ram_amount_is_one_variant() -> None:
     sizes, so it is one device.
     """
 
-    assert ram_variants("64GB 6GB RAM, 128GB 6GB RAM") == ((6,),)
+    assert ram_variants("64GB 6GB RAM, 128GB 6GB RAM") == (
+        (1,),
+        (2,),
+        (3,),
+        (4,),
+        (6,),
+    )
 
 
 def test_every_variant_carries_exactly_its_own_ram_amount() -> None:
@@ -699,8 +720,15 @@ def test_every_variant_carries_exactly_its_own_ram_amount() -> None:
 
     presets = build_market_presets([_row(source_id="variant-row")])
 
-    assert len(presets) == 2
-    assert [preset.ram_options for preset in presets] == [(6,), (8,)]
+    assert len(presets) == 6
+    assert [preset.ram_options for preset in presets] == [
+        (1,),
+        (2,),
+        (3,),
+        (4,),
+        (6,),
+        (8,),
+    ]
     for preset in presets:
         assert len(preset.ram_options) == 1
 
@@ -711,7 +739,7 @@ def test_the_identifier_names_the_ram_amount() -> None:
     presets = build_market_presets([_row(source_id="variant-row")])
 
     identifiers = [preset.preset_id for preset in presets]
-    assert len(set(identifiers)) == 2
+    assert len(set(identifiers)) == 6
     assert any(identifier.endswith("-6g") for identifier in identifiers)
     assert any(identifier.endswith("-8g") for identifier in identifiers)
 
@@ -738,7 +766,13 @@ def test_a_colliding_identifier_gets_a_deterministic_digest() -> None:
 
 
 def test_the_core_count_follows_the_chipset() -> None:
-    """A chipset that names its core count reports that many cores."""
+    """A chipset that names its core count reports that many cores.
+
+    The platform reports the count of the clusters that are really
+    there, and the totals that exist are four, six, eight and twelve.
+    A source that names ten is naming a layout, and the count the
+    platform reports is the nearest real total.
+    """
 
     preset = build_local_preset(
         _row(
@@ -751,7 +785,7 @@ def test_the_core_count_follows_the_chipset() -> None:
     preset = build_local_preset(
         _row(chipset="Exynos 2400 (10-core)", gpu_renderer="Xclipse 940")
     )
-    assert preset.cpu_options == (10,)
+    assert preset.cpu_options == (8,)
 
 
 def test_the_ratio_and_density_options_cover_the_computed_values(
@@ -816,15 +850,16 @@ def test_two_records_with_the_same_model_get_different_identifiers() -> None:
     The fleet keys on the preset identifier, so two devices that share
     one identifier would silently overwrite each other.  Both records
     are the same model with the same RAM configurations, so each of
-    them expands into two variants and all four have to be apart.
+    them expands into the variants of that line and all of them have to
+    be apart.
     """
 
     first = _row(source_id="duplicate-a")
     second = _row(source_id="duplicate-b")
     presets = build_market_presets([first, second])
 
-    assert len(presets) == 4
-    assert len({preset.preset_id for preset in presets}) == 4
+    assert len(presets) == 12
+    assert len({preset.preset_id for preset in presets}) == 12
 
 
 def test_every_identifier_of_the_catalogue_is_unique(buildable: list[dict]) -> None:

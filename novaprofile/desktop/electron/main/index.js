@@ -53,7 +53,7 @@ const paths = {
   coreDir: () =>
     app.isPackaged
       ? path.join(process.resourcesPath, 'core')
-      : process.env.NOVA_CORE_DIR || path.join(__dirname, '..', '..', '..', 'core', 'build', 'nova-win'),
+      : process.env.NOVA_CORE_DIR || path.join(__dirname, '..', '..', '..', 'core', 'build', 'cores', '160.0.8177.0'),
   dataDir: () => path.join(app.getPath('userData'), 'data'),
   logsDir: () => path.join(app.getPath('userData'), 'logs'),
 };
@@ -198,7 +198,7 @@ async function startBackend() {
 
   if (executable) {
     command = executable;
-    args = ['--port', String(port), '--data-dir', paths.dataDir()];
+    args = ['serve', '--port', String(port), '--data-dir', paths.dataDir(), '--handshake'];
     spawnOptions = { windowsHide: true };
   } else {
     command = process.env.NOVA_PYTHON || 'python';

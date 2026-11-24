@@ -166,18 +166,25 @@ class TestUnitsOfOneModelStayDistinct:
                 f"{family}: only {len(fonts)} distinct font lists across {len(units)} units"
             )
 
-    def test_the_time_zones_differ_inside_a_family(self, families) -> None:
-        """A time zone is a property of where the owner lives.
+    def test_the_provinces_differ_inside_a_family(self, families) -> None:
+        """A province is a property of where the owner lives.
 
-        Two handsets in the same city share one, and a fleet that
-        spread its zones so thinly that no two profiles shared one
+        Two handsets in the same province share one, and a fleet that
+        spread its provinces so thinly that no two profiles shared one
         would be a fleet no operator could actually run.  What matters
-        is that the zone does not partition the family.
+        is that the province does not partition the family.
+
+        The clock cannot do this work: every profile of this fleet is
+        in Vietnam, and the country keeps one clock.
         """
 
         for family, units in families.items():
-            zones = {json.dumps(_at(unit, ("timezone", "iana_name"))) for unit in units}
-            assert len(zones) >= 2, f"{family}: every unit reports the same time zone"
+            provinces = {
+                json.dumps(_at(unit, ("geolocation", "region")))
+                for unit in units
+                if _at(unit, ("geolocation", "region"))
+            }
+            assert len(provinces) >= 2, f"{family}: every unit stands in the same province"
 
     def test_the_panel_differs_inside_a_family(self, families) -> None:
         """Resolution and scale factor have to move within a model.

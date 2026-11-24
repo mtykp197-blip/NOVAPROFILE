@@ -18,6 +18,10 @@ import pytest
 from novaprofile.core.generator import ProfileGenerator, _geo_target
 from novaprofile.core.geo_catalog import GEO_CATALOGUE
 from novaprofile.core.geo_coordinates import coordinates_for
+from novaprofile.core.geo_vietnam import (
+    VIETNAM_COORDINATES,
+    VIETNAM_TIMEZONE,
+)
 
 #: How far from the reference point of the city a profile may sit.
 #: The jitter is a few kilometres; anything beyond this is not the city.
@@ -56,6 +60,38 @@ def _profile_with_geo(locale: str, timezone: str, country: str, currency: str):
     )
 
 
+#: The Vietnamese provinces and the distance from the reference point of
+#: the country that a province may sit at.
+#
+#: A Vietnamese profile is placed in a *province*, not in the middle of
+#: the reference point of Ho Chi Minh City: a fleet of a hundred million
+#: profiles cannot all live in one province, and a site that sees them
+#: all in one province knows it is looking at a farm.  So the province is
+#: drawn from the table, and the jitter inside the province separates
+#: two profiles that landed in the same one.
+VIETNAM_MAX_PROVINCE_OFFSET_KM = 60.0
+
+
+def _vietnam_provinces() -> tuple[tuple[str, float, float], ...]:
+    """The Vietnamese provinces with their centres."""
+
+    return VIETNAM_COORDINATES
+
+
+def _nearest_vietnam_province(latitude: float, longitude: float):
+    """The province whose centre is closest to the given point."""
+
+    best = None
+    best_distance = None
+    for name, lat, lng in _vietnam_provinces():
+        distance = _haversine_km(lat, lng, latitude, longitude)
+        if best_distance is None or distance < best_distance:
+            best = (name, lat, lng)
+            best_distance = distance
+    assert best is not None
+    return best, float(best_distance or 0.0)
+
+
 # --------------------------------------------------------------------------
 # The coordinate belongs to the place
 # --------------------------------------------------------------------------
@@ -68,6 +104,11 @@ def test_the_coordinate_is_inside_the_city(timezone: str) -> None:
     The old implementation drew the coordinate uniformly from the whole
     globe, so this test failed for every zone -- a profile claiming
     Vienna was somewhere in Central Asia.
+
+    Vietnam is the one place where the rule is different, and the
+    difference is deliberate: the country keeps a single clock, so the
+    time zone names the country rather than a city, and the profile is
+    placed in a province inside it.
     """
 
     expected_lat, expected_lng = KNOWN_POINTS[timezone]
@@ -81,6 +122,16 @@ def test_the_coordinate_is_inside_the_city(timezone: str) -> None:
             break
 
     assert found is not None, "the profile never produced a coordinate"
+
+    if timezone == VIETNAM_TIMEZONE:
+        (_, province_lat, province_lng), distance = _nearest_vietnam_province(
+            found.latitude, found.longitude
+        )
+        assert distance <= VIETNAM_MAX_PROVINCE_OFFSET_KM, (
+            f"the Vietnamese profile is {distance:.1f} km from its province"
+        )
+        return
+
     distance = _haversine_km(
         expected_lat, expected_lng, found.latitude, found.longitude
     )
@@ -94,6 +145,11 @@ def test_every_catalogue_zone_produces_a_local_coordinate() -> None:
 
     The whole catalogue is walked, because a single working zone does
     not prove the rest.
+
+    Vietnam is checked against the province it lands in rather than
+    against the reference point of the country: the country keeps a
+    single clock, so the time zone names the country, and the profile
+    is placed in a province inside it.
     """
 
     generator = ProfileGenerator()
@@ -114,6 +170,16 @@ def test_every_catalogue_zone_produces_a_local_coordinate() -> None:
                 break
 
         assert found is not None, f"no coordinate for {timezone}"
+
+        if timezone == VIETNAM_TIMEZONE:
+            (_, province_lat, province_lng), distance = _nearest_vietnam_province(
+                found.latitude, found.longitude
+            )
+            assert distance <= VIETNAM_MAX_PROVINCE_OFFSET_KM, (
+                f"{timezone}: the position is {distance:.1f} km from its province"
+            )
+            continue
+
         distance = _haversine_km(
             base_lat, base_lng, found.latitude, found.longitude
         )
@@ -184,6 +250,12 @@ def test_the_coordinate_is_on_the_right_continent() -> None:
             geolocation = profile.geolocation
             if geolocation.mode != "allow_custom":
                 continue
+            if timezone == VIETNAM_TIMEZONE:
+                _, distance = _nearest_vietnam_province(
+                    geolocation.latitude, geolocation.longitude
+                )
+                assert distance <= VIETNAM_MAX_PROVINCE_OFFSET_KM
+                break
             distance = _haversine_km(
                 base_lat, base_lng, geolocation.latitude, geolocation.longitude
             )

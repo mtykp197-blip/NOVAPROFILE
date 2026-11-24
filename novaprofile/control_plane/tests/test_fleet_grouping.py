@@ -58,6 +58,19 @@ def _fleet(per_preset: int) -> list[tuple[str, object]]:
                         profile.navigator.hardware_concurrency,
                         profile.navigator.device_memory,
                         profile.webgl.unmasked_renderer,
+                        # The digitiser.
+                        #
+                        # The number of touch points is one of the
+                        # readings the page hands over on the first
+                        # pass -- ``navigator.maxTouchPoints`` -- so a
+                        # site that groups devices holds it next to
+                        # the resolution and the model.  A line of
+                        # handsets is not one digitiser: the flagship
+                        # line of a family moved to the ten-point
+                        # panel while the entry line stayed on the
+                        # five-point one, and the two are different
+                        # panels under the same name.
+                        profile.navigator.max_touch_points,
                     ),
                 )
             )

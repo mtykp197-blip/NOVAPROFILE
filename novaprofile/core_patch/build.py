@@ -614,6 +614,36 @@ def _run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         raise BuildError(f"cannot run git {' '.join(args)}: {exc}") from exc
 
 
+def _is_checkout_root(checkout: Path) -> bool:
+    """Whether ``checkout`` is itself the root of a git checkout.
+
+    Git walks up the tree when it looks for a repository, so a plain
+    directory that happens to sit inside one is reported as being in a
+    repository.  That is not what the caller asked about: the patches
+    have to land in the *root* of the Chromium checkout, because the
+    paths in a patch series are rooted there.  Applying them to a
+    sub-directory would either fail or land in the wrong tree, and
+    neither is the error the caller needs to be told about.
+
+    So the top level of the repository is asked for, and it has to be
+    the directory that was named.
+    """
+
+    completed = _run_git(["rev-parse", "--show-toplevel"], checkout)
+    if completed.returncode != 0:
+        return False
+
+    reported = completed.stdout.strip()
+    if not reported:
+        return False
+
+    try:
+        top = Path(reported).resolve()
+        return top == checkout.resolve()
+    except OSError:
+        return False
+
+
 def _is_already_applied(checkout: Path, patch: Path) -> bool:
     """Whether ``patch`` is already in the tree at ``checkout``.
 
@@ -648,7 +678,7 @@ def apply_series(
     root = Path(checkout).expanduser()
     if not root.is_dir():
         raise BuildError(f"the Chromium checkout does not exist: {root}")
-    if _run_git(["rev-parse", "--git-dir"], root).returncode != 0:
+    if not _is_checkout_root(root):
         raise BuildError(f"the Chromium checkout is not a git repository: {root}")
 
     base = Path(patch_dir) if patch_dir is not None else PATCH_DIR

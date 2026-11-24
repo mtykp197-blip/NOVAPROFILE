@@ -122,6 +122,10 @@ python -m novaprofile.installer.install_built_core \
 python -m novaprofile.probe.verify_built_core \
     --browser C:/chromium/src/out/nova-win/chrome.exe \
     --preset pixel-8-pro-android14
+
+# walk the third-party detection sites with a profile
+nova probe web <profile-id>
+nova probe web <profile-id> --site whatsmybrowser --headful
 ```
 
 ---

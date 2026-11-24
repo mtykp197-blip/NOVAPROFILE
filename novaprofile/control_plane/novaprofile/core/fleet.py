@@ -15,6 +15,7 @@ of the same model still differ on the axes a model can vary.
 from __future__ import annotations
 
 import collections
+import heapq
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
@@ -23,7 +24,7 @@ from .collision import CollisionGuard, InMemorySignatureRegistry, SignatureRegis
 from .devices import DevicePreset, all_presets, cores_from_cluster_layout
 from .generator import ProfileGenerator, _geo_target
 from .hardware_approximation import approximate_device_memory
-from .machine import count_machines
+from .machine import count_machines, flush_count_cache
 from .seed import new_master_seed, new_profile_id
 
 
@@ -243,6 +244,33 @@ def _touch_points(preset: DevicePreset) -> int:
 #: How many machines the fleet will not build more of, at the most.
 _RUNNER_UP_LIMIT = 16
 
+#: How many times the fleet may go round the catalogue looking for
+#: another unit of a machine it has already used.
+#:
+#: The catalogue holds a few thousand handsets, and a fleet of a
+#: hundred million profiles needs a hundred million units of them.
+#: Each round adds one more unit of every handset, so the number of
+#: rounds is what decides how many phones of one model the fleet
+#: owns.  The cap keeps the plan from walking forever: a fleet that
+#: asks for more units than the cap allows is stopped with the
+#: catalogue exhausted, and the caller is told how far it got.
+_MAX_UNIT_ROUNDS = 4096
+
+#: How many machines the spreading search may pick.
+#:
+#: The search is worth its cost while the fleet is smaller than the
+#: catalogue of machines: it chooses the handsets whose readings are
+#: the hardest for a site to group on, and that choice is what keeps
+#: the fleet ungroupable.  Its cost grows with the square of the
+#: number of machines it picks, so the number it picks is capped.
+#:
+#: The cap is a few times the size of the catalogue: the search still
+#: gets to walk the whole catalogue several times over, which is
+#: where the handsets that spread best get their chance, and the units
+#: beyond the cap are additional phones of the models the fleet
+#: already holds.
+_SPREAD_LIMIT = 120_000
+
 #: The readings the fleet is scored on, as the indices of the axes a
 #: script would plausibly read together.
 _READS: tuple[tuple[int, ...], ...] = (
@@ -278,6 +306,18 @@ _WEIGHTS: dict[tuple[int, ...], float] = {
     (0, 5, 3, 4): 0.5,
     (0, 1, 2, 3, 4, 5, 6, 7, 8): 0.25,
 }
+
+
+def _scaled_weight(weight: float) -> int:
+    """A weight as a whole number.
+
+    The weights are quarters and halves, so multiplying by four turns
+    every one of them into a whole number.  The score is then a whole
+    number as well, and a whole number can be compared for equality
+    without the rounding that a float would bring.
+    """
+
+    return int(round(weight * 4))
 
 
 def _spread_machines(presets: Sequence[DevicePreset], count: int) -> list[DevicePreset]:
@@ -347,49 +387,205 @@ def _spread_machines(presets: Sequence[DevicePreset], count: int) -> list[Device
         for value in row:
             rarity[value] = rarity.get(value, 0) + 1
 
+    # The keys every read produces, and the rarity of each read, worked
+    # out once per machine.
+    #
+    # The round below is run once per profile in the fleet, and it
+    # walks every machine in the catalogue, so a fleet of a hundred
+    # thousand profiles walks the catalogue a hundred thousand times.
+    # The keys and the rarity of a machine do not depend on the round,
+    # so they are worked out here, once, and the round only adds them
+    # up.
+    scored: list[tuple[tuple[tuple[int, ...], float, tuple, int], ...]] = []
+    for row in values:
+        entries = []
+        for read, weight in _WEIGHTS.items():
+            key = tuple(row[i] for i in read)
+            tie = sum(rarity.get(row[i], 0) for i in read)
+            entries.append((read, weight, key, tie))
+        scored.append(tuple(entries))
+
     chosen: list[int] = []
     buckets: dict[tuple[int, ...], collections.Counter] = {
+        read: collections.Counter() for read in _READS
+    }
+    # The growth of each bucket that has not been paid for yet.
+    #
+    # The score of a candidate is the sum of the squares of the sizes
+    # of the buckets it would land in, and the score of a candidate
+    # that is not chosen still has to grow when one of its buckets
+    # grows.  Paying that growth on the bucket, and settling it on the
+    # candidate when the candidate reaches the top of the heap, keeps
+    # the work of a round proportional to the number of candidates
+    # that actually reach the top -- and not to the size of the
+    # buckets, which for the cheap readings is the whole catalogue.
+    pending: dict[tuple[int, ...], collections.Counter] = {
         read: collections.Counter() for read in _READS
     }
     # How many times each machine has been taken, so a machine that
     # has run out of strata is not taken again.
     taken: collections.Counter[int] = collections.Counter()
 
+    # How many units each machine can supply.
+    #
+    # The count is measured by walking the machine's space, and the
+    # walk is expensive.  The measurement is remembered inside the
+    # machine module, but asking for it once per candidate per round
+    # turns the round into a walk of the whole catalogue, and the
+    # fleet becomes quadratic in the size of the fleet.  The answer
+    # does not depend on the round, so it is asked for once here.
+    #
+    # It is asked for lazily, though: a fleet of a hundred profiles
+    # only ever takes a hundred machines, and the walk of a machine
+    # that is never taken is wasted.  The measurement is made the
+    # first time a machine is a serious contender, and remembered
+    # from then on.
+    capacity: list[int | None] = [None] * len(candidates)
+
+    def _capacity_of(index: int) -> int:
+        """How many units a machine can supply, measured on first use."""
+
+        known = capacity[index]
+        if known is None:
+            known = count_machines(candidates[index])
+            capacity[index] = known
+        return known
+
+    # The score of every candidate, and the candidates that share a
+    # key on a read.
+    #
+    # The score is the weighted sum of the square of the size of every
+    # bucket the candidate would land in.  Picking the machine that
+    # leaves the largest group smallest means picking the candidate
+    # with the smallest score, and the score of a candidate only ever
+    # *grows* as the fleet is filled: a bucket it shares with an
+    # already-chosen machine gets bigger, and bigger buckets score
+    # higher.  That monotonicity is what lets the search be done with
+    # a heap instead of a full sweep of the catalogue per round.
+    #
+    # The weights are scaled by four so that the score is a whole
+    # number.  A score that is compared as a float is a score that can
+    # be compared wrongly, and the tie-break that follows it decides
+    # which of two identical machines is taken.
+    scores: list[int] = [0] * len(candidates)
+    for index, entries in enumerate(scored):
+        total = 0
+        for _read, weight, key, _tie in entries:
+            total += _scaled_weight(weight)
+        scores[index] = total
+
+    # The candidates that share a key on a read.  When a bucket grows,
+    # the score of every candidate that lands in it grows too, and
+    # this is the index that says which ones.
+    sharing: dict[tuple[int, ...], dict[tuple, list[int]]] = {
+        read: collections.defaultdict(list) for read in _READS
+    }
+    for index, entries in enumerate(scored):
+        for read, _weight, key, _tie in entries:
+            sharing[read][key].append(index)
+
+    # The candidates that are still on offer, ordered by score.
+    #
+    # A candidate that runs out of strata leaves the heap, and a
+    # candidate whose score grows is pushed again with its new score.
+    # The entry left behind by that push is recognised as stale when
+    # it surfaces, because the score it carries is not the score the
+    # candidate has any more.  Since a score only grows, the fresh
+    # entry always surfaces before the stale one would have been
+    # useful, so nothing is chosen on a stale score.
+    heap: list[tuple[int, int, int]] = []
+
+    # The tie-break value of every candidate: how rare its own values
+    # are in the catalogue.  It is worked out once per candidate,
+    # because it is asked for on every push into the heap and the heap
+    # is pushed into a great many times.
+    ties: list[int] = [sum(entry[3] for entry in entries) for entries in scored]
+
+    for index in range(len(candidates)):
+        heapq.heappush(heap, (scores[index], ties[index], index))
+
     while len(chosen) < count:
         best_index = -1
-        best_score = None
         best_tie = None
 
-        for index, preset in enumerate(candidates):
-            if taken[index] >= count_machines(preset):
+        while heap:
+            score, tie, index = heapq.heappop(heap)
+            if score != scores[index]:
+                # The candidate's score grew after this entry was
+                # pushed, so the entry is stale and a fresher one is
+                # on its way up.
                 continue
+
+            # The score of a candidate is settled when it reaches the
+            # top of the heap.  The growth of every bucket it shares
+            # has been recorded on the bucket while the fleet was
+            # filled, and the candidate pays for all of it now.
+            #
+            # The growth is taken off the bucket as it is paid, so the
+            # bucket only carries what has grown since the last time a
+            # candidate of it was settled.  A candidate that is settled
+            # twice therefore pays for the growth of the second round
+            # only, and the total each candidate pays is the whole
+            # growth of its buckets.
             row = values[index]
+            grown = 0
+            for read, _weight, key, _tie in scored[index]:
+                pending_growth = pending[read][key]
+                if pending_growth:
+                    pending[read][key] = 0
+                    grown += pending_growth
+            if grown:
+                scores[index] += grown
+                # The candidate may no longer be the best one, so it
+                # goes back onto the heap with its settled score.
+                heapq.heappush(heap, (scores[index], tie, index))
+                continue
 
-            # The score is the largest group the candidate leaves
-            # behind, over the reads that matter.
-            score = 0.0
-            tie = 0
-            for read, weight in _WEIGHTS.items():
-                key = tuple(row[i] for i in read)
-                size = buckets[read][key] + 1
-                score += weight * size * size
-                tie += sum(rarity.get(row[i], 0) for i in read)
-
-            if best_score is None or score < best_score:
-                best_score = score
-                best_index = index
-                best_tie = tie
-            elif score == best_score and best_tie is not None and tie < best_tie:
-                best_index = index
-                best_tie = tie
+            if taken[index] >= _capacity_of(index):
+                # The machine is out of strata and stays out.
+                continue
+            best_index = index
+            best_tie = tie
+            break
 
         if best_index < 0:
             break
 
+        # The machine is taken, and the buckets it lands in grow.
+        #
+        # The growth of a bucket raises the score of every candidate
+        # that shares it, and each of them has to be pushed back onto
+        # the heap so the heap knows about the new score.  Doing that
+        # here, one candidate at a time, makes the cost of a round
+        # grow with the size of the *buckets* -- and the buckets of
+        # the cheap readings hold most of the catalogue, so a round
+        # over a large fleet costs billions of pushes.
+        #
+        # The growth is therefore recorded on the *bucket* instead, and
+        # the score of a candidate is settled when the candidate
+        # reaches the top of the heap: the pending growth of every
+        # bucket the candidate shares is added to its score then, and
+        # the candidate is put back if the settled score says it is
+        # no longer the best.  Nothing is pushed that does not have to
+        # be, and the work of a round is proportional to the number of
+        # buckets that are still small enough to tell two candidates
+        # apart.
         row = values[best_index]
         for read in _READS:
             key = tuple(row[i] for i in read)
-            buckets[read][key] += 1
+            counter = buckets[read]
+            size = counter[key]
+            counter[key] = size + 1
+
+            # The bucket grew from ``size`` to ``size + 1``, so the
+            # bucket a candidate lands in holds ``size + 1`` machines
+            # already and will hold ``size + 2`` once the candidate
+            # joins it.  The score of the candidate therefore grows by
+            # ``weight * ((size + 2)^2 - (size + 1)^2)``.
+            delta = (size + 2) * (size + 2) - (size + 1) * (size + 1)
+            weight = _scaled_weight(_WEIGHTS[read])
+            pending[read][key] += weight * delta
+
         taken[best_index] += 1
         chosen.append(best_index)
 
@@ -436,7 +632,31 @@ def plan_fleet(
 
     rest = [preset for preset in catalogue if preset not in chosen]
     if rest:
-        chosen.extend(_spread_machines(rest, max(count - len(chosen), 0)))
+        # The spreading search is the expensive part of the plan: it
+        # scores every machine of the catalogue against every reading a
+        # site might group on, and it does that once per unit of the
+        # fleet.  The cost therefore grows with the *square* of the
+        # fleet, and a fleet of a hundred million units would take
+        # longer than the century it is meant to span.
+        #
+        # The search is worth what it costs while the fleet is still
+        # smaller than the catalogue of machines: it picks the
+        # handsets whose readings are the hardest to group on, and
+        # that choice is what keeps the *first* part of the fleet
+        # ungroupable.  Past that point the catalogue is exhausted
+        # and every machine is in the fleet anyway, so the search has
+        # nothing left to choose between -- the units that follow are
+        # additional phones of the models the fleet already holds, and
+        # what separates them is their serial, not their panel.
+        #
+        # So the search runs over the catalogue and no further, and the
+        # rest of the fleet is filled by the fast path below.
+        spread_limit = _SPREAD_LIMIT
+        wanted = max(count - len(chosen), 0)
+        if wanted > spread_limit:
+            wanted = spread_limit
+        if wanted:
+            chosen.extend(_spread_machines(rest, wanted))
 
     if not chosen:
         return FleetPlan(preset_ids=(), strata=())
@@ -479,8 +699,17 @@ def plan_fleet(
     # another would then both start at zero, and the site would find
     # the pair on the combination rather than on the model.
     model_slots: dict[str, int] = {}
-    for preset in chosen:
-        capacity = count_machines(preset)
+
+    # How many machines each of the chosen models has, measured once.
+    #
+    # The measurement walks the slice space of a model, and the answer
+    # is remembered between runs, but asking for it inside the loop
+    # would ask for it once per model per round.  The rounds are
+    # counted in thousands for a fleet of a hundred million, so the
+    # answer is looked up once here and then reused.
+    capacities: list[int] = [count_machines(preset) for preset in chosen]
+
+    for preset, capacity in zip(chosen, capacities, strict=True):
         for _ in range(capacity):
             if len(preset_ids) >= count:
                 break
@@ -506,6 +735,47 @@ def plan_fleet(
             strata.append(slot)
         if len(preset_ids) >= count:
             break
+
+    # A fleet larger than the catalogue of *machines* is still a fleet.
+    #
+    # The catalogue holds a few thousand distinct handsets, and a real
+    # shop of a hundred thousand phones owns a few of every model: the
+    # handsets of one model differ from each other by their serial and
+    # their incremental build number, not by their panel.  Two units of
+    # one model that share a panel are two phones of the same line, and
+    # a site cannot tell them apart -- which is exactly the point.
+    #
+    # The walk is therefore allowed to leave the space of the machine
+    # and come back to it: the hardware readings repeat, the way they
+    # do on two phones of one model, while the per-unit readings -- the
+    # serial, the incremental build number, the bootloader and the
+    # salts of the canvas, the audio and the fonts -- keep moving.
+    # The stratum is what keys those per-unit readings, so a second
+    # unit of one machine is a second stratum.
+    #
+    # The units are dealt round-robin across the catalogue, so the
+    # fleet keeps spreading over the handsets instead of exhausting one
+    # model before it moves on to the next.
+    if len(preset_ids) < count and chosen:
+        rounds = 0
+        while len(preset_ids) < count and rounds <= _MAX_UNIT_ROUNDS:
+            added = False
+            for preset in chosen:
+                if len(preset_ids) >= count:
+                    break
+                preset_ids.append(preset.preset_id)
+                model_key = (
+                    preset.model_variants[0]
+                    if preset.model_variants
+                    else preset.model
+                ) or preset.preset_id
+                slot = model_slots.get(model_key, 0)
+                model_slots[model_key] = slot + 1
+                strata.append(slot)
+                added = True
+            if not added:
+                break
+            rounds += 1
 
     return FleetPlan(preset_ids=tuple(preset_ids), strata=tuple(strata))
 
@@ -596,6 +866,11 @@ def generate_fleet(
         allocated = guard.allocate(profile_id, candidate)
         guard.commit(allocated, profile_id)
         profiles.append(allocated)
+
+    # The planner measured how many machines every model in the
+    # catalogue produces, and that measurement is kept between runs so
+    # the next fleet does not have to pay for it again.
+    flush_count_cache()
 
     return profiles
 

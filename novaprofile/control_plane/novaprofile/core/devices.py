@@ -689,8 +689,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         security_patch="2024-06-05",
         build_id="UQ1A.240105.004",
         version_incremental="10750268",
-        ram_options=(8, 12),
-        cpu_options=(8,),
+ram_options=(8, 12),
+        cpu_options=(8),
         dpr_options=(3.0, 2.75, 2.625),
         density_options=(420, 440, 480),
         year=2024,
@@ -701,7 +701,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         model_variants=("GC3VE", "G1MN", "GE9DP", "G1FQ"),
         # The Tensor G3 board reports the "jazz hands" multitouch
         # capability, so the platform answers ten simultaneous points.
-        touch_points_options=(10,),
+        touch_points_options=(5, 10),
     ),
     DevicePreset(
         preset_id="pixel-7-android14",
@@ -722,8 +722,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         security_patch="2024-02-05",
         build_id="UQ1A.230901.001",
         version_incremental="10199132",
-        ram_options=(8,),
-        cpu_options=(8,),
+ram_options=(8,),
+        cpu_options=(8),
         dpr_options=(3, 2.75, 2.625),
         density_options=(420, 440),
         year=2023,
@@ -734,7 +734,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         model_variants=("G046D", "G0BGW", "GFE4J", "G9BQD"),
         # The Pixel 7 predates the ten-point panel generation, so the
         # platform answers five.
-        touch_points_options=(5,),
+        touch_points_options=(5),
     ),
     DevicePreset(
         preset_id="galaxy-s24-ultra-android14",
@@ -755,8 +755,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         security_patch="2024-03-01",
         build_id="UP1A.231005.007",
         version_incremental="10818074",
-        ram_options=(8, 12),
-        cpu_options=(8,),
+ram_options=(8, 12),
+        cpu_options=(8),
         dpr_options=(3.0, 2.75, 2.625),
         density_options=(480, 560),
         year=2024,
@@ -765,7 +765,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         # American one, the Korean one and the South-East Asian one.
         model_variants=("SM-S928B", "SM-S928U", "SM-S928N", "SM-S9280"),
         # The S24 Ultra's S Pen panel is a ten-point digitiser.
-        touch_points_options=(10,),
+        touch_points_options=(5, 10),
     ),
     DevicePreset(
         preset_id="galaxy-s23-android14",
@@ -786,15 +786,15 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         security_patch="2024-01-10",
         build_id="UP1A.231005.007",
         version_incremental="10650147",
-        ram_options=(8,),
-        cpu_options=(8,),
+ram_options=(8,),
+        cpu_options=(8),
         dpr_options=(3, 2.75, 2.625),
         density_options=(420, 440, 480),
         year=2023,
         release_variants=(("15", 35), ("14", 34)),
         model_variants=("SM-S911B", "SM-S911U", "SM-S911N", "SM-S9110"),
         # The S23's digitiser is a five-point panel.
-        touch_points_options=(5,),
+        touch_points_options=(5),
     ),
     DevicePreset(
         preset_id="galaxy-a54-android13",
@@ -820,8 +820,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         security_patch="2023-11-01",
         build_id="TP1A.220624.014",
         version_incremental="9189376",
-        ram_options=(4, 6, 8),
-        cpu_options=(8,),
+ram_options=(4, 6, 8),
+        cpu_options=(8),
         dpr_options=(3, 2.75, 2.625, 2.5),
         density_options=(400, 440, 480),
         year=2023,
@@ -829,7 +829,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         model_variants=("SM-A546B", "SM-A546N", "SM-A5460"),
         # The A54 is a five-point panel; the budget tier never reached
         # the ten-point digitiser generation.
-        touch_points_options=(5,),
+        touch_points_options=(5),
     ),
     DevicePreset(
         preset_id="oneplus-11-android13",
@@ -855,8 +855,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         security_patch="2023-12-01",
         build_id="TKQ1.220808.001",
         version_incremental="9051955",
-        ram_options=(8, 12, 16),
-        cpu_options=(8,),
+ram_options=(8, 12, 16),
+        cpu_options=(8),
         dpr_options=(3.0, 2.75, 2.625),
         density_options=(420, 440, 480),
         year=2023,
@@ -866,7 +866,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         model_variants=("CPH2449", "CPH2447", "PGZ110", "PHB110"),
         # The 6.7-inch 120 Hz LTPO panel of the OnePlus 11 is a
         # ten-point digitiser.
-        touch_points_options=(10,),
+        touch_points_options=(5, 10),
     ),
     DevicePreset(
         preset_id="xiaomi-13-android14",
@@ -892,8 +892,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         security_patch="2024-01-05",
         build_id="UKQ1.230804.001",
         version_incremental="10818074",
-        ram_options=(8, 12),
-        cpu_options=(8,),
+ram_options=(8, 12),
+        cpu_options=(8),
         dpr_options=(3.0, 2.75, 2.625),
         density_options=(420, 440, 480),
         year=2023,
@@ -902,7 +902,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         # the Indian one, each in its two radio variants.
         model_variants=("2211133C", "2211133G", "2210132C", "2210132G"),
         # The Xiaomi 13's 6.36-inch AMOLED is a ten-point digitiser.
-        touch_points_options=(10,),
+        touch_points_options=(5, 10),
     ),
     DevicePreset(
         preset_id="redmi-note-12-android13",
@@ -928,8 +928,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         security_patch="2023-09-01",
         build_id="TP1A.220624.014",
         version_incremental="9023803",
-        ram_options=(4, 6, 8),
-        cpu_options=(8,),
+ram_options=(4, 6, 8),
+        cpu_options=(8),
         dpr_options=(3.0, 2.75),
         density_options=(440, 480),
         year=2023,
@@ -941,7 +941,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         # shipped with a six-point digitiser, which the platform
         # rounds up to the "distinct multitouch" threshold of two
         # plus, and modern Android reports five for the class.
-        touch_points_options=(5,),
+        touch_points_options=(5),
     ),
     DevicePreset(
         preset_id="oppo-find-x6-android14",
@@ -967,8 +967,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         security_patch="2024-02-01",
         build_id="UKQ1.230924.001",
         version_incremental="10818074",
-        ram_options=(12, 16),
-        cpu_options=(8,),
+ram_options=(12, 16),
+        cpu_options=(8),
         dpr_options=(3.0, 2.75, 2.625),
         density_options=(420, 440, 480),
         year=2024,
@@ -980,7 +980,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         # the vendor's own device list can contradict.
         model_variants=("CPH2573", "CPH2487", "PGZ110"),
         # The Find X6's 6.74-inch LTPO panel is a ten-point digitiser.
-        touch_points_options=(10,),
+        touch_points_options=(5, 10),
     ),
     DevicePreset(
         preset_id="vivo-x90-android14",
@@ -1006,8 +1006,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         security_patch="2024-01-15",
         build_id="UP1A.231005.007",
         version_incremental="10314917",
-        ram_options=(8, 12),
-        cpu_options=(8,),
+ram_options=(8, 12),
+        cpu_options=(8),
         dpr_options=(3.0, 2.75, 2.625),
         density_options=(420, 440, 480),
         year=2024,
@@ -1016,7 +1016,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         # Indian one and the two the Chinese market carries.
         model_variants=("V2247A", "V2246A", "V2266A", "V2229A"),
         # The vivo X90's 6.78-inch AMOLED is a ten-point digitiser.
-        touch_points_options=(10,),
+        touch_points_options=(5, 10),
     ),
     DevicePreset(
         preset_id="samsung-galaxy-a14-android13",
@@ -1042,8 +1042,8 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         security_patch="2023-08-01",
         build_id="TP1A.220624.014",
         version_incremental="8608992",
-        ram_options=(4, 6),
-        cpu_options=(8,),
+ram_options=(4, 6),
+        cpu_options=(8),
         dpr_options=(3, 2.75, 2.625, 2.5),
         density_options=(400, 440),
         year=2023,
@@ -1053,7 +1053,7 @@ DEVICE_PRESETS: tuple[DevicePreset, ...] = (
         # market carries.
         model_variants=("SM-A145F", "SM-A145M", "SM-A145N", "SM-A1450"),
         # The Galaxy A14 is a five-point panel.
-        touch_points_options=(5,),
+        touch_points_options=(5),
     ),
 )
 

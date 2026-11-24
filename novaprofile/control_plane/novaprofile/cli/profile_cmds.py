@@ -249,13 +249,14 @@ def profile_clone(
     except deps.EngineUnavailableError:
         guard = None
 
-    import uuid
     from datetime import UTC, datetime
+
+    from ..core.seed import new_profile_id
 
     identity = _identity_of(source)
     clone = _mutate_identity(
         source,
-        id=str(uuid.uuid4()),
+        id=new_profile_id(),
         name=name or f"{identity.get('name', 'profile')} (copy)",
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),

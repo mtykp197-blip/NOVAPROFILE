@@ -476,6 +476,13 @@ class SimulatedSession:
                     _getattr_path(config, "media_decode.supported") or []
                 ),
             },
+            "geolocation": {
+                "available": True,
+                "mode": _getattr_path(config, "geolocation.mode") or "prompt",
+                "latitude": _getattr_path(config, "geolocation.latitude"),
+                "longitude": _getattr_path(config, "geolocation.longitude"),
+                "accuracy": _getattr_path(config, "geolocation.accuracy"),
+            },
             "iframe_sync": {
                 "iframe": _context_snapshot(navigator_payload, screen_payload, config),
                 "srcdocIframe": _context_snapshot(navigator_payload, screen_payload, config),

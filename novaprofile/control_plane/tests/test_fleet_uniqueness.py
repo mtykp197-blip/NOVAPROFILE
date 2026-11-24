@@ -156,8 +156,33 @@ class TestTheFleetIsAFleetOfDifferentDevices:
         assert len(widths) >= 10, f"only {len(widths)} distinct panel widths"
 
     def test_the_time_zones_vary(self, fleet: list[dict]) -> None:
-        zones = {json.dumps(_at(item, ("timezone", "iana_name"))) for item in fleet}
-        assert len(zones) >= 20, f"only {len(zones)} distinct time zones"
+        """The fleet is spread over the country.
+
+        Every profile of this fleet is in Vietnam -- one clock, one
+        currency -- so the clock cannot be what tells two profiles
+        apart.  What tells them apart is the *province* they stand in,
+        and a fleet that stands in one province is one farm.
+        """
+
+        provinces = {
+            json.dumps(_at(item, ("geolocation", "region")))
+            for item in fleet
+            if _at(item, ("geolocation", "region"))
+        }
+        assert len(provinces) >= 20, f"only {len(provinces)} distinct provinces"
+
+    def test_every_profile_is_in_vietnam(self, fleet: list[dict]) -> None:
+        """The fleet is in Vietnam, and it says so.
+
+        A profile that reported Prague while its exit node sits in Ho
+        Chi Minh would be caught by the first site that maps the two
+        against each other.
+        """
+
+        for item in fleet:
+            assert _at(item, ("timezone", "iana_name")) == "Asia/Ho_Chi_Minh"
+            assert _at(item, ("locale", "primary")) == "vi-VN"
+            assert _at(item, ("locale", "currency")) == "VND"
 
     def test_the_fonts_vary(self, fleet: list[dict]) -> None:
         fonts = {json.dumps(_at(item, ("fonts", "installed"))) for item in fleet}

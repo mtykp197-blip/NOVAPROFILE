@@ -318,23 +318,36 @@ def test_the_patch_ships_the_nova_sources_and_their_build_wiring():
         assert f"diff --git a/{path} b/{path}" in text, f"{path} is not shipped"
 
     # The build wiring and the configuration bootstrap.
+    #
+    # ``content/app/BUILD.gn`` is not among them: the hand-over cache
+    # is compiled into ``//content/browser``, and ``content/app``
+    # already depends on that target, so the browser process reaches
+    # the cache through the dependency it had before the NOVA work.
+    # Adding a line there would be a change to a file that does not
+    # need one.
     for path in (
         "third_party/blink/renderer/core/BUILD.gn",
         "third_party/blink/renderer/modules/BUILD.gn",
-        "content/app/BUILD.gn",
         "content/app/content_main_runner_impl.cc",
     ):
         assert f"diff --git a/{path} b/{path}" in text, f"{path} is not wired"
 
 
 def test_the_patch_includes_the_hooks_header_where_it_calls_it():
-    """A file that calls the hooks has to include the hooks header.
+    """A file that calls the hooks has to include the header that declares them.
 
-    The Blink files include it by its bare name, because the NOVA
-    target exports the directory that holds it on the include path of
-    every consumer.  A file outside Blink -- the browser process, which
-    is not a Blink target -- has to name the full path, because the
-    include directory is not on its path.
+    The Blink files include the header by its bare name, because the
+    NOVA target exports the directory that holds it on the include path
+    of every consumer.  A file outside Blink -- the browser process,
+    which is not a Blink target -- has to name the full path, because
+    the include directory is not on its path.
+
+    The configuration header counts as well.  The hooks the browser
+    process calls -- ``ReadBrowserConfigDocument`` and the like -- are
+    declared there, and a file that includes it gets every one of them.
+    What the test is really about is that the call is not left without
+    a declaration, and the declaration has to be one the build can
+    find.
     """
 
     text = _patch_text()
@@ -343,9 +356,13 @@ def test_the_patch_includes_the_hooks_header_where_it_calls_it():
         if "nova::" not in block:
             continue
         path = block.split(" b/", 1)[0].replace("a/", "", 1)
-        bare = '+#include "nova_chromium_hooks.h"'
-        full = '+#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"'
-        assert bare in block or full in block, (
+        declarations = (
+            '+#include "nova_chromium_hooks.h"',
+            '+#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"',
+            '+#include "nova_core_config.h"',
+            '+#include "third_party/blink/renderer/core/nova/nova_core_config.h"',
+        )
+        assert any(declaration in block for declaration in declarations), (
             f"{path} calls the hooks but does not include them"
         )
 
@@ -648,10 +665,16 @@ def test_the_patch_calls_only_declared_hooks():
     # child, and the renderer reads it from the command line, and both
     # of those are configuration concerns rather than surface concerns.
     config = _source_text("nova_core_config.h")
+    # The transport lives in its own header as well.  It is the way the
+    # profile travels from the process that owns the command line to
+    # the process that renders the page, so the browser process
+    # compresses the hand-over with it and the renderer reads it back.
+    transport = _source_text("nova_transport.h")
     # Every declaration in the headers is a hook, whatever it returns.
     declared = set(re.findall(r"^\s*[A-Za-z_][\w:<>,\s*&]*\s+(\w+)\(", header, re.M))
     declared |= set(re.findall(r"^\s*[A-Za-z_][\w:<>,\s*&]*\s+(\w+)\(", noise, re.M))
     declared |= set(re.findall(r"^\s*[A-Za-z_][\w:<>,\s*&]*\s+(\w+)\(", config, re.M))
+    declared |= set(re.findall(r"^\s*[A-Za-z_][\w:<>,\s*&]*\s+(\w+)\(", transport, re.M))
     # The internal helpers of the implementation file are not hooks: they
     # are called from inside the core, not from the Chromium patches.
     internal = set(re.findall(r"^\s*[A-Za-z_][\w:<>,\s*&]*\s+(\w+)\(", implementation, re.M))

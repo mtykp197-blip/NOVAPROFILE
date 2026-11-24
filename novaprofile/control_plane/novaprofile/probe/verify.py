@@ -126,9 +126,6 @@ HOST_DEPENDENT_AXES: Final[frozenset[str]] = frozenset(
         "audio",
         # The accelerometers of the machine decide the readings.
         "sensors",
-        # The machine decides whether a location is known and whether
-        # the page is allowed to ask for one.
-        "geolocation",
         # The fonts of the machine decide the metrics, and the metrics
         # of a font the machine does not carry are the fallback's.
         "fonts",
@@ -414,6 +411,33 @@ def _render(value: Any) -> str:
 # --------------------------------------------------------------------------
 
 
+def _geolocation_is_the_profile_s_own(raw: Mapping[str, Any]) -> bool:
+    """Whether the profile carries a position of its own.
+
+    The harness compares the browser's answer with the profile's, and
+    it reports what the profile said under ``profile``.  A profile that
+    names a mode of ``allow_custom`` and gives a coordinate is a
+    profile that answers the geolocation call itself, so a
+    disagreement is a real one.
+
+    A profile that asks the machine -- a mode of ``prompt`` -- reads
+    the host, and a disagreement there says nothing about the profile.
+    """
+
+    profile = raw.get("profile")
+    if not isinstance(profile, Mapping):
+        return False
+    mode = profile.get("mode")
+    if isinstance(mode, str) and mode == "allow_custom":
+        latitude = profile.get("latitude")
+        longitude = profile.get("longitude")
+        try:
+            return latitude is not None and longitude is not None
+        except TypeError:
+            return False
+    return False
+
+
 def _parse_axis_results(payload: Mapping[str, Any]) -> list[AxisResult]:
     """Turn the harness payload into the per-axis results.
 
@@ -453,6 +477,19 @@ def _parse_axis_results(payload: Mapping[str, Any]) -> list[AxisResult]:
         # an operator wants to see what the host actually reported.
         if verdict == "fail" and axis in HOST_DEPENDENT_AXES:
             verdict = "host-dependent"
+        # The geolocation is the exception, and it is an exception for a
+        # reason.
+        #
+        # A profile that carries its own coordinates does not read the
+        # machine's position -- the runtime answers the geolocation
+        # call with the profile's own fix -- so a disagreement there is
+        # a real disagreement between the profile and the browser, and
+        # it has to be counted.  Only a profile that asks the machine
+        # -- one whose mode is to prompt -- reads the host, and that is
+        # the case the host-dependent label is for.
+        if verdict == "fail" and axis == "geolocation":
+            if not _geolocation_is_the_profile_s_own(raw):
+                verdict = "host-dependent"
         fields: list[FieldVerdict] = []
         raw_fields = raw.get("fields")
         if isinstance(raw_fields, list):
@@ -572,8 +609,14 @@ class VerifyRunner:
             raw_session = attached.get("sessionId")
             session_id = raw_session if isinstance(raw_session, str) else None
 
-            await client.send("Page.enable", session_id=session_id)
-            await client.send("Runtime.enable", session_id=session_id)
+            # The page has to be enabled before a script is installed
+            # on it.  Without the domain enabled the browser accepts
+            # the registration and then never runs the script, and the
+            # verification measures the stock browser -- which passes
+            # every axis that reads the host and fails every axis that
+            # reads the profile, without ever saying why.
+            await client.send("Page.enable", {}, session_id=session_id)
+            await client.send("Runtime.enable", {}, session_id=session_id)
 
             # The pristine built-ins are captured *first*, so that the
             # harness can tell a substituted accessor from a stock one

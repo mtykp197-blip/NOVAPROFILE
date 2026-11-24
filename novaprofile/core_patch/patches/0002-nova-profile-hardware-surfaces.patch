@@ -1,44 +1,92 @@
-# NOVA Profile Core -- Chromium patch series, part 2 of 3: the surfaces.
+# NOVA Profile Core -- Chromium patch series, part 2 of 3: the hardware.
 #
-# Apply to a Chromium 159 checkout with:
-#
-#     git apply novaprofile/core_patch/patches/0001-nova-profile-core.patch
-#     git apply novaprofile/core_patch/patches/0002-nova-profile-hardware-surfaces.patch
-#     git apply novaprofile/core_patch/patches/0003-nova-profile-independent-surfaces-and-tls.patch
+# The screen, the viewport, the canvas and the WebGL.  These are the
+# surfaces that report the shape of the machine and the graphics part
+# it carries, so they are patched together: a canvas that reports one
+# panel and a screen that reports another is a device that never
+# existed.
 
-# This patch substitutes the surfaces that a fingerprinting script can read
-# on their own:
-#
-#   third_party/blink/renderer/core/frame/local_dom_window.cc
-#   third_party/blink/renderer/core/frame/screen.cc
-#   third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
-#   third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
-#
-# The screen metrics are served from the profile's own configuration.  The
-# canvas and the WebGL readback pixels are perturbed with a key that is
-# derived from the profile's own seed, so that two profiles never collapse
-# into the same canvas bucket and so that the canvas hash and the WebGL
-# hash cannot be linked to each other.  The WebGL identity strings are
-# served through the same configuration.
-#
-# The viewport -- ``innerWidth``, ``innerHeight``, ``outerWidth``,
-# ``outerHeight``, ``screenX`` and ``screenY`` -- is served from the
-# profile as well: on a desktop those are the size the user dragged the
-# window to, which has no relation to the handset the user agent claims.
-#
-# The noise hooks are not substitutions: they do not replace a value, they
-# perturb a buffer, and their fallback is "do nothing".  A browser that
-# was started without a configuration therefore returns the pixels the
-# renderer produced, which is exactly what an unpatched browser does.
-#
-# The geometry perturbation is applied as an integer pixel offset, so the
-# layout, the painting and the hit testing stay consistent with each other.
-#
-# Part 1 of 3 carries the identity surfaces, the NOVA sources and the build
-# wiring; it has to be applied first.
-#
+diff --git a/third_party/blink/renderer/core/css/media_values.cc b/third_party/blink/renderer/core/css/media_values.cc
+index 8d4c98859d..6193c7e382 100644
+--- a/third_party/blink/renderer/core/css/media_values.cc
++++ b/third_party/blink/renderer/core/css/media_values.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "third_party/blink/renderer/core/css/media_values.h"
+ 
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
++
+ #include "third_party/blink/public/common/css/scripting.h"
+ #include "third_party/blink/renderer/core/css/css_resolution_units.h"
+ #include "third_party/blink/renderer/core/css/css_to_length_conversion_data.h"
+@@ -353,12 +355,39 @@ mojom::blink::PointerType MediaValues::CalculatePrimaryPointerType(
+     LocalFrame* frame) {
+   DCHECK(frame);
+   DCHECK(frame->GetSettings());
++  // A profile that claims to be a handset has to *answer* like one.
++  //
++  // The pointer and hover features are the pair of questions a site asks
++  // to tell a phone from a laptop: ``(pointer: coarse)`` says the
++  // primary pointer is a finger, ``(hover: hover)`` says the device can
++  // hover over a target without touching it.  A desktop answers "fine"
++  // and "hover"; a handset answers "coarse" and "none".
++  //
++  // The host's answers come from the host's input devices, so on a
++  // desktop they always say "mouse".  A profile that reports ten touch
++  // points and a mobile user agent, and then answers "fine" and
++  // "hover", is a desktop in a costume: the three answers contradict
++  // each other, and a script that reads all three sees the costume.
++  //
++  // The touch-point count of the profile is what decides.  A profile
++  // that reports no touch points is a desktop profile, and it keeps the
++  // host's answers.
++  if (nova::IsNovaCoreInitialized() &&
++      nova::GetNovaConfig().navigator.max_touch_points > 0) {
++    return mojom::blink::PointerType::kPointerCoarseType;
++  }
+   return frame->GetSettings()->GetPrimaryPointerType();
+ }
+ 
+ int MediaValues::CalculateAvailablePointerTypes(LocalFrame* frame) {
+   DCHECK(frame);
+   DCHECK(frame->GetSettings());
++  if (nova::IsNovaCoreInitialized() &&
++      nova::GetNovaConfig().navigator.max_touch_points > 0) {
++    // A handset has a finger and nothing else.  A mouse is not attached
++    // to it, so the mouse is not among the available pointers.
++    return static_cast<int>(mojom::blink::PointerType::kPointerCoarseType);
++  }
+   return frame->GetSettings()->GetAvailablePointerTypes();
+ }
+ 
+@@ -366,6 +395,13 @@ mojom::blink::HoverType MediaValues::CalculatePrimaryHoverType(
+     LocalFrame* frame) {
+   DCHECK(frame);
+   DCHECK(frame->GetSettings());
++  if (nova::IsNovaCoreInitialized() &&
++      nova::GetNovaConfig().navigator.max_touch_points > 0) {
++    // A finger cannot hover.  The device either reports that it can
++    // hover -- and then it has a mouse, which a handset does not -- or
++    // that it cannot, which is the truth for a handset.
++    return mojom::blink::HoverType::kHoverNone;
++  }
+   return frame->GetSettings()->GetPrimaryHoverType();
+ }
+ 
+@@ -379,6 +415,11 @@ MediaValues::CalculateOutputDeviceUpdateAbilityType(LocalFrame* frame) {
+ int MediaValues::CalculateAvailableHoverTypes(LocalFrame* frame) {
+   DCHECK(frame);
+   DCHECK(frame->GetSettings());
++  if (nova::IsNovaCoreInitialized() &&
++      nova::GetNovaConfig().navigator.max_touch_points > 0) {
++    // Only "none" is available: the device cannot hover at all.
++    return static_cast<int>(mojom::blink::HoverType::kHoverNone);
++  }
+   return frame->GetSettings()->GetAvailableHoverTypes();
+ }
+ 
 diff --git a/third_party/blink/renderer/core/frame/local_dom_window.cc b/third_party/blink/renderer/core/frame/local_dom_window.cc
-index 36beb12..9e7130d 100644
+index 36beb12a2f..9e7130d5ff 100644
 --- a/third_party/blink/renderer/core/frame/local_dom_window.cc
 +++ b/third_party/blink/renderer/core/frame/local_dom_window.cc
 @@ -26,6 +26,8 @@
@@ -154,7 +202,7 @@ index 36beb12..9e7130d 100644
      return 0.0;
    }
 diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink/renderer/core/frame/screen.cc
-index 8bc2c67..23af02d 100644
+index 8bc2c67f4b..23af02db5a 100644
 --- a/third_party/blink/renderer/core/frame/screen.cc
 +++ b/third_party/blink/renderer/core/frame/screen.cc
 @@ -28,6 +28,8 @@
@@ -238,8 +286,294 @@ index 8bc2c67..23af02d 100644
    if (!DomWindow())
      return 0;
    return GetRect(/*available=*/true).width();
+diff --git a/third_party/blink/renderer/core/nova_js_layer.cc b/third_party/blink/renderer/core/nova_js_layer.cc
+new file mode 100644
+index 0000000000..8d96d46724
+--- /dev/null
++++ b/third_party/blink/renderer/core/nova_js_layer.cc
+@@ -0,0 +1,280 @@
++ï»¿// NOVA Profile Core -- the JavaScript layer, and where it runs.
++//
++// The layer itself is a document of JavaScript that the control plane
++// builds.  It is handed to the renderer over the Mojo channel and is
++// run once per document, before any script of the page.
++//
++// Where it runs
++// -------------
++//
++// The page's own first script is the trigger.  It is the earliest
++// moment at which a script may run in a document, and by then no
++// script of the page can have run yet -- so the page cannot have seen
++// the host's values.
++//
++// It cannot be earlier.  A document that is still the initial empty
++// document has no committed navigation behind it, and Blink refuses to
++// run a script in one: the frame loader forbids script execution for
++// the duration of the initial-document access check
++// (FrameLoader::DidAccessInitialDocument), and running a script from
++// inside that check takes the renderer down.  Document::Initialize()
++// is exactly where that check runs, which is why the injection used to
++// live there and why it crashed.
++//
++// A document that brings no script at all gets the layer from a
++// microtask queued on the frame's event loop.  A microtask runs at the
++// end of the current task, which is still before the page's own code --
++// a document with no script has no code to run before.
++//
++// Once per document
++// -----------------
++//
++// The layer is idempotent inside the page as well: it checks its own
++// marker before it does anything.  The set of documents that have been
++// done is here so that the layer is not run twice for a document that
++// brings both a script and a microtask.
++
++#include "third_party/blink/renderer/core/nova_js_layer.h"
++
++#include <cstdio>
++#include <cstdlib>
++#include <set>
++
++#include "base/logging.h"
++#include "base/synchronization/lock.h"
++#include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
++#include "third_party/blink/renderer/core/dom/document.h"
++#include "third_party/blink/renderer/core/frame/local_dom_window.h"
++#include "third_party/blink/renderer/core/frame/local_frame.h"
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
++#include "third_party/blink/renderer/core/script/classic_script.h"
++#include "third_party/blink/renderer/platform/bindings/script_state.h"
++#include "third_party/blink/renderer/platform/weborigin/kurl.h"
++#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
++
++namespace nova {
++// The trace.
++//
++// The trace is a line on Chromium's own log.  That is not the obvious
++// place to put it: the log is noisy, and a trace that is switched on
++// and off is easier to live with.
++//
++// The obvious alternatives do not work.  An environment variable does
++// not reach the renderer, which is a child process, and Chromium does
++// not necessarily hand the environment to it.  A file does not work
++// either: the file stays empty.
++//
++// The log does work, because the standard error of a child process is
++// the standard error of the browser.  A line logged in the renderer
++// comes out of the browser's own standard error, next to everything
++// else.
++inline bool NovaTraceOn() {
++  return true;
++}
++
++namespace {
++
++// The documents the layer has already run in.
++//
++// The documents are kept alive by their frames for as long as they are
++// in the set, and the set is cleared when the frame navigates.
++class InjectedDocuments {
++ public:
++  static InjectedDocuments& Get() {
++    static auto* instance = new InjectedDocuments();
++    return *instance;
++  }
++
++  // Returns true when the document had not been done before.
++  bool MarkDone(const ::blink::Document* document) {
++    base::AutoLock guard(lock_);
++    return done_.insert(document).second;
++  }
++
++  void Forget(const ::blink::Document* document) {
++    base::AutoLock guard(lock_);
++    done_.erase(document);
++  }
++
++ private:
++  base::Lock lock_;
++  std::set<raw_ptr<const ::blink::Document>> done_;
++};
++
++}  // namespace
++
++// Whether the profile applies to the given document.
++//
++// The profile describes a device on the web.  Chromium's own pages --
++// the settings, the new tab page, the component extensions -- are not
++// the web, and they are part of the browser: a fingerprint that
++// changes them changes what the browser does.
++//
++// Two things go wrong without this.
++//
++// The first is visible.  A component extension that asks for the voices
++// of the speech engine goes through the extension event router, and the
++// router is null while the extension system is still coming up.  The
++// extension calls it anyway, because the page it runs in has been given
++// a fingerprint that says it is an Android phone, and the phone it
++// claims to be has a speech engine.  The browser dies with "Check
++// failed: event_router".
++//
++// The second is quieter.  The settings page measures the screen to lay
++// itself out, and the geometry perturbation moves what it measures.  A
++// fingerprint that changes the browser's own layout is a fingerprint
++// that is visible without a page.
++//
++// So the profile applies to the web and to nothing else.
++//
++// The check lives here rather than in the hooks layer because the hooks
++// layer is a standalone target: it is linked into the browser process
++// as well as into the renderer, and it deliberately does not depend on
++// Blink.  A document is a Blink thing.
++bool ProfileAppliesTo(const ::blink::Document* document) {
++  if (!document) {
++    return false;
++  }
++  const ::blink::LocalDOMWindow* window = document->domWindow();
++  if (!window) {
++    return false;
++  }
++  const ::blink::Document* current = window->document();
++  if (!current) {
++    return false;
++  }
++  // The protocol.  "chrome", "chrome-extension", "chrome-untrusted",
++  // "devtools", "chrome-search", "chrome-native", "about",
++  // "view-source" and "blob" are the browser's own.  "http" and
++  // "https" are the web.
++  //
++  // A "file" page is the web as far as the profile is concerned: it is
++  // content, not the browser, and the same rules apply to it.
++  const ::blink::KURL& url = current->Url();
++  return url.ProtocolIs("http") || url.ProtocolIs("https") ||
++         url.ProtocolIs("file");
++}
++
++bool RunProfileScript(::blink::LocalDOMWindow* window) {
++  LOG(INFO) << "NOVA: layer: run enter window=" << (window ? 1 : 0);
++  if (!window || !window->GetFrame())
++    return false;
++
++  const std::string& source = GetEffectiveJsRuntimeSource();
++  LOG(INFO) << "NOVA: layer: source len=" << (int)source.size();
++  if (source.empty())
++    return false;
++
++  // The main world is the page's own world.  A script that ran in an
++  // isolated world would patch a copy the page cannot see.
++  ::blink::ScriptState* script_state =
++      ::blink::ToScriptStateForMainWorld(window->GetFrame());
++  LOG(INFO) << "NOVA: layer: script_state=" << (script_state ? 1 : 0);
++  if (!script_state)
++    return false;
++
++  ::blink::ClassicScript* script = ::blink::ClassicScript::CreateUnspecifiedScript(
++      ::blink::String::FromUtf8(
++          base::as_byte_span(base::span<const char>(source))),
++      ::blink::ScriptSourceLocationType::kUnknown,
++      ::blink::SanitizeScriptErrors::kDoNotSanitize);
++  LOG(INFO) << "NOVA: layer: script=" << (script ? 1 : 0);
++  if (!script)
++    return false;
++
++  // The script is the profile's own, and its errors are not the page's
++  // business: a failure in it must not show up in the page's console,
++  // where a page could read it.
++  LOG(INFO) << "NOVA: layer: executing";
++  script->RunScriptOnScriptState(
++      script_state,
++      ::blink::ExecuteScriptPolicy::kExecuteScriptWhenScriptsDisabled,
++      ::blink::V8ScriptRunner::RethrowErrorsOption::DoNotRethrow());
++  LOG(INFO) << "NOVA: layer: done";
++  return true;
++}
++
++void RunProfileScriptIfPending(::blink::Document* document) {
++  LOG(INFO) << "NOVA: pending: doc=" << (document ? 1 : 0);
++  if (!document) {
++    return;
++  }
++  if (!HasJsRuntime()) {
++    LOG(INFO) << "NOVA: pending: no runtime";
++    return;
++  }
++
++  // A document that is being prerendered must not have the profile's
++  // fingerprint applied to it before it is shown.
++  //
++  // The check used to be ``!document->IsActive()``, and it was wrong.
++  // ``IsActive`` answers "is the lifecycle of this document running",
++  // and the lifecycle of a committed document stays *inactive* until
++  // the frame is focused -- and a frame in a headless browser, or a
++  // frame in a background tab, is never focused.  So the check
++  // rejected every document the layer had to run in, and the layer
++  // never ran: the page saw the host's values for every axis the
++  // layer owns.
++  //
++  // What the check was after is "is this the document the user is
++  // looking at".  That is a different question, and the layer asks it
++  // in ``ProfileAppliesTo``: the document has to be the one the window
++  // currently holds.  A prerendered document is not -- it lives in a
++  // second window until it is activated -- so that check already
++  // excludes it, and ``IsPrerendering`` excludes it a second time.
++  if (document->IsPrerendering()) {
++    LOG(INFO) << "NOVA: pending: prerendering";
++    return;
++  }
++
++  // A document that is still the initial empty document has no
++  // committed navigation behind it, and Blink refuses to run a script
++  // in one: the frame loader forbids script execution for the duration
++  // of the initial-document access check, and running a script from
++  // inside that check takes the renderer down.
++  //
++  // The layer is not run for such a document.  The initial empty
++  // document is the about:blank that precedes a navigation; it is
++  // replaced by the document the navigation commits, and the layer
++  // runs there instead.
++  if (document->IsInitialEmptyDocument()) {
++    LOG(INFO) << "NOVA: pending: initial empty document";
++    return;
++  }
++
++  // The profile describes a device on the web.  Chromium's own pages --
++  // the settings, the new tab page, the component extensions -- are not
++  // the web: they are part of the browser, and a fingerprint that
++  // changes them changes what the browser does.
++  //
++  // A component extension that asks for the voices of the speech engine
++  // goes through the extension event router, and the router is null
++  // while the extension system is still coming up.  The extension calls
++  // it anyway, because the page it runs in has been given a fingerprint
++  // that says it is an Android phone, and the phone it claims to be has
++  // a speech engine.  The browser dies with "Check failed:
++  // event_router".
++  if (!ProfileAppliesTo(document)) {
++    LOG(INFO) << "NOVA: pending: does not apply";
++    return;
++  }
++
++  // The layer is idempotent inside the page as well: it checks its own
++  // marker before it does anything.  Running it twice would be
++  // harmless but wasteful, and the second run would happen against a
++  // window whose values are already the profile's.
++  if (!InjectedDocuments::Get().MarkDone(document)) {
++    LOG(INFO) << "NOVA: pending: already done";
++    return;
++  }
++
++  ::blink::LocalDOMWindow* window = document->domWindow();
++  if (!window) {
++    LOG(INFO) << "NOVA: pending: no window";
++    return;
++  }
++
++  RunProfileScript(window);
++}
++
++}  // namespace nova
 diff --git a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
-index 7741973..598c2f1 100644
+index 7741973677..598c2f1000 100644
 --- a/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
 +++ b/third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.cc
 @@ -4,6 +4,8 @@
@@ -282,8 +616,60 @@ index 7741973..598c2f1 100644
    }
  
    return image_data;
+diff --git a/third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc
+index 9eb36fe26c..f783afe907 100644
+--- a/third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "third_party/blink/renderer/modules/webgl/webgl2_rendering_context_base.h"
+ 
++#include "nova_chromium_hooks.h"
++
+ #include <memory>
+ 
+ #include "base/compiler_specific.h"
+@@ -4840,17 +4842,37 @@ ScriptValue WebGL2RenderingContextBase::getParameter(ScriptState* script_state,
+     return ScriptValue::CreateNull(script_state->GetIsolate());
+   switch (pname) {
+     case GL_SHADING_LANGUAGE_VERSION: {
++      // The version of the shading language is the profile's own, so
++      // that it belongs to the renderer the profile names.  This is the
++      // WebGL 2 path; the WebGL 1 path has its own copy of the same
++      // answer, and a page may hold either.
++      if (nova::IsNovaCoreInitialized()) {
++        const std::string nova_version =
++            nova::GetWebGLShadingLanguageVersionString();
++        if (!nova_version.empty()) {
++          return WebGLAny(script_state, String(nova_version));
++        }
++      }
+       return WebGLAny(
+           script_state,
+           StrCat({"WebGL GLSL ES 3.00 (",
+                   String(ContextGL()->GetString(GL_SHADING_LANGUAGE_VERSION)),
+                   ")"}));
+     }
+-    case GL_VERSION:
++    case GL_VERSION: {
++      // The version of the context is the profile's own, for the same
++      // reason as the shading language version above.
++      if (nova::IsNovaCoreInitialized()) {
++        const std::string nova_version = nova::GetWebGLVersionString();
++        if (!nova_version.empty()) {
++          return WebGLAny(script_state, String(nova_version));
++        }
++      }
+       return WebGLAny(
+           script_state,
+           StrCat({"WebGL 2.0 (", String(ContextGL()->GetString(GL_VERSION)),
+                   ")"}));
++    }
+ 
+     case GL_COPY_READ_BUFFER_BINDING:
+       return WebGLAny(script_state, bound_copy_read_buffer_.Get());
 diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
-index c110f38..f032630 100644
+index c110f3816f..23a2f9a072 100644
 --- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 +++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
 @@ -25,6 +25,8 @@
@@ -295,7 +681,117 @@ index c110f38..f032630 100644
  #include <inttypes.h>
  
  #include <memory>
-@@ -4344,6 +4346,14 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+@@ -208,6 +210,63 @@ unsigned WebGLRenderingContextBase::max_active_webgl_contexts_on_worker_ = 0;
+ 
+ namespace {
+ 
++// The name the profile uses for a WebGL parameter.
++//
++// The profile names the parameters in the lower case form of the GL
++// enumerant -- ``max_texture_size`` for ``GL_MAX_TEXTURE_SIZE`` -- and
++// the lookup in the core is done by that name.
++//
++// The enumerants that the profile describes are listed one by one.  The
++// list is short, and a switch on the enumerant keeps the mapping
++// explicit: a parameter that is not listed is one the profile does not
++// describe, and the host's value is kept for it.
++const char* NovaWebGLParameterName(GLenum pname) {
++  switch (pname) {
++    case GL_MAX_TEXTURE_SIZE:
++      return "max_texture_size";
++    case GL_MAX_CUBE_MAP_TEXTURE_SIZE:
++      return "max_cube_map_texture_size";
++    case GL_MAX_3D_TEXTURE_SIZE:
++      return "max_3d_texture_size";
++    case GL_MAX_ARRAY_TEXTURE_LAYERS:
++      return "max_array_texture_layers";
++    case GL_MAX_RENDERBUFFER_SIZE:
++      return "max_renderbuffer_size";
++    case GL_MAX_VERTEX_ATTRIBS:
++      return "max_vertex_attribs";
++    case GL_MAX_VERTEX_UNIFORM_VECTORS:
++      return "max_vertex_uniform_vectors";
++    case GL_MAX_VERTEX_UNIFORM_COMPONENTS:
++      return "max_vertex_uniform_components";
++    case GL_MAX_FRAGMENT_UNIFORM_VECTORS:
++      return "max_fragment_uniform_vectors";
++    case GL_MAX_FRAGMENT_UNIFORM_COMPONENTS:
++      return "max_fragment_uniform_components";
++    case GL_MAX_VARYING_VECTORS:
++      return "max_varying_vectors";
++    case GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS:
++      return "max_combined_texture_image_units";
++    case GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS:
++      return "max_vertex_texture_image_units";
++    case GL_MAX_TEXTURE_IMAGE_UNITS:
++      return "max_texture_image_units";
++    case GL_MAX_COLOR_ATTACHMENTS:
++      return "max_color_attachments";
++    case GL_MAX_DRAW_BUFFERS:
++      return "max_draw_buffers";
++    case GL_MAX_SAMPLES:
++      return "max_samples";
++    case GL_MAX_UNIFORM_BUFFER_BINDINGS:
++      return "max_uniform_buffer_bindings";
++    case GL_SAMPLE_BUFFERS:
++      return "sample_buffers";
++    case GL_SAMPLES:
++      return "samples";
++    default:
++      return nullptr;
++  }
++}
++
+ // LINT.IfChange(WebGLANGLEImplementation)
+ enum class WebGLANGLEImplementation {
+   // These values are persisted to logs. Entries should not be renumbered and
+@@ -4265,12 +4324,22 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+       return GetWebGLIntArrayParameter(script_state, pname);
+     case GL_SCISSOR_TEST:
+       return GetBooleanParameter(script_state, pname);
+-    case GL_SHADING_LANGUAGE_VERSION:
++    case GL_SHADING_LANGUAGE_VERSION: {
++      // The version of the shading language is the profile's own, so
++      // that it belongs to the renderer the profile names.
++      if (nova::IsNovaCoreInitialized()) {
++        const std::string nova_version =
++            nova::GetWebGLShadingLanguageVersionString();
++        if (!nova_version.empty()) {
++          return WebGLAny(script_state, String(nova_version));
++        }
++      }
+       return WebGLAny(
+           script_state,
+           StrCat({"WebGL GLSL ES 1.0 (",
+                   String(ContextGL()->GetString(GL_SHADING_LANGUAGE_VERSION)),
+                   ")"}));
++    }
+     case GL_STENCIL_BACK_FAIL:
+       return GetUnsignedIntParameter(script_state, pname);
+     case GL_STENCIL_BACK_FUNC:
+@@ -4327,11 +4396,20 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+       return WebGLAny(script_state, unpack_colorspace_conversion_);
+     case GL_VENDOR:
+       return WebGLAny(script_state, String("WebKit"));
+-    case GL_VERSION:
++    case GL_VERSION: {
++      // The version of the context is the profile's own, for the same
++      // reason as the shading language version above.
++      if (nova::IsNovaCoreInitialized()) {
++        const std::string nova_version = nova::GetWebGLVersionString();
++        if (!nova_version.empty()) {
++          return WebGLAny(script_state, String(nova_version));
++        }
++      }
+       return WebGLAny(
+           script_state,
+           StrCat({"WebGL 1.0 (", String(ContextGL()->GetString(GL_VERSION)),
+                   ")"}));
++    }
+     case GL_VIEWPORT:
+       return GetWebGLIntArrayParameter(script_state, pname);
+     case GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES:  // OES_standard_derivatives
+@@ -4344,6 +4422,14 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
        return ScriptValue::CreateNull(script_state->GetIsolate());
      case WebGLDebugRendererInfo::kUnmaskedRendererWebgl:
        if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
@@ -310,7 +806,7 @@ index c110f38..f032630 100644
          return WebGLAny(script_state,
                          String(ContextGL()->GetString(GL_RENDERER)));
        }
-@@ -4353,6 +4363,12 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+@@ -4353,6 +4439,12 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
        return ScriptValue::CreateNull(script_state->GetIsolate());
      case WebGLDebugRendererInfo::kUnmaskedVendorWebgl:
        if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
@@ -323,7 +819,7 @@ index c110f38..f032630 100644
          return WebGLAny(script_state,
                          String(ContextGL()->GetString(GL_VENDOR)));
        }
-@@ -5502,6 +5518,24 @@ void WebGLRenderingContextBase::ReadPixelsHelper(GLint x,
+@@ -5502,6 +5594,24 @@ void WebGLRenderingContextBase::ReadPixelsHelper(GLint x,
      }
      ContextGL()->ReadPixels(x, y, width, height, format, type, data);
    }
@@ -348,3 +844,138 @@ index c110f38..f032630 100644
  }
  
  void WebGLRenderingContextBase::RenderbufferStorageImpl(
+@@ -8142,6 +8252,30 @@ ScriptValue WebGLRenderingContextBase::GetIntParameter(
+         break;
+     }
+   }
++
++  // The parameter table is the profile's own.
++  //
++  // The unmasked renderer names the GPU, and the table says how big it
++  // is.  A script that reads both and finds that they do not belong
++  // together has found a spoofed GPU, and that is the single easiest
++  // way to catch one: the table has to match the name exactly, and the
++  // name is the one thing that is easy to fake.
++  //
++  // So the value the script reads is the profile's, and the host's
++  // value is only kept for the parameters the profile does not
++  // describe.
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++    if (config.webgl.mode != "native_passthrough" &&
++        config.webgl.mode != "disabled") {
++      const char* name = NovaWebGLParameterName(pname);
++      int profile_value = 0;
++      if (name && nova::GetWebGLParameter(name, &profile_value)) {
++        return WebGLAny(script_state, profile_value);
++      }
++    }
++  }
++
+   return WebGLAny(script_state, value);
+ }
+ 
+@@ -8183,6 +8317,29 @@ ScriptValue WebGLRenderingContextBase::GetWebGLFloatArrayParameter(
+     default:
+       NOTIMPLEMENTED();
+   }
++
++  // The aliased ranges belong to the GPU as much as the table does: a
++  // point size range of one to 1024 is a statement about the hardware,
++  // and it has to agree with the renderer the profile names.
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++    if (config.webgl.mode != "native_passthrough" &&
++        config.webgl.mode != "disabled") {
++      const char* name = nullptr;
++      if (pname == GL_ALIASED_POINT_SIZE_RANGE) {
++        name = "aliased_point_size_range";
++      } else if (pname == GL_ALIASED_LINE_WIDTH_RANGE) {
++        name = "aliased_line_width_range";
++      }
++      std::vector<double> range;
++      if (name && nova::GetWebGLParameterRange(name, &range) &&
++          range.size() >= 2) {
++        value[0] = static_cast<GLfloat>(range[0]);
++        value[1] = static_cast<GLfloat>(range[1]);
++      }
++    }
++  }
++
+   return WebGLAny(script_state,
+                   DOMFloat32Array::Create(base::span(value).first(length)));
+ }
+@@ -8205,6 +8362,21 @@ ScriptValue WebGLRenderingContextBase::GetWebGLIntArrayParameter(
+     default:
+       NOTIMPLEMENTED();
+   }
++
++  // The viewport dimensions are the largest viewport the GPU accepts,
++  // and they belong to the table like every other value in it.
++  if (nova::IsNovaCoreInitialized()) {
++    const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++    if (config.webgl.mode != "native_passthrough" &&
++        config.webgl.mode != "disabled" && pname == GL_MAX_VIEWPORT_DIMS) {
++      std::vector<int> dims;
++      if (nova::GetWebGLViewportDims(&dims) && dims.size() == 2) {
++        value[0] = dims[0];
++        value[1] = dims[1];
++      }
++    }
++  }
++
+   return WebGLAny(script_state,
+                   DOMInt32Array::Create(base::span(value).first(length)));
+ }
+diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_webgpu_base.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_webgpu_base.cc
+index 50e37bfe12..0db3602103 100644
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_webgpu_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_webgpu_base.cc
+@@ -3,6 +3,8 @@
+ 
+ #include "third_party/blink/renderer/modules/webgl/webgl_rendering_context_webgpu_base.h"
+ 
++#include "nova_chromium_hooks.h"
++
+ #include <dawn/dawn_proc.h>
+ #include <dawn/wire/WireClient.h>
+ 
+@@ -1451,15 +1453,36 @@ ScriptValue WebGLRenderingContextWebGPUBase::getParameter(
+       case GC3D_MAX_CLIENT_WAIT_TIMEOUT_WEBGL:
+         return WebGLAny(script_state, int64_t{0});
+ 
+-      case GL_SHADING_LANGUAGE_VERSION:
++      case GL_SHADING_LANGUAGE_VERSION: {
++        // The version of the shading language is the profile's own, so
++        // that it belongs to the renderer the profile names.  This is
++        // the WebGPU-backed path; the other two paths have their own
++        // copy of the same answer.
++        if (nova::IsNovaCoreInitialized()) {
++          const std::string nova_version =
++              nova::GetWebGLShadingLanguageVersionString();
++          if (!nova_version.empty()) {
++            return WebGLAny(script_state, String(nova_version));
++          }
++        }
+         return WebGLAny(
+             script_state,
+             StrCat({"WebGL GLSL ES 3.00 (",
+                     GetGLString(GL_SHADING_LANGUAGE_VERSION), ")"}));
++      }
+ 
+-      case GL_VERSION:
++      case GL_VERSION: {
++        // The version of the context is the profile's own, for the same
++        // reason as the shading language version above.
++        if (nova::IsNovaCoreInitialized()) {
++          const std::string nova_version = nova::GetWebGLVersionString();
++          if (!nova_version.empty()) {
++            return WebGLAny(script_state, String(nova_version));
++          }
++        }
+         return WebGLAny(script_state,
+                         StrCat({"WebGL 2.0 (", GetGLString(GL_VERSION), ")"}));
++      }
+ 
+       // --- Unimplemented parameters ---
+       // TODO(413078308): Implement these parameters.

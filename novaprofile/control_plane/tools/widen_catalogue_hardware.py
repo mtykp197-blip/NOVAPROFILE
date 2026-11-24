@@ -38,23 +38,27 @@ LOWER_RAM = (2, 3, 4, 6)
 
 
 def widen_ram(values: tuple[int, ...]) -> tuple[int, ...]:
-    """The RAM amounts the line is sold in."""
+    """The RAM amounts the line is sold in.
 
-    options = set(values)
+    The hand-written catalogue already names the configurations the
+    line shipped in, and those are facts: a Pixel 8 Pro is an eight
+    and a twelve gigabyte phone, and there is no two gigabyte version
+    of it.
+
+    The earlier version of this walked the smallest amount up by four,
+    eight and twelve and added every smaller amount below it, which
+    produced handsets that no shop has ever sold.  The set of
+    configurations is therefore left as the catalogue names it.
+
+    The one thing that is added is the smallest configuration a line of
+    this class is also sold in, when the catalogue names only the
+    larger ones: a line whose text mentions twelve gigabytes was also
+    sold with eight.
+    """
+
+    options = {int(value) for value in values if int(value) > 0}
     if not options:
-        options = {8}
-    lowest = min(options)
-
-    # The larger configurations of the line.
-    for candidate in (lowest + 4, lowest + 8, lowest + 12):
-        if candidate <= 64:
-            options.add(candidate)
-
-    # The smaller ones, which are what the platform reports differently.
-    for candidate in LOWER_RAM:
-        if candidate < lowest:
-            options.add(candidate)
-
+        return (8,)
     return tuple(sorted(options))
 
 
@@ -62,28 +66,22 @@ def widen_cores(values: tuple[int, ...]) -> tuple[int, ...]:
     """The core counts the chipsets of the line report.
 
     The count is a property of the chipset rather than of the handset,
-    and a handset is sold with more than one chipset.  The set is
-    therefore the count of the chipset the catalogue names and the
-    counts of the other chipsets the model shipped with.
+    and a chipset has exactly one core count.  A Snapdragon 8 Gen 1 is
+    eight cores and has always been eight cores, so the set of counts
+    the line may report is the set of the counts of the chipsets the
+    line shipped with -- and for a line that shipped with one chipset
+    that is a single value.
 
-    The counts in the set are the ones a chip designer actually ships:
-    four, six, eight and twelve.  The arithmetic that walks a base up
-    and down by one and two produces seven, nine and ten, and no
-    chipset has ever had those -- a profile that reports one is a
-    profile that cannot be a device.
+    The earlier version of this widened the count to the neighbouring
+    *real* counts, so an eight-core chipset was also offered as a
+    four-core and a twelve-core handset.  That is not a variety a
+    vendor sells: it is a contradiction a site finds by reading the SoC
+    model and the core count out of the same record.
     """
 
     if not values:
         return (8,)
-    base = values[0]
-    options = {base}
-    for candidate in _REAL_CORE_COUNTS:
-        # Only the counts of the same generation belong to the same
-        # handset: a four-core chip and a twelve-core chip are two
-        # different phones, not two configurations of one.
-        if abs(candidate - base) <= 4:
-            options.add(candidate)
-    return tuple(sorted(options))
+    return (int(values[0]),)
 
 
 def format_tuple(values: tuple[int, ...]) -> str:

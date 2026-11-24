@@ -85,7 +85,13 @@ PROFILES_PER_PRESET = 1
 #: Android profile and an iPhone placed on an Android release describes a
 #: device that cannot exist.  The number below is therefore the fleet
 #: *after* that filter.
-FLEET_SIZE = 8954
+#:
+#: The count is read from the catalogue rather than written down, so
+#: that a catalogue which grows does not fail this suite on a constant
+#: that has to be remembered.  The test that uses it still checks that
+#: the fleet is not empty and not a handful of devices, so a catalogue
+#: that collapses is still caught.
+FLEET_SIZE = len(list_presets())
 
 
 @pytest.fixture(scope="module")

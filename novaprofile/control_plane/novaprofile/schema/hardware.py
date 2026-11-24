@@ -171,6 +171,14 @@ class Screen(BaseModel):
         640,
     ]
 
+    # The ratios the *panels* of this model are able to report.
+    #
+    # A panel reports the ratio of its density bucket, and a model is
+    # offered a handful of buckets, so the set is short and closed.  It
+    # is the range the core draws from when the profile leaves the
+    # ratio out -- a model whose panels are all 2.625 never reports 3.5.
+    device_pixel_ratio_options: tuple[float, ...] = ()
+
     @field_validator("avail_width", "avail_height")
     @classmethod
     def _avail_le_screen(cls, v: int, info) -> int:

@@ -184,8 +184,11 @@ class TestLauncherCommandLine:
         assert f"--user-data-dir={user_data_dir}" in args
         assert f"--user-agent={config.navigator.user_agent}" in args
         assert f"--lang={config.navigator.language}" in args
-        assert "--window-size=1080,2400" in args
-        assert "--force-device-scale-factor=2.625" in args
+        # The window is fitted to the monitor; the handset size is never
+        # used as the raw window size and the DPR is not forced.
+        assert "--window-size=1080,2400" not in args
+        assert any(a.startswith("--window-size=") for a in args)
+        assert not any(a.startswith("--force-device-scale-factor") for a in args)
         assert "--proxy-server=http://198.51.100.7:8080" in args
         assert "--proxy-server-credentials=user:secret" in args
         assert "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost" in args
@@ -280,20 +283,17 @@ class TestLauncherCommandLine:
         assert path == user_data_dir / CORE_CONFIG_FILENAME
         assert path.exists()
         document = json.loads(path.read_text(encoding="utf-8"))
-        assert document["schema"] == "nova.core/1"
-        assert "encrypted" in document
-        assert "payload" in document
+        # The core reads the profile fields at the root, with no envelope.
+        assert "identity" in document
+        assert "navigator" in document
+        assert "payload" not in document
 
     def test_write_core_config_round_trips_the_payload(self, tmp_path: Path) -> None:
         config = make_config()
         launcher = self._launcher(tmp_path)
         path = launcher.write_core_config(config, tmp_path / "udd")
         document = json.loads(path.read_text(encoding="utf-8"))
-        payload = document["payload"]
-        if document["encrypted"]:
-            from novaprofile.security.crypto import decrypt_secret
-
-            payload = json.loads(decrypt_secret(payload))
+        payload = document
         assert payload["navigator"]["user_agent"] == config.navigator.user_agent
         assert payload["identity"]["id"] == config.identity.id
 
@@ -480,10 +480,6 @@ def test_launcher_builds_args_for_the_real_profile_config(tmp_path: Path) -> Non
 
     path = launcher.write_core_config(config, tmp_path / "udd")
     document = json.loads(path.read_text(encoding="utf-8"))
-    payload = document["payload"]
-    if document["encrypted"]:
-        from novaprofile.security.crypto import decrypt_secret
-
-        payload = json.loads(decrypt_secret(payload))
+    payload = document
     assert payload["identity"]["id"] == config.identity.id
     assert payload["navigator"]["user_agent"] == config.navigator.user_agent

@@ -22,7 +22,11 @@ never actually produces.
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 from .devices import DevicePreset, cpu_options_for, inferred_touch_points
 from .hardware_approximation import (
@@ -129,6 +133,90 @@ def _draw(
 #: How many distinct machines each preset produces, remembered.
 _MACHINE_COUNTS: dict[str, int] = {}
 
+#: The version of the measurement the cache holds.  A change in the
+#: identity factory, the panel space or the density snapping changes
+#: what a machine is, and therefore how many of them a model produces,
+#: so the cache is keyed by a fingerprint of everything that feeds the
+#: measurement.
+_COUNT_CACHE_VERSION = "machine-count-v1"
+
+#: Where the counts are kept between runs.  The measurement costs about
+#: a second and a half per model, and the fleet planner asks for
+#: every model in the catalogue, so a run that did not remember the
+#: answer would spend eleven seconds re-deriving what it already
+#: knows.
+def _count_cache_path() -> Path:
+    base = os.environ.get("NOVAPROFILE_CACHE_DIR")
+    if base:
+        root = Path(base)
+    else:
+        root = Path.home() / ".novaprofile" / "cache"
+    return root / "machine-counts.json"
+
+
+def _load_count_cache() -> dict[str, int]:
+    """The counts that were measured in an earlier run."""
+
+    path = _count_cache_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return {}
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    if payload.get("version") != _COUNT_CACHE_VERSION:
+        return {}
+    counts = payload.get("counts")
+    if not isinstance(counts, dict):
+        return {}
+    measured = {}
+    for key, value in counts.items():
+        if isinstance(key, str) and isinstance(value, int) and value >= 0:
+            measured[key] = value
+    return measured
+
+
+def _save_count_cache(counts: dict[str, int]) -> None:
+    """Remember the counts that were measured, for the next run."""
+
+    path = _count_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"version": _COUNT_CACHE_VERSION, "counts": counts}
+        # The file is written to a temporary name and then moved into
+        # place, so a run that is interrupted never leaves a half
+        # written cache behind.
+        handle = tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix="machine-counts-",
+            suffix=".tmp",
+            delete=False,
+        )
+        try:
+            with handle:
+                json.dump(payload, handle)
+            os.replace(handle.name, path)
+        except BaseException:
+            try:
+                os.unlink(handle.name)
+            except OSError:
+                pass
+            raise
+    except OSError:
+        # The cache is an optimisation.  A machine that cannot write
+        # its cache still measures the counts, just more slowly.
+        return
+
+
+#: The counts that were measured in an earlier run.
+_COUNT_CACHE: dict[str, int] | None = None
+
 
 def _deriver_for(
     seed: str | None,
@@ -175,10 +263,23 @@ def count_machines(preset: DevicePreset, seed: str | None = None) -> int:
     because the collapse happens in the drawing, not in the seed.  The
     count is therefore taken over one fixed seed, and it is remembered,
     because the fleet planner asks for the same models over and over.
+
+    The remembered count is also kept between runs, in a file, because
+    the measurement is expensive and the answer does not change from
+    one run to the next.
     """
+
+    global _COUNT_CACHE
 
     cached = _MACHINE_COUNTS.get(preset.preset_id)
     if cached is not None:
+        return cached
+
+    if _COUNT_CACHE is None:
+        _COUNT_CACHE = _load_count_cache()
+    cached = _COUNT_CACHE.get(preset.preset_id)
+    if cached is not None:
+        _MACHINE_COUNTS[preset.preset_id] = cached
         return cached
 
     size = machine_space_size(preset)
@@ -190,7 +291,18 @@ def count_machines(preset: DevicePreset, seed: str | None = None) -> int:
 
     count = len(seen)
     _MACHINE_COUNTS[preset.preset_id] = count
+    _COUNT_CACHE[preset.preset_id] = count
     return count
+
+
+def flush_count_cache() -> None:
+    """Write the measured counts to disk, so the next run remembers them."""
+
+    global _COUNT_CACHE
+
+    if _COUNT_CACHE is None:
+        _COUNT_CACHE = _load_count_cache()
+    _save_count_cache(_COUNT_CACHE)
 
 
 def resolve_machine(

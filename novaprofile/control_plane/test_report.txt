@@ -1,0 +1,108 @@
+........................................................................ [  3%]
+........................................................................ [  7%]
+........................................................................ [ 11%]
+........................................................................ [ 15%]
+....F...Fs..........F................................................... [ 19%]
+...................F.................................................... [ 23%]
+........................................................................ [ 27%]
+................................FFF..................................... [ 31%]
+.......................FF...........F................................... [ 34%]
+........................................................................ [ 38%]
+........................................................................ [ 42%]
+........................................................................ [ 46%]
+........................................................................ [ 50%]
+........................................................................ [ 54%]
+........................................................................ [ 58%]
+........................................................................ [ 62%]
+........................................................................ [ 66%]
+..........................................ss...F........................ [ 69%]
+..................................ss.................................... [ 73%]
+........................................................................ [ 77%]
+........................................................................ [ 81%]
+........................................................................ [ 85%]
+........................................................................ [ 89%]
+........................................................................ [ 93%]
+.............................................FF.............FF.......... [ 97%]
+......................................................                   [100%]
+================================== FAILURES ===================================
+E   Failed: DID NOT RAISE BuildError
+C:\Users\ezycloudx-admin\Desktop\NOVAPROFILE\novaprofile\control_plane\tests\test_core_patch_build.py:1110: Failed: DID NOT RAISE BuildError
+E   AssertionError: ["error: 0001-nova-profile-core.patch: the hunk header does not match its body: line 165: the hunk header declares -11 +17 lines but the body carries -11 +21; git apply rejects the whole patch with 'corrupt patch'"]
+    assert not [CheckFinding(severity='error', subject='0001-nova-profile-core.patch', message="the hunk header does not match its bo...k header declares -11 +17 lines but the body carries -11 +21; git apply rejects the whole patch with 'corrupt patch'")]
+C:\Users\ezycloudx-admin\Desktop\NOVAPROFILE\novaprofile\control_plane\tests\test_core_patch_build.py:1200: AssertionError: ["error: 0001-nova-profile-core.patch: the hunk header does not match its body: line 165: the hunk header declares -11 +17 lines but the body carries -11 +21; git apply rejects the whole patch with 'corrupt patch'"]
+E   AssertionError: 0001-nova-profile-core.patch has a hunk whose header does not match its body
+    assert ('line 165: t...ies -11 +21',) == ()
+      
+      Left contains one more item: 'line 165: the hunk header declares -11 +17 lines but the body carries -11 +21'
+      Use -v to get more diff
+C:\Users\ezycloudx-admin\Desktop\NOVAPROFILE\novaprofile\control_plane\tests\test_core_patch_build.py:1515: AssertionError: 0001-nova-profile-core.patch has a hunk whose header does not match its body
+E   AssertionError: 0001-nova-profile-core.patch calls nova::PrimeBrowserHandover() which the hooks header does not declare
+    assert 'PrimeBrowserHandover' in {'ApplyAudioNoise', 'ApplyPixelNoise', 'ApplyRectDeltas', 'DerivePixelNoiseKey', 'GetAudioBaseLatency', 'GetAudioChannelCount', ...}
+C:\Users\ezycloudx-admin\Desktop\NOVAPROFILE\novaprofile\control_plane\tests\test_core_patch_coverage.py:665: AssertionError: 0001-nova-profile-core.patch calls nova::PrimeBrowserHandover() which the hooks header does not declare
+E   AssertionError: two units of the same model reported the same hardware key; the site would read them as one device
+    assert 2 == 1
+     +  where 2 = _largest_cluster([('pixel-8-pro-android14', ('GC3VE', '16', 512, 1140, 2.625, 8, ...)), ('pixel-8-pro-android14', ('GC3VE', '16', 512, ... ('GC3VE', '14', 512, 1140, 2.625, 8, ...)), ('pixel-8-pro-android14', ('GC3VE', '14', 512, 1140, 2.625, 8, ...)), ...])
+C:\Users\ezycloudx-admin\Desktop\NOVAPROFILE\novaprofile\control_plane\tests\test_fleet_grouping.py:87: AssertionError: two units of the same model reported the same hardware key; the site would read them as one device
+E   AssertionError: two units of the same model reported the same hardware key; the site would read them as one device
+    assert 2 == 1
+     +  where 2 = _largest_cluster([('pixel-8-pro-android14', ('GC3VE', '16', 512, 1140, 2.625, 8, ...)), ('pixel-8-pro-android14', ('GC3VE', '16', 512, ... ('GC3VE', '14', 512, 1140, 2.625, 8, ...)), ('pixel-8-pro-android14', ('GC3VE', '14', 512, 1140, 2.625, 8, ...)), ...])
+C:\Users\ezycloudx-admin\Desktop\NOVAPROFILE\novaprofile\control_plane\tests\test_fleet_grouping.py:87: AssertionError: two units of the same model reported the same hardware key; the site would read them as one device
+E   AssertionError: two units of the same model reported the same hardware key; the site would read them as one device
+    assert 2 == 1
+     +  where 2 = _largest_cluster([('pixel-8-pro-android14', ('GC3VE', '16', 512, 1140, 2.625, 8, ...)), ('pixel-8-pro-android14', ('GC3VE', '16', 512, ... ('GC3VE', '14', 512, 1140, 2.625, 8, ...)), ('pixel-8-pro-android14', ('GC3VE', '14', 512, 1140, 2.625, 8, ...)), ...])
+C:\Users\ezycloudx-admin\Desktop\NOVAPROFILE\novaprofile\control_plane\tests\test_fleet_grouping.py:87: AssertionError: two units of the same model reported the same hardware key; the site would read them as one device
+E   AssertionError: only 0 distinct provinces
+    assert 0 >= 20
+     +  where 0 = len(set())
+C:\Users\ezycloudx-admin\Desktop\NOVAPROFILE\novaprofile\control_plane\tests\test_fleet_uniqueness.py:172: AssertionError: only 0 distinct provinces
+E   AssertionError: assert None == 'vi-VN'
+     +  where None = _at({'navigator': {'userAgent': 'Mozilla/5.0 (Linux; Android 14; GC3VE) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137....{'brand': 'Google Chrome', 'version': '137.0.7121.188'}], 'uaFullVersion': '137.0.7121.188', 'mobile': True, ...}, ...}, ('locale', 'primary'))
+C:\Users\ezycloudx-admin\Desktop\NOVAPROFILE\novaprofile\control_plane\tests\test_fleet_uniqueness.py:184: AssertionError: assert None == 'vi-VN'
+E   AssertionError: pixel-8-pro-android14: every unit stands in the same province
+    assert 0 >= 2
+     +  where 0 = len(set())
+C:\Users\ezycloudx-admin\Desktop\NOVAPROFILE\novaprofile\control_plane\tests\test_fleet_unit_distinctness.py:187: AssertionError: pixel-8-pro-android14: every unit stands in the same province
+E   AssertionError: assert {'sig_audio',...sig_geo', ...} == {'sig_audio',...ig_heap', ...}
+      
+      Extra items in the left set:
+      'sig_geo'
+      Use -v to get more diff
+C:\Users\ezycloudx-admin\Desktop\NOVAPROFILE\novaprofile\control_plane\tests\test_probe_e2e.py:168: AssertionError: assert {'sig_audio',...sig_geo', ...} == {'sig_audio',...ig_heap', ...}
+E   assert 0 >= 10
+     +  where 0 = len([])
+C:\Users\ezycloudx-admin\Desktop\NOVAPROFILE\novaprofile\control_plane\tests\test_uniqueness_target.py:422: assert 0 >= 10
+E   AssertionError: assert 14 >= 50
+     +  where 14 = len({('vi-VN', 'vi', 'en'), ('vi-VN', 'vi', 'en', 'ar'), ('vi-VN', 'vi', 'en', 'de'), ('vi-VN', 'vi', 'en', 'es'), ('vi-VN', 'vi', 'en', 'fr'), ('vi-VN', 'vi', 'en', 'hi'), ...})
+C:\Users\ezycloudx-admin\Desktop\NOVAPROFILE\novaprofile\control_plane\tests\test_uniqueness_target.py:430: AssertionError: assert 14 >= 50
+E   AssertionError: these axes still read the host machine: ['geolocation']
+    assert ['geolocation'] == []
+      
+      Left contains one more item: 'geolocation'
+      Use -v to get more diff
+C:\Users\ezycloudx-admin\Desktop\NOVAPROFILE\novaprofile\control_plane\tests\test_verify_all_axes.py:79: AssertionError: these axes still read the host machine: ['geolocation']
+E   assert 20 == 21
+C:\Users\ezycloudx-admin\Desktop\NOVAPROFILE\novaprofile\control_plane\tests\test_verify_all_axes.py:84: assert 20 == 21
+============================== warnings summary ===============================
+..\..\..\..\AppData\Local\Programs\Python\Python312\Lib\site-packages\fastapi\testclient.py:1
+  C:\Users\ezycloudx-admin\AppData\Local\Programs\Python\Python312\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_core_patch_build.py::test_apply_refuses_a_directory_that_is_not_a_checkout
+FAILED tests/test_core_patch_build.py::test_the_shipped_series_is_well_formed
+FAILED tests/test_core_patch_build.py::test_the_hunk_counter_reads_the_hunks_of_the_shipped_series
+FAILED tests/test_core_patch_coverage.py::test_the_patch_calls_only_declared_hooks
+FAILED tests/test_fleet_grouping.py::test_a_small_family_is_never_groupable[8]
+FAILED tests/test_fleet_grouping.py::test_a_small_family_is_never_groupable[16]
+FAILED tests/test_fleet_grouping.py::test_a_small_family_is_never_groupable[24]
+FAILED tests/test_fleet_uniqueness.py::TestTheFleetIsAFleetOfDifferentDevices::test_the_time_zones_vary
+FAILED tests/test_fleet_uniqueness.py::TestTheFleetIsAFleetOfDifferentDevices::test_every_profile_is_in_vietnam
+FAILED tests/test_fleet_unit_distinctness.py::TestUnitsOfOneModelStayDistinct::test_the_provinces_differ_inside_a_family
+FAILED tests/test_probe_e2e.py::TestSurfaceExtractor::test_the_axis_set_covers_every_signature_part
+FAILED tests/test_uniqueness_target.py::test_locale_and_timezone_vary_within_a_country
+FAILED tests/test_uniqueness_target.py::test_language_list_is_not_the_whole_fleet
+FAILED tests/test_verify_all_axes.py::TestTheHarnessPassesEveryAxis::test_no_axis_depends_on_the_host
+FAILED tests/test_verify_all_axes.py::TestTheHarnessPassesEveryAxis::test_the_report_says_every_axis_passed
+15 failed, 1834 passed, 5 skipped, 1 warning in 1374.53s (0:22:54)
+

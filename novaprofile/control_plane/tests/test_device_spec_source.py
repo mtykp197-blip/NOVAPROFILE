@@ -643,11 +643,24 @@ def test_the_fingerprint_is_shaped_like_a_real_one(
 
 
 def test_the_ram_options_come_from_the_memory_text() -> None:
-    """The memory text names the configurations the handset shipped in."""
+    """The memory text names the configurations the handset shipped in.
 
-    assert derive_ram_options("128GB 8GB RAM, 256GB 12GB RAM") == (8, 12)
-    assert derive_ram_options("256GB 16GB RAM") == (16,)
-    assert derive_ram_options("") == (4, 6, 8)
+    The set is the configurations the line was sold in: the amounts the
+    text names, and the smaller ones the line was also sold in.  A
+    handset whose text names nothing is described by the fallback set.
+    """
+
+    assert derive_ram_options("128GB 8GB RAM, 256GB 12GB RAM") == (
+        1,
+        2,
+        3,
+        4,
+        6,
+        8,
+        12,
+    )
+    assert derive_ram_options("256GB 16GB RAM") == (1, 2, 3, 4, 6, 8, 10, 12, 16)
+    assert derive_ram_options("") == (1, 2, 3, 4, 6, 8)
 
 
 def test_the_ram_options_are_never_empty(buildable: list[DeviceRecord]) -> None:
@@ -660,13 +673,19 @@ def test_the_ram_options_are_never_empty(buildable: list[DeviceRecord]) -> None:
 
 
 def test_the_core_count_follows_the_chipset(records: list[DeviceRecord]) -> None:
-    """A chipset that names its core count reports that many cores."""
+    """A chipset that names its core count reports that many cores.
+
+    The platform reports the count of the clusters that are really
+    there, and the totals that exist are four, six, eight and twelve.
+    A source that names ten is naming a layout, and the count the
+    platform reports is the nearest real total.
+    """
 
     flagship = next(r for r in records if r.source_id == "samsung-galaxy-s24-ultra")
     assert build_preset(flagship).cpu_options == (8,)
 
     exynos = next(r for r in records if r.source_id == "samsung-galaxy-s24")
-    assert build_preset(exynos).cpu_options == (10,)
+    assert build_preset(exynos).cpu_options == (8,)
 
 
 def test_the_ratio_and_density_options_cover_the_computed_values(

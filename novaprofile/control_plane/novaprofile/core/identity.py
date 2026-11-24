@@ -455,6 +455,16 @@ class DeviceIdentity:
     gpu_tier: int = 0
 
 
+#: The panel space of every family, remembered.
+#:
+#: The space is a property of the family and not of the profile, and it
+#: is asked for once per unit of every machine of every family.  The
+#: walk that asks for it is the one that measures how many distinct
+#: machines a family produces, and that walk is what the fleet planner
+#: waits for.
+_PANEL_SPACES: dict[str, tuple[tuple[tuple[int, int], ...], tuple[int, ...]]] = {}
+
+
 def panel_space(preset: DevicePreset) -> tuple[tuple[tuple[int, int], ...], tuple[int, ...]]:
     """The panel sizes and the density buckets this family may report.
 
@@ -469,6 +479,10 @@ def panel_space(preset: DevicePreset) -> tuple[tuple[tuple[int, int], ...], tupl
     of the phone changes the display size in the settings, and the
     panel behind it does not move.
     """
+
+    cached = _PANEL_SPACES.get(preset.preset_id)
+    if cached is not None:
+        return cached
 
     base_w, base_h = preset.screen.width, preset.screen.height
     candidates = tuple(
@@ -492,7 +506,9 @@ def panel_space(preset: DevicePreset) -> tuple[tuple[tuple[int, int], ...], tupl
     if not buckets:
         buckets = tuple(preset.density_options)
 
-    return candidates, buckets
+    space = (candidates, buckets)
+    _PANEL_SPACES[preset.preset_id] = space
+    return space
 
 
 def machine_space_size(preset: DevicePreset) -> int:

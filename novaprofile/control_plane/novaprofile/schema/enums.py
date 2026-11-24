@@ -276,6 +276,24 @@ class SignatureKind(str, Enum):
     #: defined so that signature rows written by older versions still
     #: resolve.
     NAVIGATOR = "sig_navigator"
+    #: The geographic anchor: the timezone, the locale, the country and
+    #: the reported coordinates.
+    #:
+    #: This axis is guarded because it is what tells a site that two
+    #: profiles are *one person*.  A person lives in one place: their
+    #: clock, their language, their currency and their map position are
+    #: read together and cluster the profiles that agree on them.  Two
+    #: profiles that report the same timezone are two devices of one
+    #: person to any site that reads ``Intl.DateTimeFormat().resolvedOptions()
+    #: .timeZone`` -- which is a one-line script that no fingerprint
+    #: vendor needs a paid SDK for.
+    #:
+    #: The catalogue of the world only holds a hundred-odd timezones, so
+    #: the axis cannot be satisfied by the timezone alone at fleet scale.
+    #: The signature therefore carries the *coordinates* as well, at a
+    #: precision finer than a city: the coordinates are what separate two
+    #: people who both live in Ho Chi Minh City.
+    GEO = "sig_geo"
     FULL = "sig_full"
 
 

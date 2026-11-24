@@ -92,6 +92,18 @@ GUARDED_AXES: Final[tuple[str, ...]] = (
     "math",
     "heap",
     "media_decode",
+    # The place.
+    #
+    # The timezone and the locale are read together, and so is the
+    # position: a page that knows the clock, the language and the
+    # coordinates knows where the user is, and a fleet that agrees on
+    # all three is a fleet that lives in one town.  They are guarded
+    # apart here because they are guarded apart by the page: the
+    # timezone is one call to ``Intl``, the position is a call to the
+    # geolocation API, and a script that cannot make the second call
+    # can still make the first.
+    "timezone",
+    "geolocation",
 )
 
 #: The verdict of a single axis comparison.
@@ -1163,6 +1175,49 @@ SURFACE_SPECS: Final[dict[str, SurfaceSpec]] = {
         fields={},
         description="the accelerometer, the gyroscope and the gravity reading",
     ),
+    "timezone": SurfaceSpec(
+        axis="timezone",
+        expression="Intl.DateTimeFormat().resolvedOptions()",
+        fields={
+            "timeZone": "timezone.iana_name",
+            "locale": "timezone.intl_locale",
+            "hourCycle": "timezone.hour_cycle",
+            "calendar": "timezone.calendar",
+            "numberingSystem": "timezone.numbering_system",
+        },
+        description="the clock and the calendar the page reads from Intl",
+    ),
+    "geolocation": SurfaceSpec(
+        axis="geolocation",
+        # The position is a promise, and the client awaits it, so the
+        # expression resolves to the fix or to nothing.
+        expression=(
+            "new Promise(function (resolve) {"
+            "  if (!navigator.geolocation) { resolve(null); return; }"
+            "  var settled = false;"
+            "  var timer = setTimeout(function () {"
+            "    if (settled) { return; } settled = true; resolve(null);"
+            "  }, 2000);"
+            "  try {"
+            "    navigator.geolocation.getCurrentPosition(function (pos) {"
+            "      if (settled) { return; } settled = true; clearTimeout(timer);"
+            "      resolve({ latitude: pos.coords.latitude,"
+            "                longitude: pos.coords.longitude,"
+            "                accuracy: pos.coords.accuracy });"
+            "    }, function () {"
+            "      if (settled) { return; } settled = true; clearTimeout(timer);"
+            "      resolve(null);"
+            "    });"
+            "  } catch (e) { settled = true; clearTimeout(timer); resolve(null); }"
+            "})"
+        ),
+        fields={
+            "latitude": "geolocation.latitude",
+            "longitude": "geolocation.longitude",
+            "accuracy": "geolocation.accuracy",
+        },
+        description="the position the page is given, and the precision of the fix",
+    ),
     "storage": SurfaceSpec(
         axis="storage",
         expression="navigator.storage.estimate()",
@@ -1536,6 +1591,18 @@ def derive_expected_values(config: ProfileConfig) -> dict[str, dict[str, Any]]:
         "media_decode": {
             "supported": sorted(_config_attr(config, "media_decode.supported") or []),
         },
+        "timezone": {
+            "timeZone": _get(axes, "timezone", "timeZone"),
+            "locale": _get(axes, "timezone", "locale"),
+            "hourCycle": _get(axes, "timezone", "hourCycle"),
+            "calendar": _get(axes, "timezone", "calendar"),
+            "numberingSystem": _get(axes, "timezone", "numberingSystem"),
+        },
+        "geolocation": {
+            "latitude": _get(axes, "geolocation", "latitude"),
+            "longitude": _get(axes, "geolocation", "longitude"),
+            "accuracy": _get(axes, "geolocation", "accuracy"),
+        },
     }
 
 
@@ -1644,6 +1711,8 @@ LIKELY_CAUSES: Final[dict[str, str]] = {
     "math": "the injected runtime did not install the math override",
     "heap": "the injected runtime did not install the heap override",
     "media_decode": "the injected runtime did not install the codec override",
+    "timezone": "the native core did not substitute the time zone",
+    "geolocation": "the injected runtime did not install the geolocation override",
 }
 
 

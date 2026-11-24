@@ -1,4 +1,4 @@
-﻿"""The page-context JavaScript layer.
+"""The page-context JavaScript layer.
 
 The native Chromium core is the primary mechanism: the fingerprint lives
 inside the browser process, so every frame, worker and realm sees the
@@ -99,14 +99,51 @@ RUNTIME_JS = r"""
   // So the layer stands down on exactly the surfaces the native core
   // owns, and only on those.  A surface the native core does not reach
   // is still the layer's job.
-  var nativeSurfaces = window.__NOVA_NATIVE_SURFACES__;
+  //
+  // The list is bound as a local variable of the wrapper the native core
+  // opens around this code, and it is *not* published on the window: a
+  // window property that does not exist otherwise is a marker of its
+  // own.  So the local is read first, and the window only afterwards --
+  // a browser that was not patched at all has no wrapper, and there the
+  // window is the only place the list could be.
+  //
+  // Reading only the window would leave the layer with no list on a
+  // native core: the layer would stand down on nothing, and would
+  // override every surface the native core had already taken care of.
+  // The page would then see the native value with the layer's value on
+  // top of it, which is a value that belongs to neither the profile nor
+  // the host.
+  var nativeSurfaces = (typeof __NOVA_NATIVE_SURFACES__ !== 'undefined')
+      ? __NOVA_NATIVE_SURFACES__
+      : window.__NOVA_NATIVE_SURFACES__;
   if (nativeSurfaces && !nativeSurfaces.length) { nativeSurfaces = null; }
   function nativeOwns(surface) {
     if (!nativeSurfaces) { return false; }
     return nativeSurfaces.indexOf(surface) !== -1;
   }
 
-  var P = window.__NOVA_PROFILE__;
+  // The payload.
+  //
+  // There are two ways the layer is handed the profile's values, and
+  // the layer has to accept both.
+  //
+  // The native core compiles the code into the browser and hands the
+  // payload over as the argument of the wrapper it opens around the
+  // code.  That argument is a local variable of the wrapper, and it
+  // never becomes a property of the window: a payload on the window
+  // would be a fingerprint of its own, because it carries the salts,
+  // the device identifiers and the font list.
+  //
+  // The JavaScript layer, used on a browser that was not patched, is
+  // handed the payload as a property of the window instead, because
+  // there is no wrapper to pass an argument through.
+  //
+  // The layer reads the local first and the window second.  Reading
+  // only the window would leave the layer with no payload at all on a
+  // native core: every override it makes would be skipped, and the
+  // page would see the browser's own values.
+  var P = (typeof __NOVA_PAYLOAD__ !== 'undefined') ? __NOVA_PAYLOAD__
+        : window.__NOVA_PROFILE__;
   if (!P) { return; }
 
   // The source text a native function reports.
@@ -835,41 +872,123 @@ RUNTIME_JS = r"""
     var targets = cv.targets || [];
     var strength = cv.noise_strength || 0;
 
-    // A deterministic per-profile byte stream.  The same drawing has to
-    // produce the same bytes on every call -- that is what makes the
-    // canvas stable across a session -- and a different stream for every
-    // profile -- that is what makes it unique.
-    function makeNoise(seed) {
-      var state = 0;
-      for (var i = 0; i < seed.length; i++) {
-        state = (state * 31 + seed.charCodeAt(i)) >>> 0;
-      }
-      if (state === 0) { state = 0x9e3779b9; }
-      return function () {
-        state ^= state << 13; state >>>= 0;
-        state ^= state >>> 17;
-        state ^= state << 5; state >>>= 0;
-        return state;
-      };
-    }
-    var next = makeNoise(cv.salt || 'nova');
+    // The noise of the canvas.
+    //
+    // The noise is a function of *where* a byte sits in the canvas and
+    // of the profile's salt, and of nothing else.  That is what makes
+    // the canvas stable: the same drawing produces the same bytes on
+    // every call, and the same bytes whether the page reads them with
+    // ``getImageData`` or asks for an encoded PNG.  A site that
+    // reads the canvas two different ways and gets two different
+    // pictures learns that the canvas is being rewritten, which is
+    // exactly the thing this is here to prevent.
+    //
+    // It is also what makes two profiles differ.  The salt is the
+    // profile's own, so the same drawing lands on different bytes in
+    // different profiles, and a site that collects the drawing from
+    // two visitors sees two people.
+    var salt = cv.salt || 'nova';
 
-    function perturb(data) {
+    // The hash of the salt, so that the per-pixel work starts from a
+    // value that differs between profiles.
+    var saltState = 0;
+    for (var si = 0; si < salt.length; si++) {
+      saltState = (saltState * 31 + salt.charCodeAt(si)) >>> 0;
+    }
+    if (saltState === 0) { saltState = 0x9e3779b9; }
+
+    // The noise of one byte at an absolute position.
+    function noiseAt(x, y, channel) {
+      var h = saltState;
+      h = (h ^ (x * 0x1f1f1f1f)) >>> 0;
+      h = Math.imul(h, 0x85ebca6b) >>> 0;
+      h = (h ^ (y * 0x27d4eb2f)) >>> 0;
+      h = Math.imul(h, 0xc2b2ae35) >>> 0;
+      h = (h ^ (channel * 0x165667b1)) >>> 0;
+      h = Math.imul(h, 0x27d4eb2f) >>> 0;
+      h ^= h >>> 15;
+      h = Math.imul(h, 0x85ebca6b) >>> 0;
+      h ^= h >>> 13;
+      return (h >>> 0) % 1000;
+    }
+
+    // The noise of a block of pixels, placed at an absolute position.
+    //
+    // The width of the block is needed to work out where a byte sits:
+    // the pixels of a canvas are stored row by row, so the column of a
+    // byte is its index within the row.
+    function perturb(data, originX, originY, width) {
       if (!strength || !data || !data.length) { return data; }
+      var ox = originX || 0;
+      var oy = originY || 0;
+      var w = width || (data.length / 4);
       var out = new Uint8ClampedArray(data.length);
-      for (var i = 0; i < data.length; i++) {
-        var r = next() % 1000;
-        var delta = ((r / 1000) - 0.5) * 2 * strength;
-        out[i] = data[i] + delta;
+      for (var i = 0; i < data.length; i += 4) {
+        var index = i / 4;
+        var x = ox + (index % w);
+        var y = oy + Math.floor(index / w);
+        for (var c = 0; c < 4; c++) {
+          var r = noiseAt(x, y, c);
+          var delta = ((r / 1000) - 0.5) * 2 * strength;
+          out[i + c] = data[i + c] + delta;
+        }
       }
       return out;
+    }
+
+    // A copy of a canvas that carries the noise.
+    //
+    // The copy is what gets encoded, so the picture the page receives
+    // is the profile's picture.  Encoding the original would hand the
+    // page a picture that two profiles of the same drawing share, and
+    // a site that reads the encoded PNG would see one visitor where
+    // there are two.
+    function noisyCopy(canvas) {
+      try {
+        var w = canvas.width;
+        var h = canvas.height;
+        if (!w || !h) { return null; }
+        var source = canvas.getContext('2d');
+        if (!source) { return null; }
+        // The native read is used on purpose: the patched one applies
+        // the noise, and the noise is applied here as well, so the
+        // picture would be perturbed twice.
+        var img = (typeof nativeGetImageData === 'function')
+          ? nativeGetImageData.call(source, 0, 0, w, h)
+          : source.getImageData(0, 0, w, h);
+        img.data = perturb(img.data, 0, 0, w);
+        var copy = document.createElement('canvas');
+        copy.width = w;
+        copy.height = h;
+        var target = copy.getContext('2d');
+        target.putImageData(img, 0, 0);
+        return copy;
+      } catch (e) {
+        // A canvas that cannot be read -- one that is tainted by a
+        // cross-origin image -- is encoded as it is.  The site that
+        // reads it cannot compare it with anything either.
+        return null;
+      }
+    }
+
+    // The encoded picture of a canvas, carrying the noise.
+    function encodeNoisy(canvas, args) {
+      var copy = noisyCopy(canvas);
+      if (!copy) {
+        return nativeToDataURL.apply(canvas, args);
+      }
+      try {
+        return nativeToDataURL.apply(copy, args);
+      } catch (e) {
+        return nativeToDataURL.apply(canvas, args);
+      }
     }
 
     if (targets.indexOf('getImageData') !== -1) {
       var nativeGetImageData = CanvasRenderingContext2D.prototype.getImageData;
       CanvasRenderingContext2D.prototype.getImageData = hide(function (x, y, w, h) {
         var img = nativeGetImageData.call(this, x, y, w, h);
-        img.data = perturb(img.data);
+        img.data = perturb(img.data, x, y, w);
         // The readback timing.  The delay is a constant of the profile,
         // so two reads of the same canvas take the same time.
         burn(timingDelay(cv.timing, 'delay_ms'));
@@ -879,7 +998,7 @@ RUNTIME_JS = r"""
     if (targets.indexOf('toDataURL') !== -1) {
       var nativeToDataURL = HTMLCanvasElement.prototype.toDataURL;
       HTMLCanvasElement.prototype.toDataURL = hide(function () {
-        var url = nativeToDataURL.apply(this, arguments);
+        var url = encodeNoisy(this, arguments);
         // The readback timing.  A PNG encode is the most expensive
         // readback there is, and a site that times it learns the
         // graphics card underneath.
@@ -892,6 +1011,9 @@ RUNTIME_JS = r"""
       HTMLCanvasElement.prototype.toBlob = hide(function () {
         var args = Array.prototype.slice.call(arguments);
         var callback = args[args.length - 1];
+        var canvas = this;
+        var type = args[0] || 'image/png';
+        var quality = args[1];
         if (typeof callback === 'function') {
           // The delay has to happen before the callback fires, or the
           // page measures the encode and not the readback.
@@ -899,6 +1021,16 @@ RUNTIME_JS = r"""
             burn(timingDelay(cv.timing, 'delay_ms'));
             return callback(blob);
           }, 'toBlob');
+          // The blob is taken from a copy of the canvas that carries
+          // the noise, so the bytes the page receives are the bytes of
+          // the profile and not the bytes of the device.
+          var noisy = noisyCopy(canvas);
+          if (noisy) {
+            args.length = 2;
+            args[0] = type;
+            args[1] = quality;
+            return nativeToBlob.apply(noisy, args);
+          }
         }
         return nativeToBlob.apply(this, args);
       }, 'toBlob');
@@ -1108,6 +1240,25 @@ RUNTIME_JS = r"""
               get: hide(function () { return au.output_latency; }, 'get outputLatency'),
               configurable: true, enumerable: true
             });
+            // The channel count of the live context.
+            //
+            // The offline context carries its channel count in the
+            // rendered buffer, and the runtime forces it at construction
+            // so that the buffer agrees with the profile.  The live
+            // context has no buffer to force, so the property itself is
+            // the reading -- and a site that compares
+            // ``context.destination.channelCount`` with the count of
+            // the channels it renders hears the difference otherwise.
+            Object.defineProperty(ctx, 'channelCount', {
+              get: hide(function () { return au.channel_count; }, 'get channelCount'),
+              configurable: true, enumerable: true
+            });
+            try {
+              Object.defineProperty(ctx.destination, 'channelCount', {
+                get: hide(function () { return au.channel_count; }, 'get channelCount'),
+                configurable: true, enumerable: true
+              });
+            } catch (e) { /* a locked-down destination stays stock */ }
           } catch (e) { /* a locked-down context stays stock */ }
           return ctx;
         };
@@ -1182,6 +1333,87 @@ RUNTIME_JS = r"""
         window.webkitOfflineAudioContext = OfflineProxy;
       }
     } catch (e) { /* stays stock */ }
+  }
+
+  // -- the audio samples --------------------------------------------------------
+  //
+  // The Web Audio fingerprint is a sum over the whole render, and it
+  // resolves far below the level of the audio pipeline's own
+  // quantisation.  Two profiles that render the same graph therefore
+  // produce the same sum, and a site that has collected the sums of
+  // two visitors sees one visitor.
+  //
+  // The samples are perturbed where the page reads them, which is
+  // ``getChannelData`` and ``copyFromChannel``.  The perturbation is a
+  // function of the sample's position and of the profile's salt, and
+  // of nothing else, so the same render reads the same way twice and
+  // two profiles read differently.
+  if (typeof AudioBuffer !== 'undefined' && P.audio && !nativeOwns('audio')) {
+    try {
+      var audioCfg = P.audio;
+      var auStrength = audioCfg.noise_strength || 0;
+      var auSalt = audioCfg.salt || 'nova';
+
+      var auState = 0;
+      for (var ai = 0; ai < auSalt.length; ai++) {
+        auState = (auState * 31 + auSalt.charCodeAt(ai)) >>> 0;
+      }
+      if (auState === 0) { auState = 0x9e3779b9; }
+
+      // The perturbation of one sample.
+      function audioNoiseAt(channel, index) {
+        var h = auState;
+        h = (h ^ (channel * 0x1f1f1f1f)) >>> 0;
+        h = Math.imul(h, 0x85ebca6b) >>> 0;
+        h = (h ^ (index * 0x27d4eb2f)) >>> 0;
+        h = Math.imul(h, 0xc2b2ae35) >>> 0;
+        h ^= h >>> 15;
+        h = Math.imul(h, 0x85ebca6b) >>> 0;
+        h ^= h >>> 13;
+        return (h >>> 0) % 1000;
+      }
+
+      if (auStrength > 0 && typeof AudioBuffer.prototype.getChannelData === 'function') {
+        var nativeGetChannelData = AudioBuffer.prototype.getChannelData;
+        var perturbedBuffers = new WeakMap();
+
+        AudioBuffer.prototype.getChannelData = hide(function (channel) {
+          var samples = nativeGetChannelData.call(this, channel);
+          if (!samples) { return samples; }
+
+          // The buffer is perturbed once, and the same perturbed
+          // samples are handed out on every read, so that a page
+          // which reads a channel twice does not see it change.
+          var seen = perturbedBuffers.get(this);
+          if (!seen) {
+            seen = {};
+            perturbedBuffers.set(this, seen);
+          }
+          if (seen[channel]) { return samples; }
+          seen[channel] = true;
+
+          for (var s = 0; s < samples.length; s++) {
+            var r = audioNoiseAt(channel, s);
+            var delta = ((r / 1000) - 0.5) * 2 * auStrength;
+            samples[s] = samples[s] + delta;
+          }
+          return samples;
+        }, 'getChannelData');
+      }
+
+      if (auStrength > 0 && typeof AudioBuffer.prototype.copyFromChannel === 'function') {
+        var nativeCopyFromChannel = AudioBuffer.prototype.copyFromChannel;
+        AudioBuffer.prototype.copyFromChannel = hide(function (destination, channel, startInChannel) {
+          nativeCopyFromChannel.call(this, destination, channel, startInChannel || 0);
+          var offset = startInChannel || 0;
+          for (var s = 0; s < destination.length; s++) {
+            var r = audioNoiseAt(channel, offset + s);
+            var delta = ((r / 1000) - 0.5) * 2 * auStrength;
+            destination[s] = destination[s] + delta;
+          }
+        }, 'copyFromChannel');
+      }
+    } catch (e) { /* a locked-down buffer stays stock */ }
   }
 
   // -- the WebGL --------------------------------------------------------------------
@@ -1766,6 +1998,111 @@ RUNTIME_JS = r"""
     }, 'matchMedia');
   }
 
+  // -- the geolocation ----------------------------------------------------------
+  // The position of the owner.
+  //
+  // The profile states a province and a fix inside it, and the fix has
+  // to be *readable*: a site that asks for the position and is given
+  // nothing knows that the browser did not answer, and a browser that
+  // answers a permission prompt with an error is a browser that has
+  // something to hide.  The stock runtime reports the machine's own
+  // position -- which is the one thing this profile must never give
+  // away -- or refuses outright.
+  //
+  // The coordinates are handed out with the accuracy the profile
+  // declares, and the timestamp is moved by the jitter the profile
+  // carries, because a fix whose timestamp is exactly "now" while its
+  // accuracy is twenty kilometres is a fix that came from a database
+  // rather than from a chip.
+  //
+  // The surface is *installed*, not merely replaced.  The browser only
+  // exposes ``navigator.geolocation`` in a secure context, so on a
+  // page served over ``file://`` -- and on a plain ``http://`` page --
+  // the property is not there at all.  A profile that waits for it
+  // answers nothing on those pages, which is worse than answering
+  // with the wrong position: a page that asks and gets nothing knows
+  // the difference between a browser that has no fix and a browser
+  // that will not say.
+  if (P.geolocation && P.geolocation.mode === 'allow_custom' &&
+      typeof navigator !== 'undefined') {
+    try {
+      var geo = P.geolocation;
+      var nativeGeo = navigator.geolocation;
+      var geoJitter = geo.timestamp_jitter_ms || 0;
+      // The position and the coordinates.
+      //
+      // They are written as *constructor functions* rather than as
+      // object literals.  A literal has no prototype, so
+      // ``new GeoCoordinates({...})`` throws "is not a constructor" --
+      // and the throw happens inside the callback the page handed
+      // over, which means the page waits for a position that never
+      // arrives.  A page that asks and gets nothing knows the
+      // difference between a browser that has no fix and a browser
+      // that will not say.
+      var GeoPosition = window.Position || function Position(coords, timestamp) {
+        this.coords = coords;
+        this.timestamp = timestamp;
+      };
+      var GeoCoordinates = window.Coordinates || function Coordinates(values) {
+        for (var key in values) {
+          if (Object.prototype.hasOwnProperty.call(values, key)) {
+            this[key] = values[key];
+          }
+        }
+      };
+      var buildPosition = function () {
+        var coords = new GeoCoordinates({
+          latitude: geo.latitude,
+          longitude: geo.longitude,
+          accuracy: geo.accuracy,
+          altitude: geo.altitude,
+          altitudeAccuracy: geo.altitude_accuracy,
+          heading: geo.heading,
+          speed: geo.speed
+        });
+        var stamp = Date.now();
+        if (geoJitter) {
+          // The jitter moves the stamp *back* only.  A fix cannot be
+          // stamped in the future, and a site that reads a timestamp
+          // ahead of the clock knows the position was made up.
+          stamp -= Math.floor(Math.random() * geoJitter);
+        }
+        return new GeoPosition(coords, stamp);
+      };
+      var geoProxy = {
+        getCurrentPosition: hide(function (success, error, options) {
+          // The permission is the browser's business, not the
+          // runtime's: the callback runs with the profile's own fix,
+          // and the error callback only fires when the profile has no
+          // fix to give.
+          try {
+            if (typeof success === 'function') {
+              success(buildPosition());
+            }
+          } catch (e) { /* a throwing callback is the page's problem */ }
+        }, 'getCurrentPosition'),
+        watchPosition: hide(function (success, error, options) {
+          var id = 1;
+          try {
+            if (typeof success === 'function') {
+              success(buildPosition());
+            }
+          } catch (e) { /* a throwing callback is the page's problem */ }
+          return id;
+        }, 'watchPosition'),
+        clearWatch: hide(function () {}, 'clearWatch')
+      };
+      try {
+        Object.defineProperty(navigator, 'geolocation', {
+          get: hide(function () { return geoProxy; }, 'get geolocation'),
+          configurable: true, enumerable: true
+        });
+      } catch (e) {
+        navigator.geolocation = geoProxy;
+      }
+    } catch (e) { /* a locked-down navigator stays stock */ }
+  }
+
   // -- the floating-point precision --------------------------------------------
   // ``Math.acos(0.5)`` and friends are the classic way to tell a real
   // browser from a DOM that was faked in JavaScript: the last bits of
@@ -1878,6 +2215,79 @@ RUNTIME_JS = r"""
       Object.defineProperty(Navigator.prototype, 'languages', {
         get: hide(function () { return langs; }, 'get languages'),
         configurable: true, enumerable: true
+      });
+    } catch (e) { /* stays stock */ }
+  }
+
+  // -- the chrome object -------------------------------------------------
+  //
+  // Every Chrome -- on a desktop and on a handset -- carries a
+  // ``navigator.chrome`` object with an ``app`` and a ``csi`` in it.
+  // A browser that reports the mobile user agent but has no
+  // ``navigator.chrome`` is a browser that only pretends to be one:
+  // the object is one of the oldest tells there is, and the check
+  // costs a page nothing.
+  //
+  // The object is built here rather than taken from the host: the
+  // host is a desktop, and its own object would carry the desktop's
+  // values.  The shape is the one Chrome has on a handset.
+  //
+  // The object is only built when the native core does not already
+  // own the surface.  A branded Chrome has the object in the process,
+  // and a JavaScript copy on top of that would be a second value for
+  // the same property -- which is a thing a page can see.
+  if (typeof navigator !== 'undefined' && !nativeOwns('chrome')) {
+    try {
+      var chromeObject = {
+        app: {
+          isInstalled: false,
+          InstallState: {
+            DISABLED: 'disabled',
+            INSTALLED: 'installed',
+            NOT_INSTALLED: 'not_installed'
+          },
+          RunningState: {
+            CANNOT_RUN: 'cannot_run',
+            READY_TO_RUN: 'ready_to_run',
+            RUNNING: 'running'
+          }
+        },
+        csi: function csi() {
+          var now = Date.now();
+          return {
+            onloadT: now,
+            startE: now,
+            pageT: now / 1000,
+            tran: 15
+          };
+        },
+        loadTimes: function loadTimes() {
+          var now = Date.now();
+          return {
+            requestTime: now / 1000,
+            startLoadTime: now / 1000,
+            commitLoadTime: now / 1000,
+            finishDocumentLoadTime: now / 1000,
+            finishLoadTime: now / 1000,
+            firstPaintTime: now / 1000,
+            firstPaintAfterLoadTime: 0,
+            navigationType: 'Other',
+            wasFetchedViaSpdy: true,
+            wasNpnNegotiated: true,
+            npnNegotiatedProtocol: 'h2',
+            wasAlternateProtocolAvailable: false,
+            connectionInfo: 'h2'
+          };
+        }
+      };
+      // The object is not enumerable: a page that lists the own
+      // properties of the navigator finds it the way Chrome has it,
+      // among the own properties of the prototype.
+      Object.defineProperty(navigator, 'chrome', {
+        value: chromeObject,
+        writable: true,
+        enumerable: true,
+        configurable: true
       });
     } catch (e) { /* stays stock */ }
   }
@@ -2060,6 +2470,27 @@ class JSRuntimeBuilder:
             "currency": locale.currency,
         }
 
+        # The locale, on its own.
+        #
+        # The time zone carries the locale because the two are read
+        # together in one object.  But the locale is read on its own
+        # too -- ``navigator.language`` is the primary one and
+        # ``navigator.languages`` is the whole list -- and the primary
+        # one has to be the country's own, or a page that compares
+        # ``navigator.language`` with the language of the content it
+        # serves finds a profile that claims Vietnamese and behaves
+        # like something else.
+        self._payload.locale = {
+            "primary": locale.primary,
+            "intl_locale": locale.intl_locale,
+            "languages": list(config.navigator.languages),
+            "numbering_system": locale.numbering_system,
+            "calendar": locale.calendar,
+            "hour_cycle": locale.hour_cycle,
+            "currency": locale.currency,
+            "time_zone": tz.iana_name,
+        }
+
     # -- the network ---------------------------------------------------
     def _fill_storage_network(self, config: ProfileConfig) -> None:
         sn = config.storage_network
@@ -2098,11 +2529,13 @@ class JSRuntimeBuilder:
         au = config.audio
         self._payload.audio = {
             "mode": au.mode,
+            "salt": au.salt,
             "sample_rate": au.sample_rate,
             "base_latency": au.base_latency,
             "output_latency": au.output_latency,
             "channel_count": au.channel_count,
             "max_channel_count": au.max_channel_count,
+            "noise_strength": au.noise_strength,
         }
 
     # -- the client rects ------------------------------------------------
@@ -2150,10 +2583,25 @@ class JSRuntimeBuilder:
 
     # -- the permissions -------------------------------------------------
     def _fill_permissions(self, config: ProfileConfig) -> None:
-        self._payload.permissions = {
+        policies = {
             name: state.value if hasattr(state, "value") else str(state)
             for name, state in config.permissions.policies.items()
         }
+        # The geolocation permission follows the geolocation mode.
+        #
+        # A profile that carries its own coordinates answers the
+        # permission with "granted": the browser has been told where
+        # the user is, so there is nothing left to ask.  A profile that
+        # prompts for a position answers "prompt", because the browser
+        # has not been told anything and the page has to ask the user.
+        #
+        # The two are read together -- a page that gets "granted" from
+        # the permissions API and then no position from the geolocation
+        # call knows the profile is a fabrication, and the permission
+        # is the cheaper half of the pair for a site to check.
+        if config.geolocation.mode == "allow_custom":
+            policies["geolocation"] = "granted"
+        self._payload.permissions = policies
 
     # -- the battery, the speech and the gamepad ------------------------------
     def _fill_battery_speech_gamepad(self, config: ProfileConfig) -> None:
@@ -2214,6 +2662,17 @@ class JSRuntimeBuilder:
             "altitude_accuracy": geo.altitude_accuracy,
             "heading": geo.heading,
             "speed": geo.speed,
+            "timestamp_jitter_ms": geo.timestamp_jitter_ms,
+            # The place the fix describes.
+            #
+            # The coordinates alone say where the profile is standing
+            # to within a few kilometres, which is not the same thing
+            # as saying which province it is standing in.  A fleet of a
+            # hundred million profiles that all report one province is
+            # one farm, and the names are what tell the fleet apart.
+            "region": geo.region,
+            "city": geo.city,
+            "country_code": geo.country_code,
         }
 
     # -- the floating-point precision ------------------------------------------------------

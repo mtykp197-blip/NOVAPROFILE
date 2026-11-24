@@ -10,7 +10,6 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import shutil
-import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -19,6 +18,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, st
 from pydantic import BaseModel, ConfigDict, Field
 
 from novaprofile.api import deps
+from novaprofile.core.seed import new_profile_id
 
 __all__ = ["router", "ProfileCreateRequest", "ProfileUpdateRequest"]
 
@@ -82,7 +82,16 @@ class CloneRequest(BaseModel):
 class LaunchRequest(BaseModel):
     """Body of ``POST /api/profiles/{profile_id}/launch``."""
 
-    headful: bool = False
+    # The window is shown by default.
+    #
+    # A profile manager whose "open" button leaves nothing on the
+    # screen is not doing what it says on the button: the operator
+    # asks for a browser and gets a process they cannot see, cannot
+    # use and cannot close from the interface.  The headless mode is
+    # still there -- the runtime probes need it, because a probe
+    # measures the readings rather than the browser -- but it has to
+    # be asked for.
+    headful: bool = True
     url: str | None = None
     timeout_s: float = 30.0
 
@@ -637,7 +646,7 @@ async def clone_profile(
     """Clone an existing profile, optionally with a fresh master seed."""
     source = _load_profile(profile_id, store)
 
-    new_id = str(uuid.uuid4())
+    new_id = new_profile_id()
     seed = request.master_seed or deps.new_master_seed()
 
     clone_fn = getattr(store, "clone_profile", None)

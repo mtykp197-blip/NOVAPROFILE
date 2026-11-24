@@ -1,78 +1,49 @@
-# NOVA Profile Core -- Chromium patch series, part 3 of 3: the independent
-# surfaces and the TLS handshake.
+# NOVA Profile Core -- Chromium patch series, part 3 of 3: the rest.
 #
-# Apply to a Chromium 159 checkout with:
+# The fonts, the motion sensors, the audio, the storage estimate, the
+# GPU adapter, the media devices and the cipher suites.
 #
-#     git apply novaprofile/core_patch/patches/0001-nova-profile-core.patch
-#     git apply novaprofile/core_patch/patches/0002-nova-profile-hardware-surfaces.patch
-#     git apply novaprofile/core_patch/patches/0003-nova-profile-independent-surfaces-and-tls.patch
+# The name of this patch is the point of it: these surfaces are
+# *independent* of one another.  A site that reads the audio and the
+# canvas of the same page and finds them agreeing finds one device; a
+# site that finds them disagreeing finds two devices wearing one
+# browser, which is the shape of a farm.
 
-# A fingerprinting script does not have to combine the canvas hash with the
-# WebGL hash with the device serial.  It can read one surface on its own --
-# the audio fingerprint, the geometry of a rectangle, the media device
-# list, the motion readings or the storage estimate -- and cluster on that
-# alone.  Each of those therefore needs its own native accessor, and each
-# of them is derived from the profile's own salt, so that two profiles
-# never report the same value.
-#
-# The geometry
-#
-# ``getBoundingClientRect`` and ``getClientRects`` are read by every
-# layout-aware script.  The patch applies the profile's own integer pixel
-# offsets, to the element rectangle and to the range rectangle separately,
-# so that the two readbacks stay independent observations of the same
-# layout.
-#
-# The audio
-#
-# ``AudioContext.sampleRate``, ``baseLatency``, ``outputLatency`` and
-# ``maxChannelCount`` are read on their own, and the rendered samples
-# themselves are the fingerprint.  The patch substitutes the parameters
-# and perturbs the rendered samples at the twenty-fourth bit of the
-# mantissa, which is below the level of the audio pipeline's own
-# quantisation and above the level of a reference render.
-#
-# The media devices, the motion sensors and the storage estimate
-#
-# The device identifiers of the host are stable across every profile that
-# runs on the machine, which makes them an effective way to link two
-# profiles that are supposed to be two different devices.  The patch
-# rewrites them with the profile's salt while keeping the shape of the
-# identifier.
-#
-# ``DeviceMotionEvent`` hands out the raw accelerometer, gyroscope and
-# gravity readings of the host, which on a desktop is a stream of NaN.
-# The patch serves the profile's own readings.
-#
-# ``navigator.storage.estimate()`` reports the quota and the usage of the
-# host's disk.  The patch serves the profile's own numbers.
-#
-# The fonts and the WebGPU adapter
-#
-# ``document.fonts.check`` reports whether a family is installed, and the
-# installed list is a property of the host's font configuration.  The
-# patch serves the profile's own list.
-#
-# ``navigator.gpu.requestAdapter()`` returns the adapter name, the vendor
-# and the architecture of the host's graphics card.  The patch serves the
-# profile's own adapter.
-#
-# The TLS handshake
-#
-# JA3 is the MD5 of the ClientHello -- the cipher suites, the extension
-# order, the elliptic curves and the point formats, in the order the
-# client sent them.  It is produced by the network service, in C++, before
-# any script runs, so no amount of JavaScript can change it: the only way
-# to change it is to change the bytes the client puts on the wire.
-#
-# The patch therefore installs the profile's cipher list, curve list,
-# signature algorithm list and ALPN list on the BoringSSL context before
-# the handshake, and hands the configuration down to the network service
-# and to the GPU process on the command line, so that every process
-# reports the same profile.
-#
+diff --git a/content/browser/gpu/gpu_process_host.cc b/content/browser/gpu/gpu_process_host.cc
+index 2b418b5e1f..2a050e833f 100644
+--- a/content/browser/gpu/gpu_process_host.cc
++++ b/content/browser/gpu/gpu_process_host.cc
+@@ -42,6 +42,8 @@
+ #include "components/vrp_flags/buildflags.h"
+ #include "content/browser/browser_child_process_host_impl.h"
+ #include "content/browser/browser_main_loop.h"
++#include "content/browser/nova/nova_handover_cache.h"
++#include "third_party/blink/renderer/core/nova/nova_core_config.h"
+ #include "content/browser/child_process_host_impl.h"
+ #include "content/browser/child_process_launcher.h"
+ #include "content/browser/compositor/image_transport_factory.h"
+@@ -1377,6 +1379,19 @@ bool GpuProcessHost::LaunchGpuProcess() {
+ 
+   cmd_line->AppendSwitchASCII(switches::kProcessType, switches::kGpuProcess);
+ 
++  // NOVA Profile Core: the GPU process reports the graphics limits and
++  // the unmasked renderer, so it needs the profile.  It is sandboxed and
++  // cannot read the file itself, so the document goes on its command
++  // line, the same way it goes on the renderer's.
++  {
++    const std::string nova_config_source =
++        content::ReadNovaConfigSourceForRenderer();
++    if (!nova_config_source.empty()) {
++      cmd_line->AppendSwitchASCII(nova::kConfigSourceSwitchName,
++                                  nova_config_source);
++    }
++  }
++
+ #if BUILDFLAG(IS_WIN)
+   if (kind_ == GPU_PROCESS_KIND_INFO_COLLECTION) {
+     cmd_line->AppendArgNative(app_launch_prefetch::GetPrefetchSwitch(
 diff --git a/content/browser/network_service_instance_impl.cc b/content/browser/network_service_instance_impl.cc
-index 20870c2..36df110 100644
+index 20870c2203..36df11085d 100644
 --- a/content/browser/network_service_instance_impl.cc
 +++ b/content/browser/network_service_instance_impl.cc
 @@ -657,6 +657,19 @@ network::mojom::NetworkService* GetNetworkService() {
@@ -96,19 +67,20 @@ index 20870c2..36df110 100644
              g_network_service_crashes_on_next_startup = false;
              options.WithExtraCommandLineSwitches(
 diff --git a/content/browser/renderer_host/render_process_host_impl.cc b/content/browser/renderer_host/render_process_host_impl.cc
-index 15ca37d..43da0eb 100644
+index 15ca37da6c..ac0afe777f 100644
 --- a/content/browser/renderer_host/render_process_host_impl.cc
 +++ b/content/browser/renderer_host/render_process_host_impl.cc
-@@ -218,6 +218,8 @@
+@@ -218,6 +218,9 @@
  #include "third_party/blink/public/mojom/disk_allocator.mojom.h"
  #include "third_party/blink/public/mojom/origin_trials/origin_trials_settings.mojom.h"
  #include "third_party/blink/public/mojom/plugins/plugin_registry.mojom.h"
++#include "content/browser/nova/nova_handover_cache.h"
 +#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
 +#include "third_party/blink/renderer/core/nova/nova_core_config.h"
  #include "third_party/blink/public/public_buildflags.h"
  #include "third_party/perfetto/include/perfetto/tracing/traced_proto.h"
  #include "ui/accessibility/accessibility_switches.h"
-@@ -3866,6 +3868,57 @@ void RenderProcessHostImpl::AppendRendererCommandLine(
+@@ -3866,6 +3869,58 @@ void RenderProcessHostImpl::AppendRendererCommandLine(
    command_line->AppendSwitchASCII(switches::kProcessType,
                                    switches::kRendererProcess);
  
@@ -135,7 +107,8 @@ index 15ca37d..43da0eb 100644
 +    // on the machine can read out of the command line has leaked; but a
 +    // fingerprint that never reaches the renderer is not a fingerprint at
 +    // all.  The renderer is short lived, and the arguments die with it.
-+    const std::string nova_config_source = nova::ReadConfigSourceForBrowser();
++    const std::string nova_config_source =
++        content::ReadNovaConfigSourceForRenderer();
 +    if (!nova_config_source.empty()) {
 +      command_line->AppendSwitchASCII(nova::kConfigSourceSwitchName,
 +                                      nova_config_source);
@@ -156,7 +129,7 @@ index 15ca37d..43da0eb 100644
 +    // browser: it is the same for every profile, and it is seventy-five
 +    // kilobytes, which does not fit on a command line next to the
 +    // payload.
-+    const std::string nova_js_payload = nova::ReadJsRuntimeForBrowser();
++    const std::string nova_js_payload = content::ReadNovaJsPayloadForRenderer();
 +    if (!nova_js_payload.empty()) {
 +      command_line->AppendSwitchASCII(nova::kJsPayloadSwitchName,
 +                                      nova_js_payload);
@@ -167,7 +140,7 @@ index 15ca37d..43da0eb 100644
      command_line->AppendSwitch(switches::kTopChromeWebUI);
    }
 diff --git a/content/gpu/BUILD.gn b/content/gpu/BUILD.gn
-index cf5266a..8edd71e 100644
+index cf5266a796..8edd71e9ec 100644
 --- a/content/gpu/BUILD.gn
 +++ b/content/gpu/BUILD.gn
 @@ -63,6 +63,10 @@ target(link_target_type, "gpu_sources") {
@@ -182,7 +155,7 @@ index cf5266a..8edd71e 100644
      # component build, determine if it should not be included here.
      # http://crbug.com/702833.
 diff --git a/content/gpu/gpu_main.cc b/content/gpu/gpu_main.cc
-index 5d12f10..bee7c20 100644
+index 5d12f1063a..bee7c2064a 100644
 --- a/content/gpu/gpu_main.cc
 +++ b/content/gpu/gpu_main.cc
 @@ -68,6 +68,7 @@
@@ -208,7 +181,7 @@ index 5d12f10..bee7c20 100644
    if (command_line.HasSwitch(switches::kGpuPreferences)) {
      std::string value =
 diff --git a/content/utility/BUILD.gn b/content/utility/BUILD.gn
-index b1d418e..11ea643 100644
+index b1d418e84f..11ea643923 100644
 --- a/content/utility/BUILD.gn
 +++ b/content/utility/BUILD.gn
 @@ -73,6 +73,7 @@ source_set("utility") {
@@ -220,7 +193,7 @@ index b1d418e..11ea643 100644
    ]
  
 diff --git a/content/utility/services.cc b/content/utility/services.cc
-index 399e119..55ee46f 100644
+index 399e1199a7..55ee46fb5f 100644
 --- a/content/utility/services.cc
 +++ b/content/utility/services.cc
 @@ -42,6 +42,11 @@
@@ -249,7 +222,7 @@ index 399e119..55ee46f 100644
        "NetworkServiceOutOfProcess");
    return std::make_unique<network::NetworkService>(
 diff --git a/net/BUILD.gn b/net/BUILD.gn
-index 81c0e08..e7e8bff 100644
+index 81c0e082df..e7e8bffdd7 100644
 --- a/net/BUILD.gn
 +++ b/net/BUILD.gn
 @@ -1337,6 +1337,7 @@ component("net") {
@@ -261,12 +234,12 @@ index 81c0e08..e7e8bff 100644
      "//third_party/simdutf",
    ]
 diff --git a/net/socket/ssl_client_socket_impl.cc b/net/socket/ssl_client_socket_impl.cc
-index 6d4b388..0c8d2c8 100644
+index 6d4b388e7b..0c8d2c8a6d 100644
 --- a/net/socket/ssl_client_socket_impl.cc
 +++ b/net/socket/ssl_client_socket_impl.cc
 @@ -1,4 +1,4 @@
 -// Copyright 2012 The Chromium Authors
-+﻿// Copyright 2012 The Chromium Authors
++ï»¿// Copyright 2012 The Chromium Authors
  // Use of this source code is governed by a BSD-style license that can be
  // found in the LICENSE file.
  
@@ -477,8 +450,225 @@ index 6d4b388..0c8d2c8 100644
    SSL_set_alps_use_new_codepoint(
        ssl_.get(),
        base::FeatureList::IsEnabled(features::kUseNewAlpsCodepointHttp2));
+diff --git a/third_party/blink/renderer/core/css/css_font_selector.cc b/third_party/blink/renderer/core/css/css_font_selector.cc
+index afc26afe82..e3504f97a8 100644
+--- a/third_party/blink/renderer/core/css/css_font_selector.cc
++++ b/third_party/blink/renderer/core/css/css_font_selector.cc
+@@ -27,6 +27,7 @@
+ #include "third_party/blink/renderer/core/css/css_font_selector.h"
+ 
+ #include "build/build_config.h"
++#include "base/strings/string_util.h"
+ #include "third_party/blink/renderer/core/animation/interpolable_color.h"
+ #include "third_party/blink/renderer/core/css/css_segmented_font_face.h"
+ #include "third_party/blink/renderer/core/css/css_value_list.h"
+@@ -36,11 +37,17 @@
+ #include "third_party/blink/renderer/core/css/resolver/style_resolver.h"
+ #include "third_party/blink/renderer/core/css/style_engine.h"
+ #include "third_party/blink/renderer/core/css/style_rule_font_palette_values.h"
++#include "third_party/blink/public/platform/generic_font_family.h"
+ #include "third_party/blink/renderer/core/dom/document.h"
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/core/frame/settings.h"
++#include "third_party/blink/renderer/core/nova/nova_chromium_hooks.h"
+ #include "third_party/blink/renderer/platform/fonts/font_cache.h"
++#include "third_party/blink/renderer/platform/fonts/font_platform_data.h"
+ #include "third_party/blink/renderer/platform/fonts/font_selector_client.h"
++#include "third_party/blink/renderer/platform/fonts/generic_font_family_settings.h"
++#include "third_party/blink/renderer/platform/fonts/simple_font_data.h"
++#include "third_party/icu/source/common/unicode/uscript.h"
+ 
+ namespace blink {
+ 
+@@ -163,6 +170,35 @@ void CSSFontSelector::FontCacheInvalidated() {
+   DispatchInvalidationCallbacks(FontInvalidationReason::kGeneralInvalidation);
+ }
+ 
++namespace {
++
++// The generic family a family that is not on the device is measured as.
++//
++// A family that is not installed does not measure as nothing: the
++// browser substitutes a font for it, and the substitution for a missing
++// family is the generic family of the kind of text.  So the width of a
++// missing family is the width of the generic font, and that is the
++// width the standard font probe compares against.
++//
++// The generic family that stands in for a missing family is the
++// *sans-serif* one.  The probe compares a family's width against the
++// widths of monospace, sans-serif and serif, so a missing family has
++// to measure as one of those three -- and the sans-serif one is the
++// one a device without the family would use.
++//
++// The name comes from the platform's own settings, so the substituted
++// font is the one the platform would really use.  That matters: a
++// family that measures as a font the platform does not have is as
++// suspicious as one that measures as a font the platform does.
++AtomicString GenericFamilyForFallback(
++    const GenericFontFamilySettings& settings,
++    const FontDescription& font_description) {
++  UScriptCode script = font_description.GetScriptForFont();
++  return settings.Get(GenericFontFamily::kSansSerif, script);
++}
++
++}  // namespace
++
+ const FontData* CSSFontSelector::GetFontData(
+     const FontDescription& font_description,
+     const FontFamily& font_family) {
+@@ -241,6 +277,150 @@ const FontData* CSSFontSelector::GetFontData(
+             font_face_cache_->Get(request_description, family_name)) {
+       return face->GetFontData(request_description);
+     }
++
++    // The font inventory comes from the profile.  The host's inventory
++    // is the inventory of the Windows machine -- a couple of hundred
++    // families that include the corporate fonts of the machine -- and a
++    // page that probes for them learns the operating system and often
++    // the machine itself.
++    //
++    // The probe asks a question with two halves: is the family on the
++    // device, and does it measure differently from the generic?  A
++    // device answers the second half by accident, and what it answers
++    // with is the host's inventory.  So both halves have to be taken
++    // over:
++    //
++    //   * a family the profile does not declare has to measure exactly
++    //     as the generic font, which is what a family that is not on
++    //     the device measures as.  So it is resolved to the generic
++    //     family itself, and not merely allowed to fail to resolve:
++    //     a family that fails to resolve is not measured as the
++    //     generic, it is measured as whatever the fallback list offers,
++    //     which is a different thing and is how the host's inventory
++    //     leaks;
++    //
++    //   * a family the profile does declare has to measure differently
++    //     from the generic, even when the machine does not carry it.
++    //     The size adjustment makes that so.
++    //
++    // The hook on ``FontFaceSet::check`` alone is not enough: a page
++    // that measures the text instead of asking about the family would
++    // still see the host's font.
++    if (nova::IsNovaCoreInitialized()) {
++      const nova::ProfileConfig& config = nova::GetNovaConfigRef();
++      if (config.fonts.mode != "native_passthrough" &&
++          config.fonts.mode != "disabled") {
++        const std::string family = family_name.Latin1();
++        const AtomicString generic_name = GenericFamilyForFallback(
++            generic_font_family_settings_, request_description);
++        if (generic_name.empty()) {
++          return nullptr;
++        }
++
++        // The generic of the *text* script.
++        //
++        // The generic of the request's own script is not always a font
++        // the text can be laid out with: a request for an emoji family
++        // resolves to the platform's emoji font, and the emoji font has
++        // no letters in it.  The text falls back to the platform's
++        // primary font, which is the generic sans serif, and that
++        // fallback is not scaled -- so a family that is not on the
++        // machine measures exactly as the generic does and the probe
++        // reports it as absent.
++        //
++        // The text generic is the font the letters are laid out with,
++        // and it is scaled.  It is the same font the generic sans
++        // serif resolves to for the text, so the family still measures
++        // as the generic does, only a fraction of a percent away from
++        // it.
++        //
++        // The script is the *Latin* one, because the text a probe
++        // measures is Latin: the platform names a generic for the
++        // common script that is not a font at all -- the word
++        // "sans-serif" -- and a lookup of that name is the generic
++        // path, which does not scale.  The Latin generic is the real
++        // font the letters are drawn with.
++        const AtomicString text_generic_name =
++            generic_font_family_settings_.Get(GenericFontFamily::kSansSerif,
++                                              USCRIPT_LATIN);
++
++        if (!nova::IsGenericFontFamily(family) &&
++            !nova::IsFontInProfile(family, config.fonts.installed)) {
++          // The family is not on the device, so it measures as the
++          // generic font.  The generic family is what the platform
++          // offers for the kind of text, so the text is laid out with
++          // it and the width is the generic's width.
++          return FontCache::Get().GetFontData(request_description,
++                                               generic_name);
++        }
++
++        // The family is on the device.  Its metrics are the profile's
++        // own, so that a profile whose inventory the machine does not
++        // carry still measures the way the profile describes.
++        //
++        // The adjustment is applied through
++        // ``SizeAdjustedFontDescription``, which is the one route that
++        // the font size actually honours: a bare ``SetAdjustedSize``
++        // is ignored, because the effective size is the *computed* size
++        // unless the description says that it was adjusted.
++        //
++        // The family is looked up by name first, so that a machine that
++        // really does carry the font keeps the font's own metrics.
++        //
++        // A lookup of an absent family does *not* fail.  The font cache
++        // answers with the platform's primary font -- the same one that
++        // stands in for the generic -- and it answers with that font's
++        // *own* size, because the fallback path does not carry the
++        // adjustment over.  So the family would measure exactly as wide
++        // as the generic and the probe would report it as absent.
++        //
++        // The lookup is therefore checked: the answer is only taken
++        // when the font it names is the font that was asked for.
++        //
++        // The second lookup is the one that always answers, and it
++        // answers with the platform's own font at the adjusted size.
++        float applied_size = 0.0f;
++        const double adjustment = nova::NovaFontSizeAdjustmentForSize(
++            family, config.fonts.salt, request_description.ComputedSize(),
++            &applied_size);
++        if (adjustment != 1.0) {
++          FontDescription adjusted =
++              request_description.SizeAdjustedFontDescription(
++                  static_cast<float>(adjustment));          if (const SimpleFontData* data =
++                  FontCache::Get().GetFontData(adjusted, family_name)) {
++            // The answer is taken only when it is the font that was
++            // asked for.  A fallback to another family is the cache
++            // saying "this one is not here", and the generic stands in
++            // for it instead.
++            //
++            // The comparison is made on the lower-cased names, because
++            // the CSS font matching is case insensitive and a font that
++            // is called "noto sans" on the machine is the font that
++            // "Noto Sans" asked for.
++            const std::string answered_family = base::ToLowerASCII(
++                data->PlatformData().FontFamilyName().Utf8());
++            if (answered_family == base::ToLowerASCII(family)) {
++              return data;
++            }
++          }
++          // The text generic is the font the letters are laid out with.
++          // When it is not configured -- an embedder that names no
++          // generic at all -- the request's own generic is used, which
++          // is the platform's answer for the script.
++          const AtomicString& scalable_generic =
++              text_generic_name.empty() ? generic_name : text_generic_name;
++          return FontCache::Get().GetFontData(adjusted, scalable_generic);
++        }
++      }
++
++      AtomicString settings_family_name =
++          FamilyNameFromSettings(request_description, font_family);
++      if (settings_family_name.empty()) {
++        return nullptr;
++      }
++      return FontCache::Get().GetFontData(request_description,
++                                           settings_family_name);
++    }
+   }
+ 
+   // Try to return the correct font based off our settings, in case we were
 diff --git a/third_party/blink/renderer/core/css/font_face_set.cc b/third_party/blink/renderer/core/css/font_face_set.cc
-index 783e00a..f2eff84 100644
+index 783e00a357..f2eff84383 100644
 --- a/third_party/blink/renderer/core/css/font_face_set.cc
 +++ b/third_party/blink/renderer/core/css/font_face_set.cc
 @@ -7,6 +7,7 @@
@@ -524,7 +714,7 @@ index 783e00a..f2eff84 100644
    if (!font) {
      exception_state.ThrowDOMException(
 diff --git a/third_party/blink/renderer/core/dom/element.cc b/third_party/blink/renderer/core/dom/element.cc
-index e38246a..1c6c848 100644
+index e38246a0c0..1c6c848920 100644
 --- a/third_party/blink/renderer/core/dom/element.cc
 +++ b/third_party/blink/renderer/core/dom/element.cc
 @@ -29,6 +29,8 @@
@@ -562,7 +752,7 @@ index e38246a..1c6c848 100644
  
  DOMRect* Element::GetBoundingClientRectForBinding() {
 diff --git a/third_party/blink/renderer/core/dom/range.cc b/third_party/blink/renderer/core/dom/range.cc
-index 90e8349..38ad93a 100644
+index 90e8349f1a..38ad93a142 100644
 --- a/third_party/blink/renderer/core/dom/range.cc
 +++ b/third_party/blink/renderer/core/dom/range.cc
 @@ -30,6 +30,7 @@
@@ -605,7 +795,7 @@ index 90e8349..38ad93a 100644
  
  // TODO(editing-dev): We should make
 diff --git a/third_party/blink/renderer/modules/device_orientation/BUILD.gn b/third_party/blink/renderer/modules/device_orientation/BUILD.gn
-index fd6f67a..fa24442 100644
+index fd6f67a13d..fa244423c0 100644
 --- a/third_party/blink/renderer/modules/device_orientation/BUILD.gn
 +++ b/third_party/blink/renderer/modules/device_orientation/BUILD.gn
 @@ -40,6 +40,7 @@ blink_modules_sources("device_orientation") {
@@ -617,7 +807,7 @@ index fd6f67a..fa24442 100644
    ]
  }
 diff --git a/third_party/blink/renderer/modules/device_orientation/device_motion_event_pump.cc b/third_party/blink/renderer/modules/device_orientation/device_motion_event_pump.cc
-index c2eb77a..4b262d5 100644
+index c2eb77a349..4b262d5058 100644
 --- a/third_party/blink/renderer/modules/device_orientation/device_motion_event_pump.cc
 +++ b/third_party/blink/renderer/modules/device_orientation/device_motion_event_pump.cc
 @@ -8,6 +8,7 @@
@@ -679,7 +869,7 @@ index c2eb77a..4b262d5 100644
      rotation_rate = DeviceMotionEventRotationRate::Create(NAN, NAN, NAN);
    }
 diff --git a/third_party/blink/renderer/modules/mediastream/BUILD.gn b/third_party/blink/renderer/modules/mediastream/BUILD.gn
-index baae392..012c472 100644
+index baae392cd4..012c472edd 100644
 --- a/third_party/blink/renderer/modules/mediastream/BUILD.gn
 +++ b/third_party/blink/renderer/modules/mediastream/BUILD.gn
 @@ -141,6 +141,7 @@ blink_modules_sources("mediastream") {
@@ -691,7 +881,7 @@ index baae392..012c472 100644
      "//third_party/blink/renderer/modules/screen_details",
      "//third_party/libyuv",
 diff --git a/third_party/blink/renderer/modules/mediastream/media_devices.cc b/third_party/blink/renderer/modules/mediastream/media_devices.cc
-index 47cca1b..6347e70 100644
+index 47cca1be34..f28f89733b 100644
 --- a/third_party/blink/renderer/modules/mediastream/media_devices.cc
 +++ b/third_party/blink/renderer/modules/mediastream/media_devices.cc
 @@ -51,6 +51,7 @@
@@ -702,7 +892,66 @@ index 47cca1b..6347e70 100644
  #include "third_party/blink/renderer/modules/mediastream/crop_target.h"
  #include "third_party/blink/renderer/modules/mediastream/input_device_info.h"
  #include "third_party/blink/renderer/modules/mediastream/media_stream.h"
-@@ -1461,6 +1462,31 @@ void MediaDevices::DevicesEnumerated(
+@@ -1452,6 +1453,58 @@ void MediaDevices::DevicesEnumerated(
+ 
+   MediaDeviceInfoVector media_devices;
+   bool result_contains_nonempty_input_device_ids = false;
++
++  // The profile's own inventory replaces the host's.
++  //
++  // The host's inventory belongs to the machine, not to the profile: a
++  // desktop has a camera that an Android phone does not, and a machine
++  // with two microphones has two where the profile declares one.  A
++  // page that counts the devices, or that reads their labels, would
++  // learn about the machine -- and the machine is shared by every
++  // profile that runs on it, so the count is a way to link two
++  // profiles that are supposed to be two different devices.
++  //
++  // The identifiers in the profile's list were derived from the
++  // profile's own salt when the profile was generated, so they are
++  // already unique to the profile and they are the same in every origin
++  // the profile visits.  They are used as they are.
++  //
++  // The host's capabilities are dropped along with the host's devices:
++  // they described hardware the profile does not have.
++  const std::vector<std::string> nova_kinds = nova::NovaMediaDeviceKinds();
++  if (!nova_kinds.empty()) {
++    for (const std::string& kind : nova_kinds) {
++      const std::vector<nova::NovaMediaDevice> devices =
++          nova::NovaMediaDevices(kind);
++      for (const nova::NovaMediaDevice& device : devices) {
++        mojom::blink::MediaDeviceType device_type =
++            mojom::blink::MediaDeviceType::kMediaAudioInput;
++        if (kind == "audiooutput") {
++          device_type = mojom::blink::MediaDeviceType::kMediaAudioOutput;
++        } else if (kind == "videoinput") {
++          device_type = mojom::blink::MediaDeviceType::kMediaVideoInput;
++        }
++        if (device_type == mojom::blink::MediaDeviceType::kMediaAudioOutput) {
++          media_devices.push_back(MakeGarbageCollected<MediaDeviceInfo>(
++              String::FromUtf8(device.device_id),
++              String::FromUtf8(device.label),
++              String::FromUtf8(device.group_id), device_type));
++          continue;
++        }
++        if (!device.device_id.empty()) {
++          result_contains_nonempty_input_device_ids = true;
++        }
++        media_devices.push_back(MakeGarbageCollected<InputDeviceInfo>(
++            String::FromUtf8(device.device_id), String::FromUtf8(device.label),
++            String::FromUtf8(device.group_id), device_type));
++      }
++    }
++    ReportCompletedEnumerateDevices(result_contains_nonempty_input_device_ids);
++    result_tracker->Resolve(media_devices);
++    tracer->End();
++    return;
++  }
++
+   for (wtf_size_t i = 0;
+        i < static_cast<wtf_size_t>(
+                mojom::blink::MediaDeviceType::kNumMediaDeviceTypes);
+@@ -1461,6 +1514,31 @@ void MediaDevices::DevicesEnumerated(
            static_cast<mojom::blink::MediaDeviceType>(i);
        WebMediaDeviceInfo device_info = enumeration[i][j];
        String device_label = String::FromUtf8(device_info.label);
@@ -734,7 +983,7 @@ index 47cca1b..6347e70 100644
        if (device_type == mojom::blink::MediaDeviceType::kMediaAudioInput ||
            device_type == mojom::blink::MediaDeviceType::kMediaVideoInput) {
          if (!device_info.device_id.empty()) {
-@@ -1468,8 +1494,8 @@ void MediaDevices::DevicesEnumerated(
+@@ -1468,8 +1546,8 @@ void MediaDevices::DevicesEnumerated(
          }
          InputDeviceInfo* input_device_info =
              MakeGarbageCollected<InputDeviceInfo>(
@@ -745,7 +994,7 @@ index 47cca1b..6347e70 100644
          if (device_type == mojom::blink::MediaDeviceType::kMediaVideoInput &&
              !video_input_capabilities.empty()) {
            input_device_info->SetVideoInputCapabilities(
-@@ -1483,8 +1509,8 @@ void MediaDevices::DevicesEnumerated(
+@@ -1483,8 +1561,8 @@ void MediaDevices::DevicesEnumerated(
          media_devices.push_back(input_device_info);
        } else {
          media_devices.push_back(MakeGarbageCollected<MediaDeviceInfo>(
@@ -757,7 +1006,7 @@ index 47cca1b..6347e70 100644
      }
    }
 diff --git a/third_party/blink/renderer/modules/quota/BUILD.gn b/third_party/blink/renderer/modules/quota/BUILD.gn
-index 012cf1b..6765597 100644
+index 012cf1bd87..6765597f29 100644
 --- a/third_party/blink/renderer/modules/quota/BUILD.gn
 +++ b/third_party/blink/renderer/modules/quota/BUILD.gn
 @@ -17,5 +17,8 @@ blink_modules_sources("quota") {
@@ -771,7 +1020,7 @@ index 012cf1b..6765597 100644
 +  ]
  }
 diff --git a/third_party/blink/renderer/modules/quota/storage_manager.cc b/third_party/blink/renderer/modules/quota/storage_manager.cc
-index ef1c723..aa74e0b 100644
+index ef1c723ac2..aa74e0b088 100644
 --- a/third_party/blink/renderer/modules/quota/storage_manager.cc
 +++ b/third_party/blink/renderer/modules/quota/storage_manager.cc
 @@ -19,6 +19,7 @@
@@ -804,7 +1053,7 @@ index ef1c723..aa74e0b 100644
    estimate->setQuota(quota_in_bytes);
  
 diff --git a/third_party/blink/renderer/modules/webaudio/BUILD.gn b/third_party/blink/renderer/modules/webaudio/BUILD.gn
-index 170ae80..6025281 100644
+index 170ae8040c..60252812c3 100644
 --- a/third_party/blink/renderer/modules/webaudio/BUILD.gn
 +++ b/third_party/blink/renderer/modules/webaudio/BUILD.gn
 @@ -194,6 +194,7 @@ blink_modules_sources("webaudio") {
@@ -816,7 +1065,7 @@ index 170ae80..6025281 100644
      "//third_party/blink/renderer/modules/peerconnection",
      "//third_party/blink/renderer/modules/permissions",
 diff --git a/third_party/blink/renderer/modules/webaudio/audio_context.cc b/third_party/blink/renderer/modules/webaudio/audio_context.cc
-index 946ce4b..7ecab2e 100644
+index 946ce4bd40..7ecab2ecb9 100644
 --- a/third_party/blink/renderer/modules/webaudio/audio_context.cc
 +++ b/third_party/blink/renderer/modules/webaudio/audio_context.cc
 @@ -39,6 +39,7 @@
@@ -864,7 +1113,7 @@ index 946ce4b..7ecab2e 100644
  
    double factor = GetOutputLatencyQuantizingFactor();
 diff --git a/third_party/blink/renderer/modules/webaudio/audio_destination_node.cc b/third_party/blink/renderer/modules/webaudio/audio_destination_node.cc
-index 1d2302a..fcbe5b2 100644
+index 1d2302a9c4..fcbe5b2850 100644
 --- a/third_party/blink/renderer/modules/webaudio/audio_destination_node.cc
 +++ b/third_party/blink/renderer/modules/webaudio/audio_destination_node.cc
 @@ -25,6 +25,7 @@
@@ -894,7 +1143,7 @@ index 1d2302a..fcbe5b2 100644
  }
  
 diff --git a/third_party/blink/renderer/modules/webaudio/base_audio_context.h b/third_party/blink/renderer/modules/webaudio/base_audio_context.h
-index b77a86c..a5fd77d 100644
+index b77a86c4c9..a5fd77d024 100644
 --- a/third_party/blink/renderer/modules/webaudio/base_audio_context.h
 +++ b/third_party/blink/renderer/modules/webaudio/base_audio_context.h
 @@ -36,6 +36,7 @@
@@ -929,7 +1178,7 @@ index b77a86c..a5fd77d 100644
    AudioListener* listener() { return listener_.Get(); }
    // Virtual so AudioContext::state() can add UseCounters.
 diff --git a/third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc b/third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc
-index 571b428..3f0ff47 100644
+index 571b42819d..3f0ff47274 100644
 --- a/third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc
 +++ b/third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.cc
 @@ -11,6 +11,7 @@
@@ -967,7 +1216,7 @@ index 571b428..3f0ff47 100644
           ++channel_index) {
        shared_render_target_->channels()[channel_index]
 diff --git a/third_party/blink/renderer/modules/webgpu/BUILD.gn b/third_party/blink/renderer/modules/webgpu/BUILD.gn
-index 40f7546..9d4351c 100644
+index 40f7546125..9d4351c51d 100644
 --- a/third_party/blink/renderer/modules/webgpu/BUILD.gn
 +++ b/third_party/blink/renderer/modules/webgpu/BUILD.gn
 @@ -115,6 +115,7 @@ blink_modules_sources("webgpu") {
@@ -979,7 +1228,7 @@ index 40f7546..9d4351c 100644
    ]
  
 diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter_info.cc b/third_party/blink/renderer/modules/webgpu/gpu_adapter_info.cc
-index 9d15570..7eb30cb 100644
+index 9d155705c1..7eb30cb06b 100644
 --- a/third_party/blink/renderer/modules/webgpu/gpu_adapter_info.cc
 +++ b/third_party/blink/renderer/modules/webgpu/gpu_adapter_info.cc
 @@ -4,6 +4,7 @@
