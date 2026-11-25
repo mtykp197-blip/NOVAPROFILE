@@ -81,13 +81,28 @@ five hundred megabytes, so it is not in the repository -- it is on the
 releases page:
 
 ```powershell
-curl.exe -L -o core.zip `
-  https://github.com/mtykp197-blip/NOVAPROFILE/releases/download/core-160.0.8177.0/160.0.8177.0.zip
+curl.exe -L -H "Authorization: Bearer $env:GITHUB_TOKEN" `
+  -o core.zip `
+  https://github.com/mtykp197-blip/NOVAPROFILE/releases/download/core-win-x64/nova-core-win-x64.zip
+
 Expand-Archive core.zip -DestinationPath core\build\cores\160.0.8177.0
+```
+
+The repository is private, so the download needs the token that can
+read it.  A token with the `repo` scope is enough; the one that pushed
+the code is already there:
+
+```powershell
+$cred = "protocol=https`nhost=github.com`n`n" | git credential fill
+$env:GITHUB_TOKEN = ($cred | Select-String "^password=") `
+  -replace "^password=", ""
 ```
 
 The shell reads the core from `core/build/cores/<version>`, and the
 version is the one the manifest names.
+
+The release is at
+<https://github.com/mtykp197-blip/NOVAPROFILE/releases/tag/core-win-x64>.
 
 To build the core from source instead, a Linux host with the Android
 SDK, the Android NDK and `depot_tools` is needed -- Chromium asserts
