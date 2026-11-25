@@ -593,6 +593,111 @@ async def list_profiles(
     return payload
 
 
+@router.get("/rows", summary="List profiles for the table")
+async def list_profile_rows(
+    group_id: str | None = Query(default=None),  # noqa: B008
+    tag: str | None = Query(default=None),  # noqa: B008
+    status_filter: str | None = Query(default=None, alias="status"),  # noqa: B008
+    search: str | None = Query(default=None),  # noqa: B008
+    limit: int = Query(default=500, ge=0, le=1000000),  # noqa: B008
+    offset: int = Query(default=0, ge=0),  # noqa: B008
+    store: Any = Depends(deps.get_store),  # noqa: B008
+) -> dict[str, Any]:
+    """Return the rows of the table of profiles.
+
+    A configuration is fourteen kilobytes, and the table of profiles
+    draws five columns of it.  This list is the five columns and
+    nothing else, so the table of five hundred profiles is a handful of
+    kilobytes instead of seven megabytes.
+    """
+
+    lister = getattr(store, "list_profiles", None)
+    if lister is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="profile store does not implement list_profiles",
+        )
+    try:
+        configs = lister(
+            group_id=group_id,
+            tag=tag,
+            status=status_filter,
+            search=search,
+        )
+    except TypeError:
+        configs = lister()
+
+    items = list(configs or [])
+    total = len(items)
+    page = items[offset : offset + limit] if limit else items[offset:]
+
+    return {
+        "items": [_profile_row(item) for item in page],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def _profile_row(config: Any) -> dict[str, Any]:
+    """The row of the table that one profile makes.
+
+    It carries what the table shows and the little that the buttons
+    need, and nothing else.  The full configuration is fetched when a
+    profile is opened, which is the only time it is needed.
+    """
+
+    payload = deps._to_plain(config)
+    if not isinstance(payload, dict):
+        return {}
+
+    identity = payload.get("identity") or {}
+    build = payload.get("android_build") or payload.get("build") or {}
+    navigator = payload.get("navigator") or {}
+    screen = payload.get("screen") or {}
+    geo = payload.get("geolocation") or {}
+    proxy = payload.get("proxy") or {}
+    webgl = payload.get("webgl") or {}
+
+    proxy_text = ""
+    if isinstance(proxy, dict) and proxy.get("enabled") and proxy.get("host"):
+        port = proxy.get("port")
+        proxy_text = f"{proxy.get('protocol') or 'http'}://{proxy.get('host')}"
+        if port:
+            proxy_text += f":{port}"
+    elif proxy and not isinstance(proxy, dict):
+        proxy_text = str(proxy)
+
+    return {
+        "id": identity.get("id") or payload.get("profile_id") or "",
+        "name": identity.get("name") or "",
+        "status": identity.get("status") or "created",
+        "group_id": identity.get("group_id") or "",
+        "created_at": identity.get("created_at"),
+        "device": {
+            "manufacturer": build.get("manufacturer") or "",
+            "model": build.get("model") or "",
+            "version_release": build.get("version_release") or "",
+        },
+        "navigator": {
+            "hardware_concurrency": navigator.get("hardware_concurrency"),
+            "device_memory": navigator.get("device_memory"),
+        },
+        "screen": {
+            "width": screen.get("width"),
+            "height": screen.get("height"),
+            "device_pixel_ratio": screen.get("device_pixel_ratio"),
+        },
+        "geolocation": {
+            "city": geo.get("city") or "",
+            "latitude": geo.get("latitude"),
+            "longitude": geo.get("longitude"),
+        },
+        "proxy": proxy_text,
+        "gpu": webgl.get("unmasked_renderer") or "",
+    }
+
+
 @router.post("", status_code=status.HTTP_201_CREATED, summary="Create a profile")
 async def create_profile(
     request: ProfileCreateRequest = Body(default_factory=ProfileCreateRequest),  # noqa: B008

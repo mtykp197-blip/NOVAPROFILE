@@ -25,6 +25,12 @@ let presets = [];
 /** The profiles that are ticked. */
 const selection = new Set();
 
+/** The page of the table that is on screen. */
+let tablePage = 0;
+
+/** How many rows a page of the table holds. */
+const TABLE_PAGE = 100;
+
 /** The state of the shell itself. */
 const shell = {
   ready: false,
@@ -238,8 +244,16 @@ async function render() {
 /* ------------------------------ profiles --------------------------- */
 
 async function renderProfiles(actions, content) {
-  const response = await call('GET', '/api/profiles?limit=500');
+  // The table asks for the rows it draws.  The list is the five
+  // columns of the table and nothing else, so the window reads a
+  // handful of kilobytes instead of the whole configuration of every
+  // profile in the fleet.
+  const response = await call(
+    'GET',
+    '/api/profiles/rows?limit=' + TABLE_PAGE + '&offset=' + tablePage * TABLE_PAGE,
+  );
   profiles = pickList(response, 'profiles');
+  const total = (response && response.total) || profiles.length;
 
   actions.appendChild(
     el('button', {
@@ -260,7 +274,10 @@ async function renderProfiles(actions, content) {
     class: 'search',
     type: 'text',
     placeholder: 'Tìm trong danh sách…',
-    oninput: (event) => filterProfiles(event.target.value),
+    oninput: (event) => {
+      tablePage = 0;
+      filterProfiles(event.target.value);
+    },
   });
 
   // The bar is filled every time the table is drawn, so it never
@@ -281,9 +298,73 @@ async function renderProfiles(actions, content) {
       ]),
       el('div', { class: 'table-wrap', id: 'profile-table' }, [profileTable(profiles)]),
     ]),
+    pager(total),
   ]);
 
   content.replaceChildren(body);
+}
+
+/**
+ * The pages of the table.
+ *
+ * A fleet of a hundred thousand profiles is a thousand pages, and the
+ * operator moves through them the way they move through any long
+ * list.  The page holds a hundred rows.
+ */
+function pager(total) {
+  const pages = Math.max(1, Math.ceil(total / TABLE_PAGE));
+  const current = Math.min(tablePage, pages - 1);
+
+  if (pages <= 1) {
+    return el('div', { class: 'pager' }, [
+      el('span', { class: 'pager-note', text: num(total) + ' profile' }),
+    ]);
+  }
+
+  return el('div', { class: 'pager' }, [
+    el('button', {
+      class: 'btn btn-sm',
+      text: '‹ Trước',
+      disabled: current <= 0,
+      onclick: () => {
+        tablePage = Math.max(0, current - 1);
+        render();
+      },
+    }),
+    el('span', {
+      class: 'pager-note',
+      text:
+        'Trang ' + num(current + 1) + ' / ' + num(pages) +
+        ' · ' + num(total) + ' profile',
+    }),
+    el('button', {
+      class: 'btn btn-sm',
+      text: 'Sau ›',
+      disabled: current >= pages - 1,
+      onclick: () => {
+        tablePage = Math.min(pages - 1, current + 1);
+        render();
+      },
+    }),
+    el('button', {
+      class: 'btn btn-sm btn-ghost',
+      text: 'Về đầu',
+      disabled: current <= 0,
+      onclick: () => {
+        tablePage = 0;
+        render();
+      },
+    }),
+    el('button', {
+      class: 'btn btn-sm btn-ghost',
+      text: 'Về cuối',
+      disabled: current >= pages - 1,
+      onclick: () => {
+        tablePage = pages - 1;
+        render();
+      },
+    }),
+  ]);
 }
 
 /**
@@ -340,13 +421,23 @@ function profileTable(rows) {
               else selection.delete(id);
             }
             refreshSelectionBar();
-            render();
+            // The rows that are on screen are marked, and the list is
+            // not drawn again: drawing it is what made the window slow
+            // to answer.
+            for (const tick of document.querySelectorAll('input.row-tick')) {
+              if (tick.closest('thead')) continue;
+              const row = tick.closest('tr');
+              if (row) row.classList.toggle('row-ticked', box.checked);
+            }
           },
         }),
       ]),
       el('th', { text: 'Profile' }),
       el('th', { text: 'Thiết bị' }),
       el('th', { text: 'Android' }),
+      el('th', { text: 'Đồ hoạ' }),
+      el('th', { text: 'Lõi' }),
+      el('th', { text: 'RAM' }),
       el('th', { text: 'Vị trí' }),
       el('th', { text: 'Proxy' }),
       el('th', { text: 'Trạng thái' }),
@@ -354,10 +445,12 @@ function profileTable(rows) {
     ]),
   ]);
 
+  const shown = visibleRows(rows);
+
   const body = el(
     'tbody',
     {},
-    rows.map((profile) => {
+    shown.map((profile) => {
       const identity = identityOf(profile);
       const running = isRunning(profile);
       const id = profileId(profile);
@@ -382,6 +475,9 @@ function profileTable(rows) {
         ]),
         el('td', { text: deviceLabel(profile) }),
         el('td', { text: androidLabel(profile) }),
+        el('td', { class: 'mono small', text: gpuLabel(profile) || '—' }),
+        el('td', { text: coreLabel(profile) }),
+        el('td', { text: memoryLabel(profile) }),
         el('td', { text: locationLabel(profile) }),
         el('td', { text: proxyLabel(profile) || '—' }),
         el('td', {}, [
@@ -725,14 +821,24 @@ async function openSelected() {
 
   const failures = [];
   let opened = 0;
-  for (const profile of chosen) {
-    try {
-      await call('POST', '/api/profiles/' + profileId(profile) + '/launch', {});
+
+  // The calls go out together rather than one after the other.  The
+  // work the control plane does is the same either way, but the
+  // operator waits for one round trip instead of a hundred.
+  const answers = await Promise.allSettled(
+    chosen.map((profile) =>
+      call('POST', '/api/profiles/' + profileId(profile) + '/launch', {}),
+    ),
+  );
+
+  answers.forEach((answer, index) => {
+    if (answer.status === 'fulfilled') {
       opened += 1;
-    } catch (error) {
-      failures.push(deviceLabel(profile) + ': ' + String(error.message || error));
+    } else {
+      const error = answer.reason;
+      failures.push(deviceLabel(chosen[index]) + ': ' + String(error.message || error));
     }
-  }
+  });
 
   toast(
     'Đã mở ' + num(opened) + ' trên ' + num(chosen.length) + ' profile.',
@@ -751,14 +857,21 @@ async function stopSelected() {
 
   const failures = [];
   let stopped = 0;
-  for (const profile of chosen) {
-    try {
-      await call('POST', '/api/profiles/' + profileId(profile) + '/stop', {});
+
+  const answers = await Promise.allSettled(
+    chosen.map((profile) =>
+      call('POST', '/api/profiles/' + profileId(profile) + '/stop', {}),
+    ),
+  );
+
+  answers.forEach((answer, index) => {
+    if (answer.status === 'fulfilled') {
       stopped += 1;
-    } catch (error) {
-      failures.push(deviceLabel(profile) + ': ' + String(error.message || error));
+    } else {
+      const error = answer.reason;
+      failures.push(deviceLabel(chosen[index]) + ': ' + String(error.message || error));
     }
-  }
+  });
 
   toast(
     'Đã dừng ' + num(stopped) + ' trên ' + num(chosen.length) + ' profile.',
@@ -784,15 +897,20 @@ async function deleteSelected() {
 
   const failures = [];
   let deleted = 0;
-  for (const profile of chosen) {
-    try {
-      await call('DELETE', '/api/profiles/' + profileId(profile));
-      selection.delete(profileId(profile));
+
+  const answers = await Promise.allSettled(
+    chosen.map((profile) => call('DELETE', '/api/profiles/' + profileId(profile))),
+  );
+
+  answers.forEach((answer, index) => {
+    if (answer.status === 'fulfilled') {
+      selection.delete(profileId(chosen[index]));
       deleted += 1;
-    } catch (error) {
-      failures.push(deviceLabel(profile) + ': ' + String(error.message || error));
+    } else {
+      const error = answer.reason;
+      failures.push(deviceLabel(chosen[index]) + ': ' + String(error.message || error));
     }
-  }
+  });
 
   toast(
     'Đã xoá ' + num(deleted) + ' trên ' + num(chosen.length) + ' profile.',
@@ -872,6 +990,34 @@ function isRunning(profile) {
   return identity.status === 'running' || profile.running === true;
 }
 
+function gpuLabel(profile) {
+  const webgl = configOf(profile).webgl || configOf(profile).graphics || {};
+  return webgl.unmasked_renderer || profile.gpu || '';
+}
+
+/**
+ * The number of cores the handset reports.
+ */
+function coreLabel(profile) {
+  const nav = configOf(profile).navigator || {};
+  const cores = nav.hardware_concurrency;
+  return cores ? String(cores) : '—';
+}
+
+/**
+ * The memory the platform reports.
+ *
+ * It is the memory the platform rounds to, so it is one of one, two,
+ * four and eight gigabytes, and never the six or the twelve that a
+ * page can tell are made up.
+ */
+function memoryLabel(profile) {
+  const nav = configOf(profile).navigator || {};
+  const memory = nav.device_memory;
+  if (!memory) return '—';
+  return memory + ' GB';
+}
+
 function configOf(profile) {
   // The control plane answers with the profile's own configuration at
   // the top level, and the identity -- the name, the status, the
@@ -881,7 +1027,15 @@ function configOf(profile) {
 }
 
 function identityOf(profile) {
-  return (profile && profile.identity) || {};
+  if (!profile) return {};
+  if (profile.identity) return profile.identity;
+  // The light row carries the identity's own fields.
+  return {
+    id: profile.id || '',
+    name: profile.name || '',
+    status: profile.status || 'created',
+    group_id: profile.group_id || '',
+  };
 }
 
 function profileId(profile) {
@@ -890,17 +1044,25 @@ function profileId(profile) {
 }
 
 function deviceLabel(profile) {
-  const build = configOf(profile).android_build || configOf(profile).build || {};
+  const build =
+    configOf(profile).android_build ||
+    configOf(profile).build ||
+    configOf(profile).device ||
+    {};
   return [build.manufacturer, build.model].filter(Boolean).join(' ') || '—';
 }
 
 function androidLabel(profile) {
-  const build = configOf(profile).android_build || configOf(profile).build || {};
+  const build =
+    configOf(profile).android_build ||
+    configOf(profile).build ||
+    configOf(profile).device ||
+    {};
   return build.version_release ? 'Android ' + build.version_release : '—';
 }
 
 function locationLabel(profile) {
-  const geo = configOf(profile).geolocation || {};
+  const geo = configOf(profile).geolocation || configOf(profile).place || {};
   if (geo.city) return geo.city;
   if (geo.latitude !== undefined && geo.longitude !== undefined) {
     return Number(geo.latitude).toFixed(2) + ', ' + Number(geo.longitude).toFixed(2);
@@ -1094,6 +1256,7 @@ function openBulkProxyDialog() {
             let assigned = 0;
             const failures = [];
 
+            const work = [];
             for (let index = 0; index < chosen.length && index < lines.length; index += 1) {
               const parsed = parseProxyLine(lines[index]);
               if (!parsed) {
@@ -1102,26 +1265,37 @@ function openBulkProxyDialog() {
                 );
                 continue;
               }
-              const id = profileId(chosen[index]);
-              try {
-                await call('PATCH', '/api/profiles/' + id, {
+              work.push({ index: index, parsed: parsed });
+            }
+
+            // The calls go out together, so a list of two hundred
+            // proxies is one wait and not two hundred.
+            const answers = await Promise.allSettled(
+              work.map((item) =>
+                call('PATCH', '/api/profiles/' + profileId(chosen[item.index]), {
                   proxy: {
                     enabled: true,
-                    protocol: parsed.protocol,
-                    host: parsed.host,
-                    port: parsed.port,
-                    username: parsed.username,
-                    password: parsed.password,
-                    auth_method: parsed.username ? 'userpass' : 'none',
+                    protocol: item.parsed.protocol,
+                    host: item.parsed.host,
+                    port: item.parsed.port,
+                    username: item.parsed.username,
+                    password: item.parsed.password,
+                    auth_method: item.parsed.username ? 'userpass' : 'none',
                   },
-                });
+                }),
+              ),
+            );
+
+            answers.forEach((answer, at) => {
+              if (answer.status === 'fulfilled') {
                 assigned += 1;
-              } catch (error) {
+              } else {
+                const error = answer.reason;
                 failures.push(
-                  deviceLabel(chosen[index]) + ': ' + String(error.message || error),
+                  deviceLabel(chosen[work[at].index]) + ': ' + String(error.message || error),
                 );
               }
-            }
+            });
 
             if (assigned) {
               toast(
@@ -1162,18 +1336,44 @@ function proxyLabel(profile) {
   return proxy.protocol + '://' + host + port;
 }
 
+/**
+ * Search the fleet.
+ *
+ * The search is asked of the control plane, which looks at the whole
+ * fleet and not only at the page that happens to be on screen.  The
+ * answer comes back a moment later, and the table is drawn with it.
+ */
+let searchTimer = null;
+
 function filterProfiles(query) {
+  const needle = String(query || '').trim();
   const table = document.getElementById('profile-table');
   if (!table) return;
-  const needle = String(query || '').trim().toLowerCase();
+
   if (!needle) {
     table.replaceChildren(profileTable(profiles));
     return;
   }
-  const matches = profiles.filter((profile) =>
-    JSON.stringify(profile).toLowerCase().includes(needle),
-  );
-  table.replaceChildren(profileTable(matches));
+
+  // The keystrokes are gathered before the fleet is asked, so a word
+  // that is being typed is one question and not eight.
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(async () => {
+    try {
+      const response = await call(
+        'GET',
+        '/api/profiles/rows?limit=' +
+          TABLE_PAGE +
+          '&offset=0&search=' +
+          encodeURIComponent(needle),
+      );
+      const matches = pickList(response, 'profiles');
+      const current = document.getElementById('profile-table');
+      if (current) current.replaceChildren(profileTable(matches));
+    } catch (error) {
+      // The list that is on screen is still the right one to show.
+    }
+  }, 220);
 }
 
 async function toggleLaunch(profile, running) {

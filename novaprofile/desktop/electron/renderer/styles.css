@@ -391,6 +391,24 @@ body::before {
 
 .table-wrap {
   overflow: auto;
+  /* A page of rows is drawn at a time, and the scrollbar of the
+     table is the scrollbar of the page, not of the list. */
+  max-height: calc(100vh - 340px);
+}
+
+/* The pages of the table. */
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 2px;
+}
+
+.pager-note {
+  color: var(--text-dim);
+  font-size: 12px;
+  min-width: 120px;
 }
 
 table {
