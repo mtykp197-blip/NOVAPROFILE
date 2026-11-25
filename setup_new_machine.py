@@ -27,7 +27,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 CORE_VERSION = '160.0.8177.0'
 RELEASE_TAG = 'core-win-x64'
-ASSET_NAME = 'nova-core-win-x64.zip'
+ASSET_NAME = f'{CORE_VERSION}.zip'
 CONTROL_PLANE = ROOT / 'novaprofile' / 'control_plane'
 SHELL = ROOT / 'novaprofile' / 'desktop'
 CORE_DIR = ROOT / 'core' / 'build' / 'cores' / CORE_VERSION
