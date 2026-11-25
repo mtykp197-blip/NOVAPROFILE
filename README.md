@@ -63,6 +63,14 @@ git clone https://github.com/mtykp197-blip/NOVAPROFILE.git
 cd NOVAPROFILE
 ```
 
+Or, in one step, the script that does the rest as well:
+
+```bash
+git clone https://github.com/mtykp197-blip/NOVAPROFILE.git
+cd NOVAPROFILE
+python setup_new_machine.py
+```
+
 ### 2. The control plane
 
 ```powershell
@@ -78,24 +86,13 @@ and without `tzdata` every profile reports UTC with a zero offset.
 
 The core is the Chromium fork with the patch series applied.  It is
 five hundred megabytes, so it is not in the repository -- it is on the
-releases page:
+releases page, and it is fetched the way any other file is fetched:
 
 ```powershell
-curl.exe -L -H "Authorization: Bearer $env:GITHUB_TOKEN" `
-  -o core.zip `
-  https://github.com/mtykp197-blip/NOVAPROFILE/releases/download/core-win-x64/nova-core-win-x64.zip
+curl.exe -L -o core.zip `
+  https://github.com/mtykp197-blip/NOVAPROFILE/releases/download/core-win-x64/160.0.8177.0.zip
 
 Expand-Archive core.zip -DestinationPath core\build\cores\160.0.8177.0
-```
-
-The repository is private, so the download needs the token that can
-read it.  A token with the `repo` scope is enough; the one that pushed
-the code is already there:
-
-```powershell
-$cred = "protocol=https`nhost=github.com`n`n" | git credential fill
-$env:GITHUB_TOKEN = ($cred | Select-String "^password=") `
-  -replace "^password=", ""
 ```
 
 The shell reads the core from `core/build/cores/<version>`, and the
@@ -103,6 +100,9 @@ version is the one the manifest names.
 
 The release is at
 <https://github.com/mtykp197-blip/NOVAPROFILE/releases/tag/core-win-x64>.
+
+The `setup_new_machine.py` script below does this step and the ones
+after it.
 
 To build the core from source instead, a Linux host with the Android
 SDK, the Android NDK and `depot_tools` is needed -- Chromium asserts

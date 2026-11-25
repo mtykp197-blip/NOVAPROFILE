@@ -57,13 +57,44 @@ def run(args: list[str], cwd: Path | None = None) -> bool:
     return True
 
 
-def token() -> str:
-    """The token that can read the repository.
+def asset_id() -> int:
+    """The identifier of the core's asset on the release.
 
-    The repository is private, so the release that holds the core can
-    only be fetched by something that is allowed to read it.  The
-    token that pushed the code is already on the machine, in the
-    credential store of git.
+    The repository is public, so the release that holds the core is
+    found without a token.  A token is used when there is one, because
+    a token raises the rate at which the interface answers.
+    """
+
+    url = (
+        'https://api.github.com/repos/mtykp197-blip/NOVAPROFILE'
+        f'/releases/tags/{RELEASE_TAG}'
+    )
+    headers = {
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'novaprofile-setup',
+    }
+    key = token()
+    if key:
+        headers['Authorization'] = f'Bearer {key}'
+
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=60) as response:
+        release = json.loads(response.read().decode())
+
+    for asset in release.get('assets', []):
+        if asset.get('name') == ASSET_NAME:
+            return int(asset['id'])
+
+    raise LookupError(f'the release has no asset called {ASSET_NAME}')
+
+
+def token() -> str:
+    """The token that can read the repository, if there is one.
+
+    The repository is public, so the core is fetched without it.  The
+    token is still used when it is there: a token raises the rate at
+    which the interface answers, and a machine that has one has no
+    reason to wait.
     """
 
     for name in ('GITHUB_TOKEN', 'GH_TOKEN'):
@@ -88,36 +119,6 @@ def token() -> str:
     return ''
 
 
-def asset_id(key: str) -> int:
-    """The identifier of the core's asset on the release.
-
-    The download path of a private repository does not take a token
-    the way the interface does, so the asset is found through the
-    interface and fetched through the asset's own address.
-    """
-
-    url = (
-        'https://api.github.com/repos/mtykp197-blip/NOVAPROFILE'
-        f'/releases/tags/{RELEASE_TAG}'
-    )
-    request = urllib.request.Request(
-        url,
-        headers={
-            'Authorization': f'Bearer {key}',
-            'Accept': 'application/vnd.github+json',
-            'User-Agent': 'novaprofile-setup',
-        },
-    )
-    with urllib.request.urlopen(request, timeout=60) as response:
-        release = json.loads(response.read().decode())
-
-    for asset in release.get('assets', []):
-        if asset.get('name') == ASSET_NAME:
-            return int(asset['id'])
-
-    raise LookupError(f'the release has no asset called {ASSET_NAME}')
-
-
 def fetch_core() -> bool:
     """Fetch the built core and unpack it where the shell expects it."""
 
@@ -127,14 +128,8 @@ def fetch_core() -> bool:
         say('it is already there')
         return True
 
-    key = token()
-    if not key:
-        say('no token was found, so the private release cannot be read')
-        say('set GITHUB_TOKEN and run this again')
-        return False
-
     try:
-        number = asset_id(key)
+        number = asset_id()
     except Exception as error:  # noqa: BLE001 - the setup reports and stops
         say(f'the release could not be read: {error}')
         return False
@@ -142,14 +137,18 @@ def fetch_core() -> bool:
     CORE_DIR.mkdir(parents=True, exist_ok=True)
     archive = CORE_DIR.parent / 'nova-core.zip'
 
+    headers = {
+        'Accept': 'application/octet-stream',
+        'User-Agent': 'novaprofile-setup',
+    }
+    key = token()
+    if key:
+        headers['Authorization'] = f'Bearer {key}'
+
     request = urllib.request.Request(
         f'https://api.github.com/repos/mtykp197-blip/NOVAPROFILE'
         f'/releases/assets/{number}',
-        headers={
-            'Authorization': f'Bearer {key}',
-            'Accept': 'application/octet-stream',
-            'User-Agent': 'novaprofile-setup',
-        },
+        headers=headers,
     )
 
     say('fetching it -- this is two hundred megabytes')
