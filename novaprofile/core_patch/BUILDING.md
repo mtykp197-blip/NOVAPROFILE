@@ -71,6 +71,23 @@ sdkmanager "platform-tools" "platforms;android-34"
 sdkmanager --install "ndk;26.1.10909125"
 ```
 
+## A core that is already built
+
+The core is large -- a Windows build of it is about five hundred
+megabytes -- and Git refuses an object of that size, so it does not
+live in the repository.  A build that has already been made is
+published on the project's releases page instead, and it is fetched
+from there.
+
+```powershell
+# The published core, unpacked where the shell expects it.
+Invoke-WebRequest -Uri "<release-url>" -OutFile core.zip
+Expand-Archive core.zip -DestinationPath core\build\cores\160.0.8177.0
+```
+
+The shell reads the core from `core/build/cores/<version>`, and the
+version is the one the manifest names.
+
 ## Verifying a build
 
 A build that compiled is not a build that works.  The check that matters
@@ -87,12 +104,19 @@ patch, and the command says which one.
 
 ## The patch series
 
-Two patches, applied in order:
+Three patches, applied in order:
 
 | Patch | What it does |
 |---|---|
 | `0001-nova-profile-core.patch` | Wires the configuration file into Blink and the browser |
 | `0002-nova-profile-hardware-surfaces.patch` | Adds the hardware surfaces that need native access |
+| `0003-nova-profile-independent-surfaces-and-tls.patch` | Gives each profile its own surfaces, and the TLS stack its own fingerprint |
+
+The series is regenerated against the Chromium tree it belongs to by
+`tools/regenerate_patch_series.py` and
+`novaprofile/control_plane/tools/regenerate_patch_series.py`.  When
+Chromium moves underneath the patches, the series is regenerated
+rather than the checks loosened.
 
 They are applied with `git apply`, which refuses a patch whose line
 counts do not match the file it is applied to.  A patch that needs

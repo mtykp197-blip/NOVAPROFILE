@@ -50,6 +50,79 @@ The Chromium side lives in `third_party/blink/renderer/core/nova/`:
 
 ---
 
+## Starting on a new machine
+
+Everything the product is made of is in this repository, except the
+built core, which is too large for Git and is published on the
+releases page.
+
+### 1. The source
+
+```bash
+git clone https://github.com/mtykp197-blip/NOVAPROFILE.git
+cd NOVAPROFILE
+```
+
+### 2. The control plane
+
+```powershell
+cd novaprofile\control_plane
+python -m pip install -e .
+```
+
+The dependencies are declared in `pyproject.toml`.  One of them is not
+optional: Windows has no system copy of the IANA time zone database,
+and without `tzdata` every profile reports UTC with a zero offset.
+
+### 3. The core
+
+The core is the Chromium fork with the patch series applied.  It is
+five hundred megabytes, so it is not in the repository -- it is on the
+releases page:
+
+```powershell
+curl.exe -L -o core.zip `
+  https://github.com/mtykp197-blip/NOVAPROFILE/releases/download/core-160.0.8177.0/160.0.8177.0.zip
+Expand-Archive core.zip -DestinationPath core\build\cores\160.0.8177.0
+```
+
+The shell reads the core from `core/build/cores/<version>`, and the
+version is the one the manifest names.
+
+To build the core from source instead, a Linux host with the Android
+SDK, the Android NDK and `depot_tools` is needed -- Chromium asserts
+that an Android build needs a Linux host, and the check fires before a
+single file is compiled.  The notes are in
+[`novaprofile/core_patch/BUILDING.md`](novaprofile/core_patch/BUILDING.md):
+
+```bash
+python novaprofile/core_patch/build.py build --major 159
+python novaprofile/core_patch/build.py verify --major 159
+```
+
+### 4. The shell
+
+```powershell
+cd novaprofile\desktop
+npm install
+```
+
+### 5. The application
+
+```powershell
+# the frozen control plane
+cd ..\control_plane
+python -m PyInstaller nova-backend.spec --noconfirm
+
+# the shell, packaged
+cd ..\desktop
+npm run dist
+```
+
+The installer is written to `novaprofile/desktop/dist/`.
+
+---
+
 ## Getting started
 
 ```bash
