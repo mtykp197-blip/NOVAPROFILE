@@ -46,16 +46,26 @@ venv/
 # for reference, but it is not the source of the product any more.
 desktop-app/
 
+# Where the installer puts the application.  It is a copy of the
+# build, not the build.
+installed/
+
 # The built core.  The core is a *build artifact* of the patch series
 # under ``novaprofile/core_patch``: it is rebuilt from the series by
 # ``novaprofile/core_patch/build.py`` against a Chromium checkout, and
 # it is far too large to keep in the repository.
-core/
+#
+# The leading slash matters: without it the pattern would match every
+# directory called "core" at any depth, and the engine's own package
+# ``novaprofile/control_plane/novaprofile/core/`` is source code that
+# has to be in the repository.
+/core/
 
 # The build and run logs of the sessions.  They are the scratch notes
 # of whoever was working on it, not a part of the product.
 *.log
 *.log.err
+build_log*.txt
 
 # The wheels that were fetched by hand to satisfy a dependency.
 *.whl

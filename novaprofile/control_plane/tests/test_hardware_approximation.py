@@ -22,10 +22,12 @@ import pytest
 
 from novaprofile.core.hardware_approximation import (
     DEVICE_MEMORY_VALUES,
+    HEAP_CEILING_BY_DEVICE_MEMORY,
     MAX_DEVICE_MEMORY,
     MIN_DEVICE_MEMORY,
     approximate_device_memory,
     approximate_hardware_concurrency,
+    heap_ceiling_for,
 )
 
 
@@ -124,5 +126,14 @@ class TestHardwareConcurrency:
         assert approximate_hardware_concurrency(18) == 18
         assert approximate_hardware_concurrency(32) == 32
 
-    def test_a_zero_count_reports_one(self) -> None:
-        assert approximate_hardware_concurrency(0) == 1
+    def test_a_count_below_the_floor_reports_two(self) -> None:
+        """Android hands a process at least two CPUs.
+
+        ``base::SysInfo::NumberOfProcessors()`` answers two on a
+        handset whose chip has one core in it, so a page that reads
+        one core is reading a number no Android device ever reports.
+        """
+
+        assert approximate_hardware_concurrency(0) == 2
+        assert approximate_hardware_concurrency(1) == 2
+        assert approximate_hardware_concurrency(2) == 2

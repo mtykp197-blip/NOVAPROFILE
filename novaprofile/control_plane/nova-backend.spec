@@ -54,6 +54,7 @@ HIDDEN_IMPORTS = [
     "novaprofile.api.routes_probe",
     "novaprofile.api.routes_profiles",
     "novaprofile.cli.main",
+    "novaprofile.core.chipset_gpu",
     "novaprofile.core.collision",
     "novaprofile.core.consistency",
     "novaprofile.core.cores",
@@ -77,6 +78,7 @@ HIDDEN_IMPORTS = [
     "novaprofile.core.native_core",
     "novaprofile.core.probe_surfaces",
     "novaprofile.core.seed",
+    "novaprofile.core.soc_cores",
     "novaprofile.core.surfaces",
     "novaprofile.core.surface_compare",
     "novaprofile.core.tls_profiles",
@@ -119,6 +121,21 @@ HIDDEN_IMPORTS += [
 # the only data is the ICU and the time zone database, both of which
 # are found at runtime.
 datas = []
+
+#: The market dataset the catalogue is built from.
+#
+# The dataset is the scraped specification sheet of the handsets the
+# Vietnamese market buys.  It is a data file rather than a module, so
+# it has to travel inside the bundle: without it the frozen control
+# plane would answer with the two thousand reference handsets and
+# none of the nineteen thousand of the market.
+DATA_ROOT = Path("..") / "core_patch" / "data"
+for _data_file in ("vn_devices.jsonl", "devices.jsonl"):
+    _data_path = DATA_ROOT / _data_file
+    if _data_path.exists():
+        datas.append((str(_data_path), "core_patch/data"))
+
+del _data_file, _data_path
 
 #: The binaries that have to travel with the executable.
 binaries = []

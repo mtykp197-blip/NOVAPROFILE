@@ -799,8 +799,21 @@ class DeviceIdentityFactory:
         # ``screen.width`` is four times its ``innerWidth``, which is a
         # shape no mobile browser has ever had and which a site spots by
         # comparing the two numbers.
+        #
+        # The panel of the catalogue is in *physical* pixels, and the
+        # logical size is the panel divided by the ratio.  The market
+        # catalogue is the one exception -- its rows carry the logical
+        # size already -- so the division is guarded: a panel that
+        # would come out smaller than the schema's own floor is taken
+        # as logical and used as it is.
         logical_width = int(round(width / dpr))
         logical_height = int(round(height / dpr))
+        if logical_width < 320 or logical_height < 320:
+            # The panel is already logical.  Dividing it again took a
+            # 457x560 screen down to 131x160, which is below the floor
+            # of the schema and made the profile unreadable.
+            logical_width = int(width)
+            logical_height = int(height)
 
         # The available area is the panel minus the system bars.  On a
         # phone in portrait the width is fully available -- the bars are

@@ -66,6 +66,31 @@ DEVICE_MEMORY_VALUES: tuple[int, ...] = (1, 2, 4, 8)
 #: clamped, so it is the count the SoC reports.
 HARDWARE_CONCURRENCY_VALUES: tuple[int, ...] = (4, 6, 8, 12)
 
+#: The V8 heap ceiling of a device, by the memory it reports.
+#:
+#: ``performance.memory.jsHeapSizeLimit`` is the ceiling of the heap of
+#: the tab, and the ceiling follows the *physical* memory of the
+#: machine, rounded down to a power of two.  A phone with four
+#: gigabytes therefore gets a two gigabyte ceiling and a phone with
+#: eight gets a four gigabyte one.
+#:
+#: The ceiling of the smallest tier is a quarter of a gigabyte: V8
+#: never hands a tab more heap than the machine can hold, and a phone
+#: with one gigabyte of memory cannot back a half gigabyte of heap and
+#: the renderer, the compositor and the GPU process at the same time.
+#:
+#: Every ceiling fits in a signed 32-bit integer, and that is not an
+#: accident: the browser core reads the value out of a JSON document
+#: with a 32-bit number reader, so a larger ceiling is not merely
+#: unusual, it makes the whole profile unreadable -- the core refuses
+#: to start and every surface falls back to the host's values.
+HEAP_CEILING_BY_DEVICE_MEMORY: dict[int, int] = {
+    1: 268_435_456,  # 256 MiB
+    2: 536_870_912,  # 512 MiB
+    4: 1_073_741_824,  # 1 GiB
+    8: 2_000_000_000,  # the Chromium default ceiling
+}
+
 
 def approximate_device_memory(physical_gb: int) -> int:
     """Return what Chromium reports for a machine with ``physical_gb``.
@@ -122,18 +147,49 @@ def approximate_hardware_concurrency(logical_cores: int) -> int:
 
     A phone with six cores therefore reports six, and a workstation with
     eighteen threads reports eighteen.
+
+    The one floor is two, and the floor is the platform's and not the
+    reading's: Android hands a process at least two CPUs, so
+    ``NumberOfProcessors()`` answers two on a handset whose chip has
+    one core in it, and a page that reads one core is reading a number
+    no Android device ever reports.
     """
 
-    if logical_cores <= 0:
-        return 1
+    if logical_cores <= 2:
+        return 2
     return logical_cores
+
+
+def heap_ceiling_for(device_memory: int) -> int:
+    """Return the V8 heap ceiling of a device reporting ``device_memory``.
+
+    The ceiling follows the memory the device reports, so the two
+    readings a page takes of the memory of a handset agree with each
+    other.  A profile that reports two gigabytes of memory and a four
+    gigabyte heap ceiling is describing a machine that was never built,
+    and the site that reads both finds the contradiction at once.
+    """
+
+    memory = int(device_memory)
+    ceiling = HEAP_CEILING_BY_DEVICE_MEMORY.get(memory)
+    if ceiling is not None:
+        return ceiling
+
+    # A memory the Android build never reports is answered with the
+    # ceiling of the tier below the largest one, because the largest
+    # ceiling is the desktop default and a phone does not get it.
+    if memory < MIN_DEVICE_MEMORY:
+        return HEAP_CEILING_BY_DEVICE_MEMORY[MIN_DEVICE_MEMORY]
+    return HEAP_CEILING_BY_DEVICE_MEMORY[MAX_DEVICE_MEMORY]
 
 
 __all__ = [
     "DEVICE_MEMORY_VALUES",
     "HARDWARE_CONCURRENCY_VALUES",
+    "HEAP_CEILING_BY_DEVICE_MEMORY",
     "MAX_DEVICE_MEMORY",
     "MIN_DEVICE_MEMORY",
     "approximate_device_memory",
     "approximate_hardware_concurrency",
+    "heap_ceiling_for",
 ]

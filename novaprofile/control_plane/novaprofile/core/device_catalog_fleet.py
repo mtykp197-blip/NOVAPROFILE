@@ -613,7 +613,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 8 Elite",
-            "1x2x2 Cortex-X945/A720/A720",
+            "1x3x4 Cortex-A78/A55/A55",
             "Adreno (TM) 830",
         ),
         release="15",
@@ -622,7 +622,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         build_id="AP3A.240905.015",
         version_incremental="21593657",
         ram_options=(12, 16),
-        cpu_options=(8, 12),
+        cpu_options=(8,),
         dpr_options=(3.5, 3),
         density_options=(480,),
         year=2025,
@@ -643,7 +643,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 8 Elite",
-            "1x2x2 Cortex-X945/A720/A720",
+            "1x3x4 Cortex-A78/A55/A55",
             "Adreno (TM) 830",
         ),
         release="15",
@@ -823,7 +823,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Samsung",
             "Exynos 1480",
-            "1x2x2 Cortex-A78/A55/A55",
+            "1x3x4 Cortex-A78/A55/A55",
             "Xclipse 530",
         ),
         release="14",
@@ -853,7 +853,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Samsung",
             "Exynos 1380",
-            "1x2x2 Cortex-A78/A55/A55",
+            "1x3x4 Cortex-A78/A55/A55",
             "Mali-G68 MP5",
         ),
         release="14",
@@ -883,7 +883,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "MediaTek",
             "Helio G99",
-            "2x2 Cortex-A76/A55",
+            "1x 2 Cortex-A76 3x 2 Cortex-A76 4x A55",
             "Mali-G57 MC2",
         ),
         release="14",
@@ -943,7 +943,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 680",
-            "2x2 Cortex-A78/A55",
+            "1x 2 Cortex-A78 3x 2 Cortex-A78 4x A55",
             "Adreno (TM) 610",
         ),
         release="13",
@@ -973,7 +973,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Samsung",
             "Exynos 1280",
-            "1x2x2 Cortex-A78/A55/A55",
+            "1x3x4 Cortex-A78/A55/A55",
             "Mali-G68",
         ),
         release="14",
@@ -1033,7 +1033,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 695",
-            "2x2 Cortex-A78/A55",
+            "1x 2 Cortex-A78 3x 2 Cortex-A78 4x A55",
             "Adreno (TM) 619",
         ),
         release="13",
@@ -1066,7 +1066,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Google",
             "Tensor G4",
-            "1x1x2 Cortex-X4/A720/A720",
+            "1x 2 Cortex-X4 3x A720 4x A720",
             "Mali-G715 MC10",
         ),
         release="15",
@@ -1096,7 +1096,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Google",
             "Tensor G4",
-            "1x1x2 Cortex-X4/A720/A720",
+            "1x 2 Cortex-X4 3x A720 4x A720",
             "Mali-G715 MC10",
         ),
         release="15",
@@ -1126,7 +1126,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Google",
             "Tensor G4",
-            "1x1x2 Cortex-X4/A720/A720",
+            "1x 2 Cortex-X4 3x A720 4x A720",
             "Mali-G715 MC10",
         ),
         release="15",
@@ -1186,7 +1186,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Google",
             "Tensor G2",
-            "1x2x2 Cortex-X1/A78/A55",
+            "1x3x4 Cortex-X1/A78/A55",
             "Mali-G710 MP7",
         ),
         release="14",
@@ -1216,7 +1216,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Google",
             "Tensor G1",
-            "1x2x2 Cortex-X1/A78/A55",
+            "1x3x4 Cortex-X1/A78/A55",
             "Mali-G78 MP20",
         ),
         release="13",
@@ -1246,7 +1246,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Google",
             "Tensor G2",
-            "1x2x2 Cortex-X1/A78/A55",
+            "1x3x4 Cortex-X1/A78/A55",
             "Mali-G710 MP7",
         ),
         release="14",
@@ -1318,7 +1318,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         build_id="UKQ1.230804.001",
         version_incremental="11162116",
         ram_options=(12, 16),
-        cpu_options=(8, 12),
+        cpu_options=(8,),
         dpr_options=(3.25,),
         density_options=(520,),
         year=2024,
@@ -1399,7 +1399,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 7+ Gen 2",
-            "1x2x2 Cortex-A78/A55/A55",
+            "1x3x4 Cortex-A78/A55/A55",
             "Adreno (TM) 725",
         ),
         release="13",
@@ -1459,7 +1459,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 7s Gen 2",
-            "1x2x2 Cortex-A78/A55/A55",
+            "1x3x4 Cortex-A78/A55/A55",
             "Adreno (TM) 710",
         ),
         release="14",
@@ -1489,7 +1489,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "MediaTek",
             "Dimensity 700",
-            "2x2 Cortex-A78/A55",
+            "1x 2 Cortex-A78 3x 2 Cortex-A78 4x A55",
             "Mali-G57 MC2",
         ),
         release="13",
@@ -1519,7 +1519,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "MediaTek",
             "Helio G37",
-            "2x2 Cortex-A65/A55",
+            "1x 2 Cortex-A65 3x 2 Cortex-A65 4x A55",
             "PowerVR GE8300",
         ),
         release="13",
@@ -1558,7 +1558,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         build_id="UKQ1.230804.001",
         version_incremental="11162116",
         ram_options=(12,),
-        cpu_options=(8, 12),
+        cpu_options=(8,),
         dpr_options=(3.25,),
         density_options=(520,),
         year=2024,
@@ -1642,7 +1642,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 8 Elite",
-            "1x2x2 Cortex-X945/A720/A720",
+            "1x3x4 Cortex-A78/A55/A55",
             "Adreno (TM) 830",
         ),
         release="15",
@@ -1651,7 +1651,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         build_id="AP3A.240905.015",
         version_incremental="21470693",
         ram_options=(12, 16),
-        cpu_options=(8, 12),
+        cpu_options=(8,),
         dpr_options=(3.5, 3.25, 3),
         density_options=(480, 520),
         year=2025,
@@ -1702,7 +1702,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 7+ Gen 3",
-            "1x2x2 Cortex-A78/A55/A55",
+            "1x3x4 Cortex-A78/A55/A55",
             "Adreno (TM) 732",
         ),
         release="14",
@@ -1792,7 +1792,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 8 Elite",
-            "1x2x2 Cortex-X945/A720/A720",
+            "1x3x4 Cortex-A78/A55/A55",
             "Adreno (TM) 830",
         ),
         release="15",
@@ -1801,7 +1801,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         build_id="AP3A.240905.015",
         version_incremental="21470693",
         ram_options=(12, 16),
-        cpu_options=(8, 12),
+        cpu_options=(8,),
         dpr_options=(3.5, 3.25, 3),
         density_options=(480, 520),
         year=2025,
@@ -1912,7 +1912,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "MediaTek",
             "Dimensity 700",
-            "2x2 Cortex-A78/A55",
+            "1x 2 Cortex-A78 3x 2 Cortex-A78 4x A55",
             "Mali-G57 MC2",
         ),
         release="13",
@@ -1958,7 +1958,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         build_id="UP1A.231005.007",
         version_incremental="10333747",
         ram_options=(12, 16),
-        cpu_options=(8, 12),
+        cpu_options=(8,),
         dpr_options=(3.5, 3),
         density_options=(480,),
         year=2024,
@@ -1992,7 +1992,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         build_id="UP1A.231005.007",
         version_incremental="10333747",
         ram_options=(12, 16),
-        cpu_options=(8, 12),
+        cpu_options=(8,),
         dpr_options=(2.75,),
         density_options=(440,),
         year=2024,
@@ -2013,7 +2013,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 8 Gen 2",
-            "1x2x2 Cortex-X3/A710/A710",
+            "1x2x5 Cortex-X3/A710/A510",
             "Adreno (TM) 740",
         ),
         release="14",
@@ -2103,7 +2103,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 8 Gen 2",
-            "1x2x2 Cortex-X3/A710/A710",
+            "1x2x5 Cortex-X3/A710/A510",
             "Adreno (TM) 740",
         ),
         release="13",
@@ -2136,7 +2136,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 7s Gen 2",
-            "1x2x2 Cortex-A78/A55/A55",
+            "1x3x4 Cortex-A78/A55/A55",
             "Adreno (TM) 735",
         ),
         release="14",
@@ -2166,7 +2166,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "MediaTek",
             "Dimensity 7050",
-            "2x2 Cortex-A78/A55",
+            "1x 2 Cortex-A78 3x 2 Cortex-A78 4x A55",
             "Mali-G610 MC6",
         ),
         release="13",
@@ -2196,7 +2196,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "MediaTek",
             "Helio G88",
-            "2x2 Cortex-A76/A55",
+            "1x 2 Cortex-A76 3x 2 Cortex-A76 4x A55",
             "Mali-G52 MC2",
         ),
         release="13",
@@ -2259,7 +2259,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 7 Gen 3",
-            "1x2x2 Cortex-A78/A55/A55",
+            "1x3x4 Cortex-A78/A55/A55",
             "Adreno (TM) 720",
         ),
         release="14",
@@ -2289,7 +2289,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 8s Gen 3",
-            "1x2x2 Cortex-X4/A720/A720",
+            "1x3x4 Cortex-A78/A55/A55",
             "Adreno (TM) 735",
         ),
         release="14",
@@ -2319,7 +2319,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 8s Gen 3",
-            "1x2x2 Cortex-X4/A720/A720",
+            "1x3x4 Cortex-A78/A55/A55",
             "Adreno (TM) 735",
         ),
         release="14",
@@ -2409,7 +2409,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 695",
-            "2x2 Cortex-A78/A55",
+            "1x 2 Cortex-A78 3x 2 Cortex-A78 4x A55",
             "Adreno (TM) 619",
         ),
         release="14",
@@ -2565,7 +2565,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 8s Gen 3",
-            "1x2x2 Cortex-X4/A720/A720",
+            "1x3x4 Cortex-A78/A55/A55",
             "Adreno (TM) 735",
         ),
         release="15",
@@ -2808,7 +2808,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "HiSilicon",
             "Kirin 9010",
-            "1x2x2 Cortex-A77/A77/A55",
+            "1x3x4 Cortex-A78/A55/A55",
             "Maleoon 910",
         ),
         release="14",
@@ -2898,7 +2898,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "HiSilicon",
             "Kirin 9000S",
-            "1x2x2 Cortex-A77/A77/A55",
+            "1x3x4 Cortex-A76/A76",
             "Maleoon 910",
         ),
         release="13",
@@ -2931,7 +2931,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "MediaTek",
             "Helio G37",
-            "2x2 Cortex-A65/A55",
+            "1x 2 Cortex-A65 3x 2 Cortex-A65 4x A55",
             "PowerVR GE8300",
         ),
         release="13",
@@ -3051,7 +3051,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 695",
-            "2x2 Cortex-A78/A55",
+            "1x 2 Cortex-A78 3x 2 Cortex-A78 4x A55",
             "Adreno (TM) 619",
         ),
         release="13",
@@ -3111,7 +3111,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Unisoc",
             "T606",
-            "2x2 Cortex-A75/A55",
+            "1x 2 Cortex-A75 3x 2 Cortex-A75 4x A55",
             "Mali-G57 MP1",
         ),
         release="13",
@@ -3141,7 +3141,7 @@ EXTENDED_PRESETS_2: tuple[DevicePreset, ...] = (
         abi=_abi(
             "Qualcomm",
             "Snapdragon 7+ Gen 2",
-            "1x2x2 Cortex-A78/A55/A55",
+            "1x3x4 Cortex-A78/A55/A55",
             "Adreno (TM) 732",
         ),
         release="13",

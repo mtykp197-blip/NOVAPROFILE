@@ -61,7 +61,7 @@ class ProfileUpdateRequest(BaseModel):
     group_id: str | None = None
     folder_id: str | None = None
     status: str | None = None
-    proxy: str | None = None
+    proxy: str | dict[str, Any] | None = None
     geo_sync: dict[str, Any] | None = None
     overrides: dict[str, Any] = Field(default_factory=dict)
 
@@ -115,7 +115,20 @@ def _load_profile(profile_id: str, store: Any) -> Any:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="profile store does not implement get_profile",
         )
-    config = getter(profile_id)
+    try:
+        config = getter(profile_id)
+    except Exception as exc:  # noqa: BLE001 - a row this build cannot read
+        # The profile exists in the store, but the payload was written
+        # by a build whose schema this one does not accept.  That is a
+        # profile the operator cannot use, not a server fault, so it
+        # is reported as a missing profile with the reason attached.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"profile {profile_id!r} was written by a build that this one "
+                f"cannot read: {exc}"
+            ),
+        ) from exc
     if config is None:
         raise _not_found(profile_id)
     return config
@@ -391,7 +404,40 @@ def _apply_proxy_override(config: Any, proxy_override: Any) -> Any:
         )
 
     if isinstance(proxy_override, dict):
+        # The override arrives in one of two shapes.
+        #
+        # The older one is a URL under the key "url", and it is parsed
+        # the way every other address in the system is parsed.
+        #
+        # The newer one is the proxy's own record, field by field:
+        # the protocol, the host, the port and the credentials.  That
+        # is the shape the desktop shell sends, because the operator
+        # fills those in one field at a time and the shell has no
+        # reason to assemble a string out of them afterwards.  The
+        # fields are used as they stand, and nothing is guessed.
+        #
+        # A record that says the proxy is *off* is a request to take
+        # the proxy away, and it is honoured: an operator who unticks
+        # the box means for the profile to reach the web through its
+        # own address again, and a profile that kept a proxy it was
+        # told to drop would keep reaching the web from an address
+        # that the operator no longer believes it has.
+        if proxy_override.get("enabled") is False:
+            if not hasattr(config, "model_copy"):
+                return config
+            return config.model_copy(update={"proxy": Proxy()})
+
         url = str(proxy_override.get("url") or "").strip()
+        if not url:
+            host = str(proxy_override.get("host") or "").strip()
+            port = int(proxy_override.get("port") or 0)
+            if host and port:
+                protocol = str(proxy_override.get("protocol") or "http").strip()
+                url = f"{protocol}://{host}:{port}"
+                username = str(proxy_override.get("username") or "")
+                password = str(proxy_override.get("password") or "")
+                if username:
+                    url = f"{protocol}://{username}:{password}@{host}:{port}"
     else:
         url = str(proxy_override or "").strip()
 
@@ -499,7 +545,7 @@ async def list_profiles(
     tag: str | None = Query(default=None),  # noqa: B008
     status_filter: str | None = Query(default=None, alias="status"),  # noqa: B008
     search: str | None = Query(default=None),  # noqa: B008
-    limit: int = Query(default=100, ge=0, le=1000),  # noqa: B008
+    limit: int = Query(default=100, ge=0, le=1000000),  # noqa: B008
     offset: int = Query(default=0, ge=0),  # noqa: B008
     reveal: bool = Query(default=False, description="Return the unredacted secrets."),  # noqa: B008
     store: Any = Depends(deps.get_store),  # noqa: B008
@@ -523,12 +569,28 @@ async def list_profiles(
     items = list(configs or [])
     total = len(items)
     page = items[offset : offset + limit] if limit else items[offset:]
-    return {
+
+    # A row that an older build wrote and this build cannot read is
+    # left out of the list rather than allowed to break it, and the
+    # operator is told how many were left out: a fleet that silently
+    # loses units is worse than one that says so.
+    unreadable = 0
+    counter = getattr(store, "count_unreadable", None)
+    if callable(counter):
+        try:
+            unreadable = int(counter())
+        except Exception:  # noqa: BLE001 - the count is a nicety
+            unreadable = 0
+
+    payload: dict[str, Any] = {
         "items": [deps.serialize_profile(item, reveal_secrets=reveal) for item in page],
         "total": total,
         "limit": limit,
         "offset": offset,
     }
+    if unreadable:
+        payload["unreadable"] = unreadable
+    return payload
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, summary="Create a profile")
@@ -600,10 +662,27 @@ async def update_profile(
     updated = _apply_overrides(updated, request.overrides)
 
     if request.proxy is not None:
-        updated = _apply_overrides(updated, {"proxy": {"url": request.proxy}})
+        # The proxy is accepted in two shapes.
+        #
+        # A plain string is the address of the proxy -- "host:port",
+        # "host:port:user:pass" or a full URL -- and the older clients
+        # send it that way.
+        #
+        # An object is the whole set of the proxy's fields: the
+        # protocol, the host, the port and the credentials, each of
+        # them separate.  That is the shape the desktop shell sends,
+        # because the operator fills those in one field at a time and
+        # the shell does not have to assemble a string out of them.
+        #
+        # The object is written onto the profile as it stands, so the
+        # profile's own proxy record keeps the fields separate the way
+        # the launcher reads them.
+        if isinstance(request.proxy, dict):
+            updated = _apply_overrides(updated, {"proxy": dict(request.proxy)})
+        else:
+            updated = _apply_overrides(updated, {"proxy": {"url": request.proxy}})
     if request.geo_sync is not None:
         updated = _apply_overrides(updated, {"geo_sync": request.geo_sync})
-
     updated = _touch(updated)
 
     updater = getattr(store, "update_profile", None)

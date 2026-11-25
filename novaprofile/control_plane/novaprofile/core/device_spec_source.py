@@ -37,9 +37,12 @@ from pathlib import Path
 from ..schema.hardware import AndroidAbiSoc, Screen
 from .device_catalog_market import (
     derive_cpu_options as _derive_cpu_options,
+    derive_cpu_options_for as _derive_cpu_options_for,
     derive_ram_options as _derive_ram_options,
+    select_chipset,
 )
 from .devices import DevicePreset, GpuProfile
+from .soc_cores import canonical_chipset_name
 
 # --------------------------------------------------------------------------
 # The record
@@ -249,11 +252,24 @@ _SOC_RULES: tuple[tuple[tuple[str, ...], str, tuple[str, ...]], ...] = (
 _CLUSTER_LAYOUTS: dict[str, str] = {
     "Qualcomm": "1x3x4 Cortex-A78/A55/A55",
     "Samsung": "1x3x4 Cortex-A78/A55/A55",
-    "MediaTek": "2x2 Cortex-A78/A55",
-    "Google": "1x2x2 Cortex-X1/A78/A55",
-    "HiSilicon": "2x2 Cortex-A76/A55",
-    "Unisoc": "2x2 Cortex-A55/A55",
-    "ARM": "2x2 Cortex-A76/A55",
+    "MediaTek": "1x3x4 Cortex-A78/A55/A55",
+    "Google": "1x3x4 Cortex-X1/A78/A55",
+    "HiSilicon": "1x3x4 Cortex-A76/A55/A55",
+    "Unisoc": "2x6 Cortex-A75/A55",
+    "ARM": "1x3x4 Cortex-A76/A55/A55",
+}
+
+#: The layouts of the core counts that are not the eight-core default.
+#:
+#: Every layout here adds up to the core count it stands for, because
+#: the count is read back off the layout.  A six-core part is one prime
+#: core, two big ones and three little ones; a twelve-core part is one
+#: prime core, two big ones, three medium ones and six little ones.
+_CLUSTER_LAYOUT_BY_CORES: dict[int, str] = {
+    4: "2x2 Cortex-A78/A55",
+    6: "1x2x3 Cortex-A78/A78/A55",
+    8: "1x3x4 Cortex-A78/A55/A55",
+    12: "1x2x3x6 Cortex-X3/A78/A55/A55",
 }
 
 #: The core count of the flagship families, used when the source data
@@ -262,9 +278,16 @@ _DEFAULT_CORES = 8
 
 
 def _soc_vendor_and_family(chipset: str) -> tuple[str, tuple[str, ...]] | None:
-    """The vendor of a chipset and the GPU families it can carry."""
+    """The vendor of a chipset and the GPU families it can carry.
 
-    lowered = chipset.lower()
+    The vendor is the one of the chipset the preset is built on, and
+    the preset is built on the first variant the row names.  Reading
+    the whole field lets the second variant decide, which is how a
+    handset that was sold with an Exynos and with a Dimensity ends up
+    reporting the vendor of the wrong one.
+    """
+
+    lowered = canonical_chipset_name(chipset).lower()
     for markers, vendor, families in _SOC_RULES:
         if any(marker in lowered for marker in markers):
             return vendor, families
@@ -272,10 +295,32 @@ def _soc_vendor_and_family(chipset: str) -> tuple[str, tuple[str, ...]] | None:
 
 
 def _cluster_layout(vendor: str, cores: int) -> str:
-    """A cluster layout that matches the core count and the vendor."""
+    """A cluster layout that matches the core count and the vendor.
+
+    The layout is the *source* of the core count the platform reports:
+    :func:`~novaprofile.core.devices.cores_from_cluster_layout` reads the
+    count back off the layout, so a layout that names a different number
+    of clusters than the chipset carries hands the site a core count
+    that contradicts the SoC it reads next to it.
+
+    The layout therefore has to add up, which is why the count picks
+    the layout rather than the vendor.
+    """
+
+    layout = _CLUSTER_LAYOUT_BY_CORES.get(cores)
+    if layout is not None:
+        if vendor == "Google":
+            return layout.replace("Cortex-A78", "Cortex-X1")
+        if vendor == "HiSilicon":
+            return layout.replace("Cortex-A78", "Cortex-A76")
+        if vendor == "Unisoc":
+            return layout.replace("Cortex-A78", "Cortex-A55")
+        if vendor == "MediaTek":
+            return layout.replace("Cortex-A78", "Cortex-A78")
+        return layout
 
     if cores >= 8:
-        return _CLUSTER_LAYOUTS.get(vendor, "2x2 Cortex-A76/A55")
+        return _CLUSTER_LAYOUTS.get(vendor, "1x3x4 Cortex-A76/A55/A55")
     if cores >= 4:
         return "2x2 Cortex-A78/A55" if vendor == "Qualcomm" else "2x2 Cortex-A76/A55"
     return "2x2 Cortex-A55/A55"
@@ -327,7 +372,15 @@ def derive_abi(chipset: str, gpu_renderer: str) -> AndroidAbiSoc:
     architecture -- finds the same part on both sides.
     """
 
-    resolved = _soc_vendor_and_family(chipset)
+    # The chipset the preset is built on is the first variant the row
+    # names: a row that merges the regional variants of a handset
+    # names several chipsets, and the preset describes the one it
+    # leads with.  The vendor, the model, the core count and the
+    # layout are all read off that one, so that the four of them
+    # cannot answer about different chips.
+    selected = select_chipset(chipset)
+
+    resolved = _soc_vendor_and_family(selected)
     if resolved is None:
         # A chipset the table does not name is an Arm design that ships
         # with a Mali part; the vendor stays the neutral one.
@@ -339,7 +392,7 @@ def derive_abi(chipset: str, gpu_renderer: str) -> AndroidAbiSoc:
     renderer = _normalise(gpu_renderer)
     architecture = _architecture_for(renderer)
 
-    cores = _core_count(chipset)
+    cores = _core_count(selected)
     return AndroidAbiSoc(
         supported_abis=["arm64-v8a", "armeabi-v7a"],
         supported_64_bit_abis=["arm64-v8a"],
@@ -347,7 +400,7 @@ def derive_abi(chipset: str, gpu_renderer: str) -> AndroidAbiSoc:
         primary_abi="arm64-v8a",
         is_64_bit=True,
         soc_vendor=vendor,  # type: ignore[arg-type]
-        soc_model=chipset.strip(),
+        soc_model=canonical_chipset_name(selected),
         cpu_cluster_layout=_cluster_layout(vendor, cores),
         gpu_architecture=architecture,
     )
@@ -399,7 +452,23 @@ _REAL_CORE_COUNTS: tuple[int, ...] = (4, 6, 8, 12)
 
 
 def _core_count(chipset: str) -> int:
-    """The number of CPU cores a chipset carries."""
+    """The number of CPU cores a chipset carries.
+
+    The count comes from the table of the chipsets the field uses,
+    because the catalogue names the chipset and the count is a
+    property of the chipset: the Snapdragon 430 is a quad-core part
+    and the platform reports four.
+
+    When the chip is not in the table, the text itself is asked, and
+    when the text says nothing, the commonest layout is the answer.
+    That answer is a fallback rather than a claim about the chip.
+    """
+
+    from .soc_cores import cores_for_chipset
+
+    known = cores_for_chipset(chipset)
+    if known is not None:
+        return known
 
     match = _CORE_COUNT.search(chipset)
     if match:
@@ -980,9 +1049,13 @@ def derive_cpu_options(chipset: str) -> tuple[int, ...]:
     in :mod:`novaprofile.core.device_catalog_market`: the core counts
     of the chipsets the record actually names.  A chipset has one core
     count, so a model that shipped with one chipset has one count.
+
+    The preset names one chipset, and the count is the count of that
+    chipset, so the two sit next to each other without contradicting
+    each other.
     """
 
-    return _derive_cpu_options(chipset)
+    return _derive_cpu_options_for(chipset)
 
 
 def _panel_options(density: int) -> tuple[tuple[int, ...], tuple[float, ...]]:

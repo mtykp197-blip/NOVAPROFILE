@@ -59,6 +59,7 @@ from novaprofile.core.devices import (  # noqa: E402
     GpuProfile,
     Screen,
 )
+from novaprofile.core.soc_cores import LAYOUT_BY_CORES, vendor_for_chipset  # noqa: E402
 
 CATALOG = HERE.parent.parent.parent / "source tham khảo" / "device-catalog.json"
 OUTPUT = HERE.parent / "novaprofile" / "core" / "generated_presets.py"
@@ -194,11 +195,134 @@ BOARD_BY_GPU_VENDOR: dict[str, str] = {
 #: platform reports through JNI, and it follows the big/little
 #: arrangement of the part: an eight-core part is almost always one
 #: prime core, three big cores and four little ones.
-CLUSTER_BY_CORES: dict[int, str] = {
-    4: "1x2x2 Cortex-A53/A53",
-    6: "1x2x3 Cortex-A73/A53/A53",
-    8: "1x3x4 Cortex-A78/A55/A55",
+#:
+#: Every layout here adds up to the core count it stands for, because
+#: the count is read back off the layout.  A layout that named a
+#: different number of clusters than the chipset carries would put a
+#: core count on the record that contradicts the SoC next to it.
+#:
+#: The layouts are the ones the core table holds, so that a chipset
+#: and the layout that carries it can never drift apart.
+CLUSTER_BY_CORES: dict[int, str] = dict(LAYOUT_BY_CORES)
+
+
+#: The layout of the chipset, by the name of the chipset.
+#:
+#: A chipset is built out of its own cores, and a site that reads the
+#: layout reads the names of the cores out of it.  A Snapdragon 8 Gen
+#: says "Cortex-X3/A78/A55", a Helio G99 says "Cortex-A76/A55" and an
+#: Exynos 1480 says "Cortex-A78/A55", so the layout of a chipset is
+#: its own and not the one of the count it carries.
+CLUSTER_BY_CHIPSET: dict[str, str] = {
+    "snapdragon 200": "2x2 Cortex-A53/A53",
+    "snapdragon 400": "2x2 Cortex-A53/A53",
+    "snapdragon 410": "2x2 Cortex-A53/A53",
+    "snapdragon 425": "2x2 Cortex-A53/A53",
+    "snapdragon 430": "2x2 Cortex-A53/A53",
+    "snapdragon 615": "1x3x4 Cortex-A53/A53/A53",
+    "snapdragon 625": "1x3x4 Cortex-A53/A53/A53",
+    "snapdragon 626": "1x3x4 Cortex-A53/A53/A53",
+    "snapdragon 630": "1x3x4 Cortex-A53/A53/A53",
+    "snapdragon 636": "1x3x4 Cortex-A53/A53/A53",
+    "snapdragon 660": "1x3x4 Cortex-A53/A53/A53",
+    "snapdragon 662": "1x3x4 Cortex-A53/A53/A53",
+    "snapdragon 665": "1x3x4 Cortex-A53/A53/A53",
+    "snapdragon 670": "1x2x3x2 Cortex-A75/A55",
+    "snapdragon 675": "1x3x4 Cortex-A55/A55/A55",
+    "snapdragon 678": "1x2x3x2 Cortex-A75/A55",
+    "snapdragon 680": "1x3x4 Cortex-A78/A55/A55",
+    "snapdragon 685": "1x3x4 Cortex-A78/A55/A55",
+    "snapdragon 690": "1x3x4 Cortex-A78/A55/A55",
+    "snapdragon 695": "1x3x4 Cortex-A78/A55/A55",
+    "snapdragon 712": "1x2x3x2 Cortex-A75/A55",
+    "snapdragon 720g": "1x2x3x2 Cortex-A76/A55",
+    "snapdragon 730": "1x2x3x2 Cortex-A75/A55",
+    "snapdragon 730g": "1x2x3x2 Cortex-A75/A55",
+    "snapdragon 732g": "1x3x4 Cortex-A78/A55/A55",
+    "snapdragon 750g": "1x3x4 Cortex-A78/A55/A55",
+    "snapdragon 765g": "1x3x4 Cortex-A78/A55/A55",
+    "snapdragon 768g": "1x3x4 Cortex-A78/A55/A55",
+    "snapdragon 778g": "1x3x4 Cortex-A78/A55/A55",
+    "snapdragon 780g": "1x3x4 Cortex-A78/A55/A55",
+    "snapdragon 782g": "1x3x4 Cortex-A78/A55/A55",
+    "snapdragon 8 gen 1": "1x3x4 Cortex-X2/A710/A710",
+    "snapdragon 8 gen 2": "1x3x4 Cortex-X3/A710/A710",
+    "snapdragon 8 gen 3": "1x2x3x2 Cortex-X4/A720/A720",
+    "snapdragon 8 gen 4": "1x3x4 Cortex-X4/A720/A640",
+    "snapdragon 8 elite": "1x3x4 Cortex-X3/A78/A55",
+    "snapdragon 8 elite gen 5": "1x3x4 Cortex-X4/A78/A55",
+    "snapdragon 7 gen 2": "1x3x4 Cortex-A78/A55/A55",
+    "snapdragon 4+ gen 2": "1x3x4 Cortex-A53/A53/A53",
+    "snapdragon 460": "1x3x4 Cortex-A53/A53/A53",
+    "snapdragon 480": "1x3x4 Cortex-A53/A53/A53",
+    "snapdragon 480+": "1x3x4 Cortex-A53/A53/A53",
+    "snapdragon 429": "1x3x4 Cortex-A53/A53/A53",
+    "snapdragon 215": "1x3x4 Cortex-A53/A53/A53",
+    "snapdragon 212": "2x2 Cortex-A53/A53",
+    "snapdragon 427": "1x3x4 Cortex-A53/A53/A53",
+    "snapdragon 415": "2x2 Cortex-A53/A53",
+    "snapdragon 616": "1x3x4 Cortex-A53/A53/A53",
+    "snapdragon 650": "1x3x4 Cortex-A53/A53/A53",
+    "snapdragon 652": "1x3x4 Cortex-A53/A53/A53",
+    "mediatek helio a22": "1x3x4 Cortex-A53/A53/A53",
+    "mediatek helio a25": "2x2 Cortex-A53/A53",
+    "mediatek helio g25": "1x3x4 Cortex-A53/A53/A53",
+    "mediatek helio g37": "1x3x4 Cortex-A53/A53/A53",
+    "mediatek helio g88": "1x3x4 Cortex-A76/A55/A55",
+    "mediatek helio g99": "1x3x4 Cortex-A76/A55/A55",
+    "mediatek helio p10": "1x3x4 Cortex-A53/A53/A53",
+    "mediatek helio p20": "1x3x4 Cortex-A53/A53/A53",
+    "mediatek helio p22": "1x3x4 Cortex-A53/A53/A53",
+    "mediatek helio p25": "1x3x4 Cortex-A53/A53/A53",
+    "mediatek helio p35": "1x3x4 Cortex-A53/A53/A53",
+    "mediatek dimensity 6100+": "1x3x4 Cortex-A76/A55/A55",
+    "mediatek dimensity 7050": "1x3x4 Cortex-A78/A55/A55",
+    "mediatek dimensity 900": "1x3x4 Cortex-A78/A55/A55",
+    "mediatek dimensity 920": "1x3x4 Cortex-A78/A55/A55",
+    "mediatek dimensity 930": "1x3x4 Cortex-A78/A55/A55",
+    "mediatek dimensity 1080": "1x3x4 Cortex-A78/A55/A55",
+    "mediatek dimensity 1200": "1x2x3x2 Cortex-A78/A55",
+    "mediatek dimensity 9000": "1x3x4 Cortex-X3/A78/A55",
+    "mediatek dimensity 9000+": "1x3x4 Cortex-X3/A78/A55",
+    "mediatek dimensity 9200": "1x3x4 Cortex-X3/A78/A55",
+    "mediatek dimensity 9300": "1x2x3x2 Cortex-X3/A720/A720",
+    "mediatek dimensity 9400": "1x2x3x2 Cortex-X3/A720/A720",
+    "exynos 1280": "1x3x4 Cortex-A78/A55/A55",
+    "exynos 1330": "1x3x4 Cortex-A78/A55/A55",
+    "exynos 1380": "1x3x4 Cortex-A78/A55/A55",
+    "exynos 1480": "1x3x4 Cortex-A78/A55/A55",
+    "exynos 2100": "1x3x4 Cortex-X3/A78/A55",
+    "exynos 2200": "1x3x4 Cortex-X3/A78/A55",
+    "exynos 2400": "1x3x4 Cortex-X3/A78/A55",
+    "exynos 5430": "1x3x4 Cortex-A15/A7",
+    "exynos 4210": "2x Cortex-A7",
+    "google tensor": "1x3x4 Cortex-X1/A78/A55",
+    "google tensor g3": "1x3x4 Cortex-X3/A715/A510",
+    "google tensor g4": "1x2x3x2 Cortex-X4/A720/A720",
+    "unisoc t606": "1x3x4 Cortex-A75/A55/A55",
+    "unisoc t610": "1x2x3x2 Cortex-A75/A55",
+    "unisoc tiger t612": "1x2x3x2 Cortex-A75/A55",
+    "unisoc tiger t616": "1x2x3x2 Cortex-A75/A55",
+    "unisoc sc9832": "2x2 Cortex-A53/A53",
+    "intel atom z2580": "2x Cortex-A7",
+    "ti omap 3630": "1x Cortex-A8",
 }
+
+
+def _layout_for(soc_model: str, cores: int) -> str:
+    """The cluster layout of the chipset *soc_model*.
+
+    The layout of a chipset is its own: a site that reads the layout
+    reads the names of the cores out of it, so a Snapdragon says
+    "Cortex-X3" and a Helio says "Cortex-A76".  A chipset the table
+    does not name falls back to the layout of the count it carries.
+    """
+
+    layout = CLUSTER_BY_CHIPSET.get(soc_model.strip().lower())
+    if layout is not None:
+        return layout
+
+    return CLUSTER_BY_CORES.get(cores, "1x3x4 Cortex-A78/A55/A55")
 
 #: The density buckets the platform reports, and the device pixel ratio
 #: each of them carries.  Chromium reads the ratio off the display's
@@ -341,6 +465,26 @@ def _soc_model(gpu_arch: str, cores: int) -> str:
     return f"{gpu_arch} {cores}-core"
 
 
+def _chipset_for(renderer: str, cores: int, vendor: str) -> tuple[str, int]:
+    """The chipset of a handset with the graphics part *renderer*.
+
+    The answer is a chipset that really exists and that really carries
+    the number of cores the row names, so that the graphics part, the
+    chipset and the core count -- the three readings a site takes of a
+    handset -- agree with each other.
+
+    A graphics part that ships with more than one chipset gives a
+    chipset that carries the count the row names, so that the fleet
+    spreads over the real parts of the market instead of answering
+    with one chipset for every handset that carries the same graphics.
+    """
+
+    from novaprofile.core.soc_cores import chipset_for
+
+    name, count = chipset_for(renderer, cores)
+    return name, count
+
+
 def clean_renderer(raw: str) -> str:
     """The graphics part a catalogue row names, without the noise.
 
@@ -366,27 +510,170 @@ def clean_renderer(raw: str) -> str:
     if "/" in text:
         text = text.split("/", 1)[0].strip()
 
-    # The scrapes ran two cores together.  The split happens at the
-    # point where the first core's name ends and the second begins,
-    # which is the first digit run that is longer than three digits or
-    # where a second family name starts.
-    match = _GLUED_RENDERER.search(text)
-    if match:
-        text = text[: match.start()].strip()
+    # The scrapes ran two parts into one cell.  The first part is the
+    # one the row means, and the rest is the beginning of the next
+    # cell, so the cell is cut at the start of the second part.
+    text = _cut_at_second_part(text)
 
     # A trailing run of digits that belongs to the next column of the
     # sheet is dropped, but only when it is long enough to be a
-    # spreadsheet coordinate rather than a core model.
-    text = re.sub(r"\d{4,}\s*$", "", text).strip()
+    # spreadsheet coordinate rather than a core model.  A model
+    # number that belongs to the part is kept: the "GM9446" of the
+    # PowerVR GM9446 is the number of the part, and a part whose
+    # number is cut off is a part with no number at all.
+    text = _split_trailing_digits(text)
 
     return text
 
 
-#: The gluing of two renderer names into one cell.
-_GLUED_RENDERER = re.compile(
-    r"(?=(?:Adreno|Mali|Immortalis|PowerVR|Xclipse|SGX|IMG|VideoCore|Maleoon)"
-    r".{0,14}?\d{4,})"
+#: The family names a renderer carries.
+_RENDERER_FAMILIES = (
+    "Adreno",
+    "Mali",
+    "Immortalis",
+    "PowerVR",
+    "Xclipse",
+    "SGX",
+    "IMG",
+    "VideoCore",
+    "Maleoon",
 )
+
+
+#: The gluing of two renderer names into one cell.
+#:
+#: The gluing is the run of a part and the run of the next one: the
+#: "Adreno 3064002" is the Adreno 306 followed by the number of the
+#: next column, and the "PowerVR GE8300POWERVR" is the GE8300
+#: followed by the vendor word again.
+#:
+#: The run of digits has to be *followed* by another part, because a
+#: part whose own model number is four digits long -- the PowerVR
+#: GM9446, the IMG BXM-8-256 -- is one part and not two.  Reading the
+#: GM9446 as the end of the GM and the start of a glued 9446 leaves
+#: the renderer as the name of the vendor and no part at all.
+_GLUED_RENDERER = re.compile(
+    r"(?:Adreno|Mali|Immortalis|PowerVR|Xclipse|SGX|IMG|VideoCore|Maleoon)"
+    r".{0,14}?\d{4,}"
+    r"(?=\s*(?:Adreno|Mali|Immortalis|PowerVR|Xclipse|SGX|IMG|VideoCore|Maleoon|[A-Z]{3,}))"
+)
+
+#: A cell that names the same family of part twice.
+#:
+#: The scrapes ran the vendor word of the next cell into the cell
+#: before it: the "PowerVR GE8300POWERVR" is the PowerVR GE8300 and
+#: the beginning of the next row.  The run of the family name that
+#: follows the number of the part is the start of the next cell.
+_REPEATED_FAMILY = re.compile(
+    r"^(?P<part>.*?(?:Adreno|Mali|Immortalis|PowerVR|Xclipse|SGX|IMG|VideoCore|Maleoon)"
+    r"[\s\-][A-Za-z0-9]{1,6})"
+    r"(?P<again>Adreno|Mali|Immortalis|PowerVR|Xclipse|SGX|IMG|VideoCore|Maleoon)\b"
+)
+
+
+def _cut_at_second_part(text: str) -> str:
+    """The first part of a cell that two scrapes ran together.
+
+    A cell that names two parts holds the part the row means and the
+    beginning of the next cell.  The cut is the start of the second
+    part, which is the point where the family name of a part shows up
+    again.
+
+    The family name alone is not enough to place the cut, because a
+    part carries the family name in the middle of its own name -- the
+    "Adreno 619" of the "Adreno 619 Adreno 619" -- and the model
+    number of the first part is the run of characters between the two
+    family names.  The cut is placed after that run, so the first part
+    keeps its own number.
+
+    The "PowerVR GE8300POWERVR" is a cell where the second part is
+    not a part at all but the family name that begins the next cell:
+    the number of the part runs straight into it, and the cut falls
+    between the number and the family name.
+    """
+
+    families = "|".join(re.escape(name) for name in _RENDERER_FAMILIES)
+
+    # Every family name of the cell, in the order they appear.  A cell
+    # with two scrapes run together names the family twice: the first
+    # run belongs to the part the row means, the second one begins
+    # the next cell.  The second run is often in capitals, because
+    # the scrapes copied the vendor word out of the header of the
+    # sheet -- the "POWERVR" of the "PowerVR GE8300POWERVR".
+    found = list(re.finditer(r"(?P<family>%s)" % families, text))
+    if len(found) < 2:
+        shouted = list(re.finditer(r"(?P<family>%s)" % families, text, re.IGNORECASE))
+        if len(shouted) < 2:
+            return text
+        found = shouted
+
+    first = found[0]
+    second = found[1]
+
+    # The run between the two family names is the number of the first
+    # part, with the letters that some parts carry in front of it --
+    # the "GE" of the PowerVR GE8300 -- and with the suffix that some
+    # parts carry behind it -- the "MC6" of the Mali-G610 MC6.
+    between = text[first.end() : second.start()]
+
+    # The number of the part is the run of characters that holds a
+    # digit.  Everything after the number and before the second family
+    # name is the suffix of the part and is kept with it.
+    number = re.search(r"[A-Za-z]*\d[A-Za-z0-9\-]*", between)
+    if not number:
+        return text
+
+    cut = first.end() + number.end()
+
+    # The suffix of the part -- the "MC6" of the Mali-G610 MC6 -- runs
+    # to the end of the run between the two family names.  It is part
+    # of the name of the part and is kept with it.  The suffix holds a
+    # digit of its own -- the "6" of the "MC6" -- so the run of the
+    # suffix is a letter run with a digit attached to it.
+    suffix = re.match(r"\s*[A-Za-z]{0,3}\d{0,2}(?![A-Za-z0-9])", between[number.end() :])
+    if suffix:
+        cut += suffix.end()
+
+    return text[:cut].strip()
+
+
+def _split_trailing_digits(text: str) -> str:
+    """The part of a renderer whose number was cut off by the gluing.
+
+    The scrapes wrote the number of the next column right after the
+    number of the part: the "Adreno 3064002" is the Adreno 306 and
+    the 4002 of the next column, and the "Adreno 306" is the part.
+
+    The number of a part is three digits and the number of the next
+    column is four or more, so a run of seven digits is split between
+    the two and the part keeps its own three.  A run of four digits is
+    the number of a part whose own number is four digits long -- the
+    "GM9446" of the PowerVR GM9446 -- and it is kept whole.
+    """
+
+    match = re.search(
+        r"^(?P<head>.*?(?:Adreno|Mali|Immortalis|PowerVR|Xclipse|SGX|IMG|VideoCore|Maleoon)"
+        r"(?:[\s\-][A-Za-z]{0,4})?)\s*"
+        r"(?P<digits>\d{3})(?P<rest>\d+)$",
+        text,
+    )
+    if not match:
+        return text
+
+    head = match.group("head").rstrip()
+    digits = match.group("digits")
+    rest = match.group("rest")
+
+    # The number of a part is four digits at the most -- the "GM9446"
+    # of the PowerVR GM9446 is four -- so a run that is longer than
+    # that carries the number of the next column of the sheet with
+    # it.  The part keeps three of the digits and the rest is dropped.
+    if len(digits) + len(rest) > 4:
+        return f"{head} {digits}".strip()
+
+    # The run is the number of the part and is kept whole.
+    return text
+
 
 
 def gpu_facts(renderer: str) -> tuple[str, str, str, int]:
@@ -512,6 +799,23 @@ def build(preset_id: str, row: dict[str, Any]) -> DevicePreset:
         gpu_vendor = catalogue_vendor
     soc_vendor = SOC_VENDOR_BY_GPU_VENDOR.get(gpu_vendor, "Qualcomm")
 
+    # The chipset of the handset, and the core count that chipset
+    # carries.
+    #
+    # The catalogue row names the graphics part and not the chipset,
+    # and the two have to agree: a page that reads the graphics part,
+    # the chipset and the core count compares the three, and a
+    # graphics part written next to a number -- "Mali-G57 MC2
+    # 8-core" -- is not a chipset that ever shipped.  The chipset is
+    # the real one that carries that graphics part, and the count is
+    # the count that chipset really has.
+    soc_model, cores = _chipset_for(renderer, cores, soc_vendor)
+    # The vendor of the SoC is the vendor of the chipset, and the
+    # chipset is the one the graphics part really ships with: a
+    # Tensor sits on a Google part and an Exynos on a Samsung one,
+    # whatever the graphics part of the row suggests.
+    soc_vendor = vendor_for_chipset(soc_model)
+
     gpu = GpuProfile(
         unmasked_vendor=webgl_vendor,
         unmasked_renderer=renderer or gpu_arch,
@@ -558,21 +862,16 @@ def build(preset_id: str, row: dict[str, Any]) -> DevicePreset:
         )
     )
 
-    # The core counts the model's chipsets report.
+    # The core count the model's chipset reports.
     #
-    # A handset is sold with more than one system-on-chip, and the core
-    # count follows the chip that is in it.  The counts that exist are
-    # four, six, eight and twelve, and the set is the ones of the same
-    # generation as the one the row names -- a four-core chip and a
-    # twelve-core chip are two different handsets, not two
-    # configurations of one.
-    cpu_options = tuple(
-        sorted(
-            candidate
-            for candidate in LEGAL_CORE_COUNTS
-            if candidate == cores or abs(candidate - cores) <= 4
-        )
-    ) or (cores,)
+    # A chipset carries a fixed number of cores: the Snapdragon 8 Gen 1
+    # is an eight-core part and every handset with it reports eight.
+    # The count is a property of the chip, not a range the handset
+    # picks from, so the set holds that one count.  Offering four,
+    # six, eight and twelve for the same chipset put a core count on
+    # the record that contradicted the SoC model read next to it, and
+    # a site that compares the two sees the contradiction at once.
+    cpu_options = (cores,)
 
     # The touch-point counts the digitiser of the line reports.
     #
@@ -637,8 +936,8 @@ def build(preset_id: str, row: dict[str, Any]) -> DevicePreset:
             primary_abi="arm64-v8a",
             is_64_bit=True,
             soc_vendor=soc_vendor,  # type: ignore[arg-type]
-            soc_model=_soc_model(gpu_arch, cores),
-            cpu_cluster_layout=CLUSTER_BY_CORES.get(cores, "1x3x4 Cortex-A78/A55/A55"),
+            soc_model=soc_model,
+            cpu_cluster_layout=_layout_for(soc_model, cores),
             gpu_architecture=gpu_arch,
         ),
         release=release,

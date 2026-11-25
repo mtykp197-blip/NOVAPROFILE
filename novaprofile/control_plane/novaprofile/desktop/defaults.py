@@ -29,8 +29,14 @@ DEFAULTS_FILENAME = "defaults.json"
 BUILTIN_DEFAULTS: dict[str, Any] = {
     "timezone": "Asia/Ho_Chi_Minh",
     "locale": "vi-VN",
+    # The proxy of a new profile is HTTP by default.  It is the protocol
+    # the overwhelming majority of the proxies in the market speak, and
+    # the one the vendor lists are written in: a list of "host:port"
+    # lines *is* an HTTP list.  The proxy stays switched off until a
+    # host is filled in, so a new profile with no proxy still runs
+    # direct.
     "proxy": {
-        "mode": "none",
+        "mode": "http",
         "host": "",
         "port": 0,
         "username": "",

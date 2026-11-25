@@ -92,6 +92,7 @@ from .gpu_params import tier_for
 from .hardware_approximation import (
     approximate_device_memory,
     approximate_hardware_concurrency,
+    heap_ceiling_for,
 )
 from .identity import DeviceIdentity, DeviceIdentityFactory, panel_space
 from .seed import Axis, SeedDeriver, new_master_seed
@@ -1110,16 +1111,38 @@ class ProfileGenerator:
         )
 
         if self._stratum is not None:
-            # The three narrow readings come first: the core count, the
-            # memory the platform reports and the number of touch points.
-            # Each of them has a handful of values -- two, four or eight
-            # at the most -- and each of them is one of the three numbers
-            # a script groups a fleet on, so a dimension that never moves
-            # is a dimension that gives every unit of the family the same
-            # reading.  Putting them at the front makes them turn over
-            # with every unit, which is what the fleet needs: a family of
-            # eight handsets of one model has to use every value its
-            # model is able to report.
+            # The model code comes **first**.  It is the loudest
+            # reading of all of them: it is in the user agent, in the
+            # build fingerprint, in the client hints and in the device
+            # string, and a site reads it before it reads anything
+            # else.  Two units of one family that report the same code
+            # are the same handset as far as a site is concerned, and
+            # no combination of the other readings will persuade it
+            # otherwise -- the other readings only ever separate units
+            # that already differ in the code.
+            #
+            # The code used to sit at the far end of the radix, and
+            # that put it at the back of the queue: the mixed radix
+            # repeats a dimension only when the space in front of it
+            # is exhausted, so a family of four codes sat behind two
+            # thousand combinations of the other readings and every
+            # one of the first two thousand units reported the same
+            # code.  A batch of fifty profiles was fifty copies of the
+            # first code.  Putting the code first makes it turn over
+            # with every unit, which is the one thing a batch of
+            # profiles has to do.
+            #
+            # The narrow readings come next: the core count, the
+            # memory the platform reports and the number of touch
+            # points.  Each of them has a handful of values -- two,
+            # four or eight at the most -- and each of them is one of
+            # the three numbers a script groups a fleet on, so a
+            # dimension that never moves is a dimension that gives
+            # every unit of the family the same reading.  Putting them
+            # at the front makes them turn over with every unit, which
+            # is what the fleet needs: a family of eight handsets of
+            # one model has to use every value its model is able to
+            # report.
             #
             # The release comes next.  It is the loudest reading on the
             # device -- it is in the user agent, in the platform version
@@ -1135,13 +1158,6 @@ class ProfileGenerator:
             # combination only when the space in front of it is exhausted,
             # so the dimensions with the most values have to come first
             # or the combination repeats long before the space is.
-            #
-            # The model code is drawn **inside** the same radix, as the
-            # dimension nearest the core.  It changes slowly, and that is
-            # right: a family bought in one country does carry one code
-            # for a long time.  What has to differ between two units is
-            # the *combination* -- and the combination is kept apart by
-            # the release, the panel and the density.
             #
             # The narrow readings are dimensions of the *same* radix.  They
             # used to be drawn outside it, on their own slices, and that
@@ -1187,12 +1203,12 @@ class ProfileGenerator:
             radix_dimensions: list[tuple[int, int]] = []
             fixed_indices: dict[int, int] = {}
             candidates = (
+                (5, len(model_options)),
                 (0, len(core_options)),
                 (1, len(memory_report_options)),
                 (2, len(touch_options)),
                 (3, len(release_options)),
                 (4, len(panel_density_pairs)),
-                (5, len(model_options)),
             )
             for slot, size in candidates:
                 if size > 1:
@@ -1383,6 +1399,9 @@ class ProfileGenerator:
             # and the combination would fall apart.
             chosen_cores=unit_cores,
             chosen_touch=unit_touch,
+            # The platform the page reads follows the architecture the
+            # profile really runs on, so the ABI is handed down.
+            abi=abi,
         )
         uad = self._build_user_agent_data(deriver, build, caps, version.full_version, abi)
 
@@ -1414,7 +1433,9 @@ class ProfileGenerator:
             battery_speech_gamepad=self._build_battery(deriver, geo_target),
             sensors=self._build_sensors(deriver),
             math_precision=self._build_math_precision(deriver),
-            heap_size_limit=self._build_heap_size_limit(deriver),
+            heap_size_limit=self._build_heap_size_limit(
+                deriver, navigator.device_memory
+            ),
             media_decode=self._build_media_decode(deriver),
             proxy=proxy or Proxy(),
             proxy_rotation=ProxyRotation(),
@@ -1508,6 +1529,7 @@ class ProfileGenerator:
         touch_options: tuple[int, ...] = (5,),
         chosen_cores: int | None = None,
         chosen_touch: int | None = None,
+        abi: AndroidAbiSoc | None = None,
     ) -> Navigator:
         model = build.model
         # The UA is built from the capability entry: from Chromium 110 on the
@@ -1571,18 +1593,40 @@ class ProfileGenerator:
 
         return Navigator(
             user_agent=ua,
-            app_version=f"5.0 (Linux; Android {build.version_release})",
+            # The app version is the user agent without the "Mozilla/5.0"
+            # prefix, and Chrome on Android keeps the *whole* of the rest
+            # of the string: the model of the handset and the build
+            # token are both in it.
+            #
+            # A profile that answered "5.0 (Linux; Android 13)" would
+            # drop the model, and a site that compares the app version
+            # against the user agent would see two strings that do not
+            # belong to the same browser.  It would also lose the
+            # build token, which is the one part of the string that
+            # changes from one unit of a model to the next.
+            app_version=ua.removeprefix("Mozilla/"),
             app_name="Netscape",
             app_code_name="Mozilla",
             vendor="Google Inc.",
             vendor_sub="",
             product="Gecko",
             product_sub="20030107",
-            platform=deriver.derive_choice(
-                Axis.NAVIGATOR,
-                ["Linux armv8l", "Linux aarch64", "Linux armv7l"],
-                context="platform",
-            ),
+            # The platform follows the architecture the profile really
+            # runs on, and it is not a coin flip.
+            #
+            # Chromium reads the platform from the operating system, and
+            # Android answers "Linux armv8l" on a 64-bit build and
+            # "Linux armv7l" on a 32-bit one.  There is a third answer
+            # the desktop builds use -- "Linux x86_64" -- and a fourth
+            # one that some ARM desktops report, "Linux aarch64", but
+            # Android has never reported the last one: the string the
+            # platform hands to a 64-bit Android process is "armv8l".
+            #
+            # Drawing the value out of a list that holds it would let a
+            # fleet report a platform no Android device ever reports,
+            # and the site that reads it would have a free grouping key
+            # over a fleet that should look like one market.
+            platform=_platform_for(abi),
             hardware_concurrency=approximate_hardware_concurrency(cores),
             # The *approximated* memory, not the physical one.  This is
             # the value Chromium would have produced on the same
@@ -1604,7 +1648,12 @@ class ProfileGenerator:
             # The value above is one of the list's own members, so the
             # control plane and the browser agree about what the family
             # is able to report.
-            hardware_concurrency_options=[int(value) for value in preset_cpu_options],
+            hardware_concurrency_options=sorted(
+                {
+                    approximate_hardware_concurrency(int(value))
+                    for value in preset_cpu_options
+                }
+            ),
             device_memory_options=[int(value) for value in memory_options],
             max_touch_points_options=[int(value) for value in touch_options],
             language=geo.locale,
@@ -2958,7 +3007,11 @@ class ProfileGenerator:
             salt=salt,
         )
 
-    def _build_heap_size_limit(self, deriver: SeedDeriver) -> HeapSizeLimit:
+    def _build_heap_size_limit(
+        self,
+        deriver: SeedDeriver,
+        device_memory: int,
+    ) -> HeapSizeLimit:
         """Build the ``performance.memory.jsHeapSizeLimit`` surface.
 
         Chromium reports the V8 heap ceiling, and the value comes from
@@ -2968,24 +3021,24 @@ class ProfileGenerator:
         handset is a signal, and so is reporting the *same* ceiling on
         every unit of a large fleet.
 
-        The tier is therefore drawn per unit from the set of ceilings a
-        phone can actually have.
+        The ceiling is therefore *not* drawn on its own.  It is
+        derived from the memory the unit reports, because a page can
+        read both and compare them: a profile that answers two
+        gigabytes of memory with a four gigabyte heap ceiling is
+        describing a machine that was never built, and the site that
+        reads both finds the contradiction at once.  The ceiling
+        follows the memory, and the salt keeps the surface per-unit.
+
+        Every ceiling fits in a signed 32-bit integer, and that is
+        not an accident: the browser core reads the value out of a
+        JSON document with a 32-bit number reader, so a larger
+        ceiling is not merely unusual, it makes the whole profile
+        unreadable -- the core refuses to start and every surface
+        falls back to the host's values.
         """
         salt = deriver.derive_bytes(Axis.HEAP_SIZE, 16, context="salt").hex()
 
-        # The ceilings Chromium derives from the physical memory.
-        #
-        # Every ceiling fits in a signed 32-bit integer, and that is
-        # not an accident: the browser core reads the value out of a
-        # JSON document with a 32-bit number reader, so a larger
-        # ceiling is not merely unusual, it makes the whole profile
-        # unreadable -- the core refuses to start and every surface
-        # falls back to the host's values.
-        #
-        # A phone with 4 GB of RAM gets a 2 GB ceiling; a machine with
-        # 16 GB gets 4 GB.
-        tiers = (536_870_912, 1_073_741_824, 2_000_000_000)
-        tier = deriver.derive_choice(Axis.HEAP_SIZE, tiers, context="tier")
+        tier = heap_ceiling_for(device_memory)
 
         return HeapSizeLimit(
             enabled=True,
@@ -3268,6 +3321,36 @@ def _architecture_for(abi: AndroidAbiSoc) -> str:
     if primary in {"x86_64", "x86"}:
         return "x86"
     return "arm"
+
+
+#: The ``navigator.platform`` of an Android build.
+#:
+#: The string comes out of the operating system, not out of the page.
+#: Android hands a 64-bit process "Linux armv8l" and a 32-bit one
+#: "Linux armv7l".  The value follows the ABI the profile really runs
+#: on, so it is a property of the handset rather than a coin flip.
+_PLATFORM_64 = "Linux armv8l"
+_PLATFORM_32 = "Linux armv7l"
+
+
+def _platform_for(abi: AndroidAbiSoc | None) -> str:
+    """The platform string the device's own operating system reports.
+
+    The answer follows the ABI of the profile: a 64-bit Android build
+    reports "Linux armv8l" and a 32-bit one reports "Linux armv7l".
+
+    The third answer, "Linux aarch64", is one the desktop builds of
+    Chromium report and one that Android has never reported: the
+    Android runtime hands the string "armv8l" to a 64-bit process, and
+    a fleet that reported "aarch64" would be telling a site that its
+    profiles are not phones.
+    """
+
+    if abi is None:
+        return _PLATFORM_64
+    if abi.is_64_bit:
+        return _PLATFORM_64
+    return _PLATFORM_32
 
 
 @lru_cache(maxsize=512)

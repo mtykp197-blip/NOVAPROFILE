@@ -158,9 +158,70 @@ async def batch_create(
     store: Any = Depends(deps.get_store),  # noqa: B008
     guard: Any = Depends(deps.get_guard),  # noqa: B008
 ) -> dict[str, Any]:
-    """Create *count* profiles and report the outcome of each one."""
+    """Create *count* profiles and report the outcome of each one.
+
+    When the operator names no device family, the fleet draws one
+    machine per profile out of the whole catalogue.  That is the only
+    way a bulk of profiles is a bulk of *different* people: a preset
+    repeated a hundred times is one handset wearing a hundred hats, and
+    a website reads the GPU, the panel, the chip count and the memory
+    and puts them in one bucket.
+    """
+
     created: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
+
+    # The fleet path: every profile is built on its own machine.
+    if not request.preset_id:
+        try:
+            from ..core.fleet import generate_fleet
+
+            fleet = generate_fleet(
+                request.count,
+                name_prefix=request.name_prefix,
+                registry=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported per item below
+            fleet = []
+            failed.append({"index": -1, "reason": str(exc)})
+
+        for index, config in enumerate(fleet):
+            try:
+                config = _mutate_identity(
+                    config,
+                    name=f"{request.name_prefix}-{index + 1:04d}",
+                    group_id=request.group_id,
+                    folder_id=request.folder_id,
+                    tags=list(request.tags),
+                    notes=request.notes,
+                )
+                allocated = _allocate(store, guard, config)
+                creator = getattr(store, "create_profile", None)
+                if creator is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="profile store does not implement create_profile",
+                    )
+                creator(allocated)
+                created.append(
+                    {
+                        "index": index,
+                        "profile_id": _profile_id_of(allocated),
+                        "name": f"{request.name_prefix}-{index + 1:04d}",
+                    }
+                )
+            except HTTPException:
+                raise
+            except Exception as exc:  # noqa: BLE001 - per-item failures are reported
+                failed.append({"index": index, "reason": str(exc)})
+
+        return {
+            "requested": request.count,
+            "created": created,
+            "failed": failed,
+            "created_count": len(created),
+            "failed_count": len(failed),
+        }
 
     for index in range(request.count):
         try:

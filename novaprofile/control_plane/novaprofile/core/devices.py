@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass
 
 from ..schema.hardware import AndroidAbiSoc, AndroidBuild, Screen
+from .soc_cores import cores_from_layout
 
 # --------------------------------------------------------------------------
 # GPU families
@@ -573,7 +574,14 @@ def inferred_touch_points(preset: "DevicePreset | None") -> tuple[int, ...]:
 #: The cluster layout of a system-on-chip, in the form the vendors write
 #: it: ``1x3x4 Cortex-A78/A55/A55`` is one prime core, three big cores
 #: and four little ones.
-_CLUSTER_PATTERN = re.compile(r"(\d+)x(\d+)x(\d+)")
+#:
+#: A layout has two, three or four clusters -- a quad-core part is
+#: written "2x2", an eight-core one "1x3x4" and a twelve-core one
+#: "1x2x3x6" -- so the pattern has to take a layout of any width and
+#: add the clusters up.  A pattern that only matched three of them
+#: read every two-cluster layout as eight, which is the count of a
+#: part that has nothing to do with it.
+_CLUSTER_PATTERN = re.compile(r"(\d+)x(\d+)(?:x(\d+))?(?:x(\d+))?")
 
 
 def cores_from_cluster_layout(layout: str) -> int:
@@ -589,16 +597,19 @@ def cores_from_cluster_layout(layout: str) -> int:
     authoritative source for the count, and a layout that names no
     clusters falls back to the eight cores that a handset of this class
     has when nothing else says.
+
+    The layout is read by the one reader the core table has, so that a
+    layout written the vendor way -- ``1x 2 Cortex-A76 3x 2 Cortex-A76
+    4x A55`` -- is read as the twelve cores it names and not as the
+    three a second reader would count out of it.
     """
 
     if not layout:
         return 8
 
-    match = _CLUSTER_PATTERN.search(layout)
-    if match:
-        total = sum(int(part) for part in match.groups())
-        if 2 <= total <= 16:
-            return total
+    total = cores_from_layout(layout)
+    if total:
+        return total
 
     # A layout that names the cores one by one -- "4x Cortex-A53" --
     # is still a count.
@@ -654,6 +665,28 @@ def _abi(
     gpu_arch: str,
     primary: str = "arm64-v8a",
 ) -> AndroidAbiSoc:
+    """The SoC record of a handset.
+
+    The cluster layout is corrected against the core count the chipset
+    really carries, because the count is read back off the layout: a
+    layout of four clusters beside a chipset of eight cores hands the
+    site a handset whose two halves contradict each other, and the
+    contradiction is in the fields next to each other.
+
+    A chipset the table does not name keeps the layout it came with.
+    """
+
+    from .soc_cores import (
+        canonical_chipset_name,
+        cores_for_chipset,
+        normalize_layout,
+    )
+
+    cores = cores_for_chipset(model)
+    if cores is None:
+        cores = cores_from_cluster_layout(layout)
+    layout = normalize_layout(layout, cores)
+
     return AndroidAbiSoc(
         supported_abis=["arm64-v8a", "armeabi-v7a"],
         supported_64_bit_abis=["arm64-v8a"],
@@ -661,7 +694,7 @@ def _abi(
         primary_abi=primary,
         is_64_bit=True,
         soc_vendor=vendor,  # type: ignore[arg-type]
-        soc_model=model,
+        soc_model=canonical_chipset_name(model),
         cpu_cluster_layout=layout,
         gpu_architecture=gpu_arch,
     )
@@ -716,7 +749,7 @@ ram_options=(8, 12),
         fingerprint_product="panther",
         gpu=MALI_G710,
         screen=_screen(1080, 2400, 2.625, 420),
-        abi=_abi("Google", "Tensor G2", "1x2x2 Cortex-X1/A78/A55", "Mali-G710 MC10"),
+        abi=_abi("Google", "Tensor G2", "1x3x4 Cortex-X1/A78/A55", "Mali-G710 MC10"),
         release="14",
         sdk_int=34,
         security_patch="2024-02-05",
@@ -749,7 +782,7 @@ ram_options=(8,),
         fingerprint_product="q5q",
         gpu=ADRENO_750,
         screen=_screen(1440, 3120, 3.0, 480),
-        abi=_abi("Qualcomm", "Snapdragon 8 Gen 3", "1x2x2 Cortex-X4/A720/A640", "Adreno 750"),
+        abi=_abi("Qualcomm", "Snapdragon 8 Gen 3", "1x2x5 Cortex-X4/A720/A640", "Adreno 750"),
         release="14",
         sdk_int=34,
         security_patch="2024-03-01",
@@ -780,7 +813,7 @@ ram_options=(8, 12),
         fingerprint_product="dm1q",
         gpu=ADRENO_740,
         screen=_screen(1080, 2340, 2.625, 420),
-        abi=_abi("Qualcomm", "Snapdragon 8 Gen 2", "1x2x2 Cortex-X3/A710/A510", "Adreno 740"),
+        abi=_abi("Qualcomm", "Snapdragon 8 Gen 2", "1x2x5 Cortex-X3/A710/A510", "Adreno 740"),
         release="14",
         sdk_int=34,
         security_patch="2024-01-10",
@@ -847,7 +880,7 @@ ram_options=(4, 6, 8),
         abi=_abi(
             "Qualcomm",
             "Snapdragon 8 Gen 2",
-            "1x2x2 Cortex-X3/A710/A510",
+            "1x2x5 Cortex-X3/A710/A510",
             "Adreno 740",
         ),
         release="13",
@@ -884,7 +917,7 @@ ram_options=(8, 12, 16),
         abi=_abi(
             "Qualcomm",
             "Snapdragon 8 Gen 2",
-            "1x2x2 Cortex-X3/A710/A510",
+            "1x2x5 Cortex-X3/A710/A510",
             "Adreno 740",
         ),
         release="14",
@@ -959,7 +992,7 @@ ram_options=(4, 6, 8),
         abi=_abi(
             "Qualcomm",
             "Snapdragon 8 Gen 2",
-            "1x2x2 Cortex-X3/A710/A510",
+            "1x2x5 Cortex-X3/A710/A510",
             "Adreno 740",
         ),
         release="14",
@@ -1034,7 +1067,7 @@ ram_options=(8, 12),
         abi=_abi(
             "MediaTek",
             "Helio G99",
-            "2x2 Cortex-A76/A55",
+            "1x 2 Cortex-A76 3x 2 Cortex-A76 4x A55",
             "Mali-G57 MC2",
         ),
         release="13",

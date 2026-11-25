@@ -62,6 +62,7 @@ from pathlib import Path
 
 from ..schema.hardware import AndroidAbiSoc, Screen
 from .devices import DevicePreset, GpuProfile
+from .soc_cores import LAYOUT_BY_CORES, REAL_CORE_COUNTS, canonical_chipset_name
 
 # --------------------------------------------------------------------------
 # The dataset
@@ -73,7 +74,30 @@ from .devices import DevicePreset, GpuProfile
 #: control plane, because it is a *data* artefact of the pipeline that
 #: produced it: the scraper writes it, the market filter narrows it, and
 #: this module reads it.
+#:
+#: A frozen control plane has no source tree beside it, though.  The
+#: dataset is a data file, so it is collected into the bundle and
+#: unpacked next to the executable, and the bundle's own directory is
+#: where the dataset is then found.  The source tree is the fallback
+#: for a control plane that runs from the checkout.
 DATA_DIR = Path(__file__).resolve().parents[3] / "core_patch" / "data"
+
+
+def _frozen_data_dir() -> Path | None:
+    """The directory the dataset was unpacked into, when frozen.
+
+    PyInstaller unpacks the data files of the bundle into a temporary
+    directory and points ``sys._MEIPASS`` at it.  The answer is
+    ``None`` when the control plane is not frozen, because then the
+    source tree holds the dataset.
+    """
+
+    import sys
+
+    root = getattr(sys, "_MEIPASS", None)
+    if not root:
+        return None
+    return Path(root) / "core_patch" / "data"
 
 #: The market-filtered dataset: the handsets the Vietnamese market buys.
 #:
@@ -108,7 +132,20 @@ def default_data_path() -> Path:
     handsets the Vietnamese market buys.  The merged file is the
     fallback: a machine that has the scraper's output but never ran the
     filter still gets a fleet.
+
+    A frozen control plane finds its dataset in the bundle it was
+    frozen into, and the source tree is the fallback for one that runs
+    from the checkout.
     """
+
+    frozen = _frozen_data_dir()
+    if frozen is not None:
+        filtered = frozen / "vn_devices.jsonl"
+        if filtered.exists():
+            return filtered
+        merged = frozen / "devices.jsonl"
+        if merged.exists():
+            return merged
 
     if VN_DATA_PATH.exists():
         return VN_DATA_PATH
@@ -354,16 +391,24 @@ def select_gpu_part(renderer: str, chipset: str = "") -> str:
     handsets.  The chipset the record is built on is the first one, and
     the GPU that ships with it is the part of the renderer that matches
     it; a renderer that names a single GPU is returned unchanged.
+
+    The part of the chipset is then corrected when the dataset pairs
+    the chip with the part of another one, so that the renderer the
+    page reads is the renderer of the part that really ships with the
+    chip.
     """
 
     parts = split_gpu_parts(renderer)
     if len(parts) <= 1:
-        return parts[0] if parts else ""
+        chosen = parts[0] if parts else ""
+    else:
+        chosen = parts[0]
+        for part in parts:
+            if _gpu_matches_chipset(part, chipset):
+                chosen = part
+                break
 
-    for part in parts:
-        if _gpu_matches_chipset(part, chipset):
-            return part
-    return parts[0]
+    return correct_gpu_for_chipset(chosen, chipset)
 
 
 def _adreno_key(renderer: str) -> str:
@@ -497,6 +542,102 @@ _SOC_RULES: tuple[tuple[tuple[str, ...], str, tuple[str, ...]], ...] = (
     (("unisoc", "spreadtrum"), "Unisoc", ("mali", "powervr", "img")),
 )
 
+
+#: The graphics part a chipset really carries, where the dataset
+#: disagrees with it.
+#:
+#: The scraped dataset pairs a chipset with the graphics part of
+#: another handset often enough that the pair has to be checked: the
+#: "Mediatek MT6765 Helio P35" rows carry a "PowerVR GE8320", and the
+#: PowerVR GE8320 is the part of the Helio P22 and not of the Helio
+#: P35, which ships with the Mali-G57 MC2.  The "Dimensity 7020" rows
+#: carry an "IMG BXM-8-256", which is the part of an Apple and of no
+#: Dimensity at all.
+#:
+#: A site that reads the graphics part and the SoC model compares the
+#: two, and a handset whose part belongs to another chip is a handset
+#: that was never built.  The correction is applied here because the
+#: dataset is what is wrong, not the chipset: the part that really
+#: ships with the chip is named, and the row is built on it.
+#:
+#: The names are the ones the makers of the part write, so that the
+#: renderer the page reads is the renderer of the real thing.
+_CHIPSET_GPU_CORRECTION: dict[str, str] = {
+    # -- MediaTek --------------------------------------------------
+    # The MT676x parts all carry the Mali-G57 MC2.
+    "mediatek helio a22": "Mali-G57 MC2",
+    "mediatek helio g25": "Mali-G57 MC2",
+    "mediatek helio g35": "Mali-G57 MC2",
+    "mediatek helio g36": "Mali-G57 MC2",
+    "mediatek helio g37": "Mali-G57 MC2",
+    "mediatek helio p22": "Mali-G57 MC2",
+    "mediatek helio p22t": "Mali-G57 MC2",
+    "mediatek helio p35": "Mali-G57 MC2",
+    "mediatek helio p35t": "Mali-G57 MC2",
+    # The Helio X10 (MT6753) carries the Mali-T720 MP2.
+    "mediatek helio x10": "Mali-T720 MP2",
+    # The Helio X23 (MT6765) carries the Mali-G57 MC2.
+    "mediatek helio x23": "Mali-G57 MC2",
+    # The Dimensity 7020 (MT6855) carries the Mali-G57 MC2.
+    "mediatek dimensity 7020": "Mali-G57 MC2",
+    # The Dimensity 7025 (MT6855) carries the Mali-G57 MC2.
+    "mediatek dimensity 7025": "Mali-G57 MC2",
+    # The Dimensity 6080 (MT6833) carries the Mali-G57 MC2.
+    "mediatek dimensity 6080": "Mali-G57 MC2",
+    # The Dimensity 6300 (MT6833) carries the Mali-G57 MC2.
+    "mediatek dimensity 6300": "Mali-G57 MC2",
+    # The Helio P95 (MT6773) carries the IMG GM9446.
+    "mediatek helio p95": "IMG GM9446",
+    # The Dimensity 9300 (MT6983) carries the Immortalis-G720 MC10.
+    "mediatek dimensity 9300": "Immortalis-G720 MC10",
+    # The Dimensity 9400 (MT6991) carries the Immortalis-G925 MC12.
+    "mediatek dimensity 9400": "Immortalis-G925 MC12",
+}
+
+
+def correct_gpu_for_chipset(renderer: str, chipset: str) -> str:
+    """The graphics part the chipset really carries.
+
+    The renderer of the row is answered with the part that ships with
+    the chip whenever the two disagree, because the chipset is the
+    part that is known and the row is the part that was scraped.
+    """
+
+    from .soc_cores import canonical_chipset_name
+
+    name = canonical_chipset_name(chipset).lower()
+    correction = _CHIPSET_GPU_CORRECTION.get(name)
+    if correction is not None:
+        return correction
+
+    # A row that names the family of the part without the part
+    # itself -- the "Adreno" of the Moto G75, the "Mali" of the
+    # Infinix Hot 4 Pro -- is answered with the part that really
+    # ships with the chipset, because a phone never reports the
+    # family of its graphics part on its own.
+    if _is_generic_family(renderer):
+        from .soc_cores import gpu_for_chipset
+
+        resolved = gpu_for_chipset(name)
+        if resolved:
+            return resolved
+
+    return renderer
+
+
+def _is_generic_family(renderer: str) -> bool:
+    """The renderer names the family of a part but not the part.
+
+    The answer is true for a renderer that carries nothing but the
+    name of a family -- the "Adreno" of a row that was never filled
+    in -- and false for a renderer that names a real part, whose name
+    may or may not carry a digit.
+    """
+
+    from .chipset_gpu import is_generic_family
+
+    return is_generic_family(renderer)
+
 #: The CPU cluster layout of the SoC families the engine knows.
 #
 # The layout is what the platform reports and what a site reads back
@@ -513,7 +654,7 @@ _CLUSTER_LAYOUTS: dict[str, str] = {
     "Qualcomm": "1x3x4 Cortex-A78/A55/A55",
     "Samsung": "1x3x4 Cortex-A78/A55/A55",
     "MediaTek": "2x2 Cortex-A78/A55",
-    "Google": "1x2x2 Cortex-X1/A78/A55",
+    "Google": "1x3x4 Cortex-X1/A78/A55",
     "HiSilicon": "2x2 Cortex-A76/A55",
     "Unisoc": "2x2 Cortex-A55/A55",
     "ARM": "2x2 Cortex-A76/A55",
@@ -525,12 +666,10 @@ _CLUSTER_LAYOUTS: dict[str, str] = {
 # the count is read back off the layout.  A six-core part is one prime
 # core, two big ones and three little ones; a twelve-core part is one
 # prime core, two big ones, three medium ones and six little ones.
-_CLUSTER_LAYOUT_BY_CORES: dict[int, str] = {
-    4: "2x2 Cortex-A78/A55",
-    6: "1x2x3 Cortex-A78/A78/A55",
-    8: "1x3x4 Cortex-A78/A55/A55",
-    12: "1x2x3x6 Cortex-X3/A78/A55/A55",
-}
+#:
+# The table is the one the core table holds, so that a count the table
+# names and the layout that carries it can never drift apart.
+_CLUSTER_LAYOUT_BY_CORES: dict[int, str] = dict(LAYOUT_BY_CORES)
 
 _CORE_COUNT = re.compile(r"(\d+)\s*[- ]?\s*core", re.IGNORECASE)
 _OCTA_CORE = re.compile(r"octa[- ]?core", re.IGNORECASE)
@@ -647,6 +786,11 @@ def split_chipset_variants(chipset: str) -> tuple[str, ...]:
     for index, start in enumerate(boundaries):
         end = boundaries[index + 1] if index + 1 < len(boundaries) else len(clean)
         part = clean[start:end].strip(" -,;|")
+        # The word that joins two variants of a merged row belongs to
+        # neither of them: the "Exynos 1330 (5 nm) or Mediatek
+        # Dimensity 6300" is two chipsets, and the "or" is the word
+        # the scraper joined them with.
+        part = re.sub(r"\s+\b(?:or|and|/|,)\s*$", "", part, flags=re.IGNORECASE).strip()
         if part:
             parts.append(part)
     return tuple(parts) or (clean,)
@@ -709,7 +853,27 @@ def select_chipset(chipset: str) -> str:
 
 
 def _core_count(chipset: str) -> int:
-    """The number of CPU cores a chipset carries."""
+    """The number of CPU cores a chipset carries.
+
+    The count is the one the chip really has.  It comes from the
+    table of the chipsets the field uses, because the catalogue names
+    the chipset and the count is a property of the chipset: the
+    Snapdragon 430 is a quad-core part and the platform reports four.
+
+    When the chip is not in the table, the text itself is asked: a
+    source that names "octa-core" has said eight, and a source that
+    says "4-core" has said four.  When the text says nothing, the
+    commonest layout is the answer, and that answer is a fallback
+    rather than a claim -- a chip whose count is unknown is reported
+    as the eight-core layout because that is what the layout table
+    holds by default.
+    """
+
+    from .soc_cores import cores_for_chipset
+
+    known = cores_for_chipset(chipset)
+    if known is not None:
+        return known
 
     match = _CORE_COUNT.search(chipset or "")
     if match:
@@ -753,6 +917,12 @@ def _cluster_layout(vendor: str, cores: int) -> str:
     The little-core architecture follows the vendor: a Snapdragon part
     is built out of Krait cores, a MediaTek one out of Cortex ones, and
     the site reads the names.
+
+    The table of the layouts is the one the core table holds, so that
+    a count the table names and the layout that carries it can never
+    drift apart: a two-core part is a two-core layout, and the
+    fallback that used to answer four cores for every count the table
+    did not name is gone.
     """
 
     layout = _CLUSTER_LAYOUT_BY_CORES.get(cores)
@@ -823,9 +993,26 @@ def _architecture_for(renderer: str) -> str:
 
 
 def derive_abi(chipset: str, gpu_renderer: str) -> AndroidAbiSoc:
-    """Build the ABI/SoC description of a chipset and its GPU."""
+    """Build the ABI/SoC description of a chipset and its GPU.
 
-    resolved = _soc_vendor_and_family(chipset)
+    The chipset the preset is built on is the one the row leads with,
+    and the core count is the count of *that* chipset.  The two have
+    to come from the same place: a row that names a Kirin and a
+    Snapdragon is a handset that was sold with both, and a preset
+    that named the Kirin while reporting the Snapdragon's core count
+    would put a contradiction in the two fields that sit next to
+    each other.
+    """
+
+    # The chipset the preset is built on is the first variant the row
+    # names: a row that merges the regional variants of a handset
+    # names several chipsets, and the preset describes the one it
+    # leads with.  The vendor, the model, the core count and the
+    # layout are all read off that one, so that the four of them
+    # cannot answer about different chips.
+    selected = select_chipset(chipset)
+
+    resolved = _soc_vendor_and_family(selected)
     if resolved is None:
         # A chipset the table does not name is an Arm design that ships
         # with a Mali part; the vendor stays the neutral one.
@@ -834,7 +1021,16 @@ def derive_abi(chipset: str, gpu_renderer: str) -> AndroidAbiSoc:
         vendor, _ = resolved
 
     architecture = _architecture_for(select_gpu_part(gpu_renderer, chipset))
-    cores = _core_count(chipset)
+
+    # The chipset the preset is built on, and the count of that one.
+    #
+    # The name is the trade name of the chip, because that is what
+    # the platform reports: a handset with the Snapdragon 695 in it
+    # answers "Qualcomm" and "Snapdragon 695", and the catalogue cell
+    # that carries the manufacturer, the part number and the process
+    # in one place is reduced to the name the market writes.
+    selected = canonical_chipset_name(selected)
+    cores = _core_count(selected)
 
     return AndroidAbiSoc(
         supported_abis=["arm64-v8a", "armeabi-v7a"],
@@ -843,7 +1039,7 @@ def derive_abi(chipset: str, gpu_renderer: str) -> AndroidAbiSoc:
         primary_abi="arm64-v8a",
         is_64_bit=True,
         soc_vendor=vendor,  # type: ignore[arg-type]
-        soc_model=select_chipset(chipset),
+        soc_model=selected,
         cpu_cluster_layout=_cluster_layout(vendor, cores),
         gpu_architecture=architecture,
     )
@@ -1577,8 +1773,16 @@ def derive_ram_options(memory: str) -> tuple[int, ...]:
     #
     # So the set is the real sizes, taken from the ones the text names
     # and the ones that line is sold with, and nothing else.
+    #
+    # The floor of the walk is *below* the smallest amount the text
+    # names, never the amount itself.  A line whose text names two
+    # gigabytes was also sold with one, and that one is the
+    # configuration that separates the units of the line.  A line whose
+    # text names one gigabyte has nothing below it, because a phone
+    # with less than a gigabyte of memory was not sold in the years
+    # this catalogue covers.
     for candidate in _REAL_RAM_AMOUNTS:
-        if candidate <= lowest:
+        if candidate < lowest:
             options.add(candidate)
 
     return tuple(sorted(options))
@@ -1663,6 +1867,28 @@ def derive_cpu_options(chipset: str) -> tuple[int, ...]:
     if not counts:
         counts.add(_core_count(chipset))
     return tuple(sorted(counts))
+
+
+def derive_cpu_options_for(chipset: str) -> tuple[int, ...]:
+    """The core counts of the chipset the preset is built on.
+
+    The preset names one system-on-chip, and the core count is a
+    property of that chip: the chipset that sits next to the count in
+    the record has to be the chipset the count belongs to.  A row that
+    names several chips is a row about several handsets, and the
+    preset built from it is about one of them, so the count is the
+    count of that one.
+
+    The count of a chipset that is not in the table is asked of the
+    text, and a text that says nothing leaves the commonest layout as
+    the answer -- a fallback, and one that is honest about being one.
+    """
+
+    selected = select_chipset(chipset)
+    if not selected:
+        return derive_cpu_options(chipset)
+
+    return (_core_count(selected),)
 
 
 def _panel_options(density: int) -> tuple[tuple[int, ...], tuple[float, ...]]:
@@ -1806,7 +2032,11 @@ def _record_is_usable(record: dict) -> bool:
 # --------------------------------------------------------------------------
 
 
-def build_local_preset(record: dict, ram_options: tuple[int, ...] | None = None) -> DevicePreset:
+def build_local_preset(
+    record: dict,
+    ram_options: tuple[int, ...] | None = None,
+    chipset: str = "",
+) -> DevicePreset:
     """Build the preset of one record, without the source module.
 
     This is the fallback derivation: it is what the catalogue uses when
@@ -1817,9 +2047,14 @@ def build_local_preset(record: dict, ram_options: tuple[int, ...] | None = None)
     is the tuple of one amount, because a record expands into one
     preset per RAM configuration it was sold in.  When it is left out,
     the preset carries every amount the memory text names.
+
+    ``chipset`` names the system-on-chip the preset is built on, when
+    the row names several and the caller has picked one of them.
     """
 
     fields = _record_fields(record)
+    if chipset:
+        fields["chipset"] = chipset
 
     if not fields["chipset"] or not fields["gpu_renderer"] or not fields["resolution"]:
         raise ValueError(
@@ -1875,7 +2110,7 @@ def build_local_preset(record: dict, ram_options: tuple[int, ...] | None = None)
         build_id=_build_id(release, announced),
         version_incremental=_version_incremental(slug, announced),
         ram_options=ram_options,
-        cpu_options=derive_cpu_options(fields["chipset"]),
+        cpu_options=derive_cpu_options_for(fields["chipset"]),
         dpr_options=_panel_options(screen.density_dpi)[1],
         density_options=_panel_options(screen.density_dpi)[0],
         year=year_of(fields["announced"]),
@@ -1883,7 +2118,9 @@ def build_local_preset(record: dict, ram_options: tuple[int, ...] | None = None)
 
 
 def _build_via_source(
-    record: dict, ram_options: tuple[int, ...] | None = None
+    record: dict,
+    ram_options: tuple[int, ...] | None = None,
+    chipset: str = "",
 ) -> DevicePreset | None:
     """Build a preset through the source module, when it is available.
 
@@ -1901,6 +2138,8 @@ def _build_via_source(
         return None
 
     fields = _record_fields(record)
+    if chipset:
+        fields["chipset"] = chipset
 
     # The source module takes a ``DeviceRecord``; the row is turned into
     # one when the module exposes the dataclass.
@@ -2051,11 +2290,28 @@ def _align_gpu(preset: DevicePreset, record: dict) -> DevicePreset:
         )
 
     abi = preset.abi
-    if abi.gpu_architecture != architecture or abi.soc_model != chipset:
+    # The SoC model is the trade name of the chip, because that is
+    # what the platform reports: a handset with the Snapdragon 695 in
+    # it answers "Qualcomm" and "Snapdragon 695", and the catalogue
+    # cell that carries the manufacturer, the part number and the
+    # process in one place is reduced to the name the market writes.
+    soc_model = canonical_chipset_name(chipset)
+    # The vendor of the SoC is the vendor of the chipset, and the
+    # chipset is the one the preset is built on: an Exynos is a
+    # Samsung part and a Dimensity is a MediaTek one, whatever the
+    # graphics part of the row suggests.
+    resolved = _soc_vendor_and_family(chipset)
+    soc_vendor = resolved[0] if resolved is not None else "ARM"
+    if (
+        abi.gpu_architecture != architecture
+        or abi.soc_model != soc_model
+        or abi.soc_vendor != soc_vendor
+    ):
         abi = abi.model_copy(
             update={
                 "gpu_architecture": architecture,
-                "soc_model": chipset,
+                "soc_model": soc_model,
+                "soc_vendor": soc_vendor,
             }
         )
 
@@ -2064,7 +2320,11 @@ def _align_gpu(preset: DevicePreset, record: dict) -> DevicePreset:
     return replace(preset, gpu=gpu, abi=abi)
 
 
-def build_preset(record: dict, ram_options: tuple[int, ...] | None = None) -> DevicePreset:
+def build_preset(
+    record: dict,
+    ram_options: tuple[int, ...] | None = None,
+    chipset: str = "",
+) -> DevicePreset:
     """Build the preset of one record.
 
     The source module does the parsing when it is importable; otherwise
@@ -2074,6 +2334,11 @@ def build_preset(record: dict, ram_options: tuple[int, ...] | None = None) -> De
 
     ``ram_options`` names the RAM configuration the preset carries: the
     tuple of the one amount this variant is.
+
+    ``chipset`` names the system-on-chip the preset is built on.  A
+    row that merges the regional variants of a handset names several,
+    and the caller says which one this preset is about; the record's
+    own text is used when the caller says nothing.
     """
 
     if not _record_is_usable(record):
@@ -2083,11 +2348,11 @@ def build_preset(record: dict, ram_options: tuple[int, ...] | None = None) -> De
             "and cannot become a coherent preset"
         )
 
-    preset = _build_via_source(record, ram_options)
+    preset = _build_via_source(record, ram_options, chipset)
     if preset is not None:
         return preset
 
-    return build_local_preset(record, ram_options)
+    return build_local_preset(record, ram_options, chipset)
 
 
 # --------------------------------------------------------------------------
@@ -2095,12 +2360,17 @@ def build_preset(record: dict, ram_options: tuple[int, ...] | None = None) -> De
 # --------------------------------------------------------------------------
 
 
-def record_digest(record: dict) -> str:
+def record_digest(record: dict, chipset: str = "") -> str:
     """A short, deterministic digest of a record.
 
     The digest is what tells two handsets that share a model name
     apart.  It has to be stable across processes, so ``hashlib`` is used
     and not ``hash()``: CPython randomises the string hash per process.
+
+    ``chipset`` names the system-on-chip the preset is built on, when
+    the row names several of them.  It is part of the material, because
+    two handsets of one model that carry different chips are two
+    different handsets and their presets must not share an identifier.
     """
 
     fields = _record_fields(record)
@@ -2108,7 +2378,7 @@ def record_digest(record: dict) -> str:
         (
             fields["model"],
             fields["resolution"],
-            fields["chipset"],
+            chipset or fields["chipset"],
             fields["gpu_renderer"],
             fields["source_id"],
         )
@@ -2122,7 +2392,9 @@ def _with_preset_id(preset: DevicePreset, preset_id: str) -> DevicePreset:
     return replace(preset, preset_id=preset_id)
 
 
-def _unique_preset_id(preset: DevicePreset, record: dict, taken: set[str]) -> str:
+def _unique_preset_id(
+    preset: DevicePreset, record: dict, taken: set[str], chipset: str = ""
+) -> str:
     """An identifier for a preset that no other preset carries.
 
     The first preset of a slug keeps it.  Every later one gets the short
@@ -2136,13 +2408,17 @@ def _unique_preset_id(preset: DevicePreset, record: dict, taken: set[str]) -> st
     identifier, so two rows that describe the same device in the same
     way still collide and are separated, while two rows that describe
     different devices never collide by accident.
+
+    ``chipset`` names the system-on-chip the preset is built on, so
+    that two presets of one row that carry different chips are told
+    apart by their identifiers and not only by their salt.
     """
 
     candidate = preset.preset_id
     if candidate not in taken:
         return candidate
 
-    digest = record_digest(record)
+    digest = record_digest(record, chipset)
     candidate = f"{preset.preset_id}-{digest}"
     salt = 0
     while candidate in taken:
@@ -2184,8 +2460,24 @@ def build_market_presets(records: list[dict]) -> tuple[DevicePreset, ...]:
     model with the same RAM but a different storage are the same device
     to a site that looks at them.
 
+    A record that names several *chipsets* becomes one preset per
+    chipset as well, for the same reason.  The scraper merges the
+    regional variants of a handset into one row -- the "Galaxy S20+"
+    is listed with an Exynos 990 for the global market and with a
+    Snapdragon 865 for the United States -- and those are two different
+    handsets.  A single preset for the row would have to name one
+    chipset while reporting the core count of another, and the
+    contradiction sits in the two fields a site reads next to each
+    other.
+
     Every identifier is unique.  Two handsets that share a model name
     would otherwise share an identifier, and the fleet keys on it.
+
+    A row whose chipset carries a core count no handset of the market
+    reports is left out.  A part with one or two cores in it is a
+    part of 2011 and of a tablet, and a fleet that answered with two
+    cores would hand the site a grouping key of its own: two is a
+    number no phone of the market reports.
     """
 
     presets: list[DevicePreset] = []
@@ -2196,18 +2488,25 @@ def build_market_presets(records: list[dict]) -> tuple[DevicePreset, ...]:
             continue
 
         fields = _record_fields(record)
-        for variant in ram_variants(fields["memory_internal"]):
-            try:
-                preset = build_preset(record, variant)
-            except (ValueError, KeyError, TypeError):
-                continue
 
-            preset = _with_preset_id(preset, f"{MARKET_ID_PREFIX}{preset.preset_id}")
-            preset_id = _unique_preset_id(preset, record, taken)
-            if preset_id != preset.preset_id:
-                preset = _with_preset_id(preset, preset_id)
-            taken.add(preset.preset_id)
-            presets.append(preset)
+        # The chipsets the row names, one preset for each of them.
+        chipsets = split_chipset_variants(fields["chipset"]) or (fields["chipset"],)
+
+        for chipset in chipsets:
+            if _core_count(chipset) not in REAL_CORE_COUNTS:
+                continue
+            for variant in ram_variants(fields["memory_internal"]):
+                try:
+                    preset = build_preset(record, variant, chipset)
+                except (ValueError, KeyError, TypeError):
+                    continue
+
+                preset = _with_preset_id(preset, f"{MARKET_ID_PREFIX}{preset.preset_id}")
+                preset_id = _unique_preset_id(preset, record, taken, chipset)
+                if preset_id != preset.preset_id:
+                    preset = _with_preset_id(preset, preset_id)
+                taken.add(preset.preset_id)
+                presets.append(preset)
 
     return tuple(presets)
 

@@ -709,10 +709,32 @@ def plan_fleet(
     # answer is looked up once here and then reused.
     capacities: list[int] = [count_machines(preset) for preset in chosen]
 
-    for preset, capacity in zip(chosen, capacities, strict=True):
-        for _ in range(capacity):
+    # The units are dealt round-robin across the chosen models, so that
+    # two neighbours of the fleet are never the same handset.
+    #
+    # The order matters.  Dealing model by model -- every unit of one
+    # model, then every unit of the next -- puts a run of alike
+    # readings at the head of the fleet: ten handsets of one model in
+    # a row, all of them reporting the same graphics part, the same
+    # panel and the same chip count, and a site that reads any two of
+    # those readings puts the whole run in one bucket.  Dealing
+    # round-robin puts a different handset between every two units,
+    # so the largest group of alike readings stays as small as the
+    # catalogue allows.
+    #
+    # The stratum still moves on when the same model comes round
+    # again: the second unit of one model is the second slice of that
+    # model's space, and the per-unit readings -- the serial, the
+    # incremental build number -- keep moving with it.
+    remaining = list(capacities)
+    while len(preset_ids) < count and any(remaining):
+        added = False
+        for index, preset in enumerate(chosen):
             if len(preset_ids) >= count:
                 break
+            if remaining[index] <= 0:
+                continue
+            remaining[index] -= 1
             preset_ids.append(preset.preset_id)
             # The model is the key the walk is shared under, and it is
             # the *code* the profile reports, not the marketing name.
@@ -727,13 +749,24 @@ def plan_fleet(
             # The variant list is the set of codes the model is sold
             # under, and the first of them is the one the profile
             # carries.
+            #
+            # The key is the *whole* list, not its first entry.  The
+            # Pixel 8 Pro is sold under four codes -- GC3VE, G1MN,
+            # GE9DP and G1FQ -- and the generator draws one of them per
+            # unit.  A key built from the first entry alone gave every
+            # unit of that handset the same counter, and the units
+            # walked the same space twice: fifty handsets all reported
+            # "GC3VE" and a site reading the model put them in one
+            # bucket.  The key is the tuple of codes, so the walk
+            # moves on for each of them.
             model_key = (
-                preset.model_variants[0] if preset.model_variants else preset.model
-            ) or preset.preset_id
+                tuple(preset.model_variants) if preset.model_variants else (preset.model,)
+            ) or (preset.preset_id,)
             slot = model_slots.get(model_key, 0)
             model_slots[model_key] = slot + 1
             strata.append(slot)
-        if len(preset_ids) >= count:
+            added = True
+        if not added:
             break
 
     # A fleet larger than the catalogue of *machines* is still a fleet.

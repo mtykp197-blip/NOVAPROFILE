@@ -32,7 +32,18 @@ ALLOWED = {
     "delete_profiles",
     "open_profile",
     "close_profile",
+    "open_profiles",
+    "close_profiles",
+    "assign_proxies",
+    "analyze_selection",
 }
+
+#: How many profiles one batch call may touch.
+#:
+#: The app opens and stops whole groups at once, and the group can be the
+#: whole fleet.  The cap keeps one request from holding the bridge lock
+#: for minutes: the caller splits the work into batches of this size.
+BATCH_LIMIT = 200
 
 MAX_BODY = 1_000_000
 

@@ -500,7 +500,35 @@ class ProfileStore:
 
         with self._lock:
             rows = self.conn.execute(sql, params).fetchall()
-        return [self._deserialize(row["config_json"]) for row in rows]
+
+        # A profile that was written by an older build may no longer
+        # satisfy the schema of this one: the panel of a handset the
+        # catalogue has since dropped, a reading that has since been
+        # given a bound.  Such a row is unreadable, but it must not
+        # take the whole list with it -- one profile that cannot be
+        # read is a problem with that profile, not with the fleet.
+        # The unreadable rows are reported so that the caller can say
+        # what it left out.
+        configs: list[ProfileConfig] = []
+        unreadable = 0
+        for row in rows:
+            try:
+                configs.append(self._deserialize(row["config_json"]))
+            except StoreError:
+                unreadable += 1
+        self._last_unreadable = unreadable
+        return configs
+
+    def count_unreadable(self) -> int:
+        """How many stored profiles the last listing could not read.
+
+        The count is the number of rows that failed to deserialize
+        during the most recent :meth:`list_profiles` call.  It is the
+        number of profiles the fleet holds that this build cannot
+        show, and it is what the shell reports to the operator.
+        """
+
+        return int(getattr(self, "_last_unreadable", 0))
 
     def list_profiles_filtered(self, filt: ProfileFilter) -> list[ProfileConfig]:
         """Return profiles matching a :class:`ProfileFilter`."""

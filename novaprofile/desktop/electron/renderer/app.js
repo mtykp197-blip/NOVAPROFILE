@@ -179,12 +179,12 @@ function setStatus(kind, text) {
 /* ------------------------------------------------------------------ */
 
 const VIEW_META = {
-  profiles: { title: 'Profiles', subtitle: 'Every profile is a different person.' },
-  fleet: { title: 'Fleet', subtitle: 'How many devices, how far apart.' },
-  presets: { title: 'Devices', subtitle: 'The catalogue the fleet is drawn from.' },
-  proxies: { title: 'Proxies', subtitle: 'Where each profile appears to be.' },
-  audit: { title: 'Audit', subtitle: 'What the browser actually reports.' },
-  settings: { title: 'Settings', subtitle: 'The defaults a new profile inherits.' },
+  profiles: { title: 'Profile', subtitle: 'Mỗi profile là một người khác nhau.' },
+  fleet: { title: 'Đội', subtitle: 'Bao nhiêu thiết bị, cách nhau bao xa.' },
+  presets: { title: 'Thiết bị', subtitle: 'Danh mục mà đội profile được rút ra.' },
+  proxies: { title: 'Proxy', subtitle: 'Nơi mỗi profile xuất hiện.' },
+  audit: { title: 'Kiểm tra', subtitle: 'Những gì trình duyệt thực sự báo.' },
+  settings: { title: 'Cài đặt', subtitle: 'Các cài đặt mà profile mới kế thừa.' },
 };
 
 /**
@@ -220,11 +220,11 @@ async function render() {
   } catch (error) {
     content.replaceChildren(
       el('div', { class: 'empty' }, [
-        el('h3', { text: 'The control plane did not answer' }),
+        el('h3', { text: 'Bộ điều khiển không trả lời' }),
         el('p', { text: String((error && error.message) || error) }),
         el('button', {
           class: 'btn',
-          text: 'Try again',
+          text: 'Thử lại',
           onclick: () => render(),
         }),
       ]),
@@ -241,14 +241,14 @@ async function renderProfiles(actions, content) {
   actions.appendChild(
     el('button', {
       class: 'btn btn-primary',
-      text: 'New profile',
+      text: 'Tạo profile',
       onclick: () => openProfileDialog(),
     }),
   );
   actions.appendChild(
     el('button', {
       class: 'btn',
-      text: 'Bulk create',
+      text: 'Tạo hàng loạt',
       onclick: () => openBulkDialog(),
     }),
   );
@@ -256,20 +256,20 @@ async function renderProfiles(actions, content) {
   const search = el('input', {
     class: 'search',
     type: 'text',
-    placeholder: 'Search the fleet…',
+    placeholder: 'Tìm trong danh sách…',
     oninput: (event) => filterProfiles(event.target.value),
   });
 
   const body = el('div', {}, [
     el('div', { class: 'stat-grid' }, [
-      statTile('Profiles', num(profiles.length), 'on this machine'),
-      statTile('Running', num(profiles.filter((p) => p.status === 'running' || p.running).length), 'browsers open'),
-      statTile('Proxied', num(profiles.filter((p) => proxyLabel(p)).length), 'with a proxy'),
-      statTile('Groups', num(new Set(profiles.map((p) => p.group_id).filter(Boolean)).size), 'named'),
+      statTile('Profile', num(profiles.length), 'trên máy này'),
+      statTile('Đang mở', num(profiles.filter((p) => p.status === 'running' || p.running).length), 'browsers open'),
+      statTile('Có proxy', num(profiles.filter((p) => proxyLabel(p)).length), 'dùng đường truyền riêng'),
+      statTile('Nhóm', num(new Set(profiles.map((p) => p.group_id).filter(Boolean)).size), 'đã đặt tên'),
     ]),
     el('div', { class: 'card' }, [
       el('div', { class: 'card-head' }, [
-        el('h3', { text: 'The fleet' }),
+        el('h3', { text: 'Danh sách profile' }),
         search,
       ]),
       el('div', { class: 'table-wrap', id: 'profile-table' }, [profileTable(profiles)]),
@@ -305,11 +305,11 @@ function statTile(label, value, note) {
 function profileTable(rows) {
   if (!rows.length) {
     return el('div', { class: 'empty' }, [
-      el('h3', { text: 'No profiles yet' }),
-      el('p', { text: 'Create one, or create a hundred at once. Each one is a different person.' }),
+      el('h3', { text: 'Chưa có profile nào' }),
+      el('p', { text: 'Tạo một cái, hoặc tạo cả trăm cái cùng lúc. Mỗi cái là một người khác nhau.' }),
       el('button', {
         class: 'btn btn-primary',
-        text: 'New profile',
+        text: 'Tạo profile',
         onclick: () => openProfileDialog(),
       }),
     ]);
@@ -318,11 +318,11 @@ function profileTable(rows) {
   const head = el('thead', {}, [
     el('tr', {}, [
       el('th', { text: 'Profile' }),
-      el('th', { text: 'Device' }),
+      el('th', { text: 'Thiết bị' }),
       el('th', { text: 'Android' }),
-      el('th', { text: 'Location' }),
+      el('th', { text: 'Vị trí' }),
       el('th', { text: 'Proxy' }),
-      el('th', { text: 'Status' }),
+      el('th', { text: 'Trạng thái' }),
       el('th', { text: '' }),
     ]),
   ]);
@@ -352,7 +352,7 @@ function profileTable(rows) {
           el('div', { class: 'cell-actions' }, [
             el('button', {
               class: 'btn btn-sm',
-              text: running ? 'Stop' : 'Open',
+              text: running ? 'Dừng' : 'Mở',
               onclick: (event) => {
                 event.stopPropagation();
                 toggleLaunch(profile, running);
@@ -360,7 +360,15 @@ function profileTable(rows) {
             }),
             el('button', {
               class: 'btn btn-sm',
-              text: 'Details',
+              text: 'Proxy',
+              onclick: (event) => {
+                event.stopPropagation();
+                openSingleProxyDialog(profile);
+              },
+            }),
+            el('button', {
+              class: 'btn btn-sm',
+              text: 'Chi tiết',
               onclick: (event) => {
                 event.stopPropagation();
                 openProfileDetails(profile);
@@ -368,7 +376,7 @@ function profileTable(rows) {
             }),
             el('button', {
               class: 'btn btn-sm btn-danger',
-              text: 'Delete',
+              text: 'Xoá',
               onclick: (event) => {
                 event.stopPropagation();
                 deleteProfile(profile);
@@ -426,6 +434,247 @@ function timeZoneLabel(profile) {
 }
 
 /**
+ * Give one profile its own proxy.
+ *
+ * The proxy is one line of text: ``ip:port:user:pass``.
+ *
+ * The line is the form every proxy list in the world is written in,
+ * and it is the form the operator already has in hand: the seller of
+ * the proxies sent a list, and the operator pastes it.  A form with
+ * a field for the address, a field for the port, a field for the
+ * user and a field for the password asks the operator to take a line
+ * apart and put it back together, and every one of those four steps
+ * is a chance to type it wrong.
+ */
+function openSingleProxyDialog(profile) {
+  const id = profileId(profile);
+  const current = configOf(profile).proxy || {};
+
+  const field = el('input', {
+    type: 'text',
+    id: 'proxy-line',
+    class: 'proxy-line',
+    spellcheck: 'false',
+    placeholder: 'ip:port:user:pass',
+    value: current.enabled
+      ? [
+          current.host || '',
+          current.port || '',
+          current.username || '',
+          current.password || '',
+        ]
+          .filter((part) => part !== '' && part !== undefined)
+          .join(':')
+      : '',
+  });
+
+  const body = el('div', {}, [
+    el('label', { class: 'field' }, [
+      el('span', { text: 'Proxy' }),
+      field,
+    ]),
+    el('p', { class: 'hint' }, [
+      el('span', {
+        text:
+          'Định dạng: ip:port:user:pass. Bỏ trống để tắt proxy của profile này.',
+      }),
+    ]),
+  ]);
+
+  openModal(
+    'Proxy cho ' + deviceLabel(profile),
+    body,
+    el('div', { class: 'modal-actions' }, [
+      el('button', { class: 'btn', text: 'Huỷ', onclick: closeModal }),
+      el('button', {
+        class: 'btn btn-primary',
+        text: 'Lưu',
+        onclick: async (event) => {
+          const button = event.currentTarget;
+          button.disabled = true;
+          try {
+            const line = field.value.trim();
+            if (!line) {
+              await call('PATCH', '/api/profiles/' + id, {
+                proxy: { enabled: false },
+              });
+              toast('Đã tắt proxy.', 'ok');
+              closeModal();
+              await render();
+              return;
+            }
+            const parsed = parseProxyLine(line);
+            if (!parsed) {
+              throw new Error(
+                'Dòng proxy không đúng. Cần có dạng ip:port, ip:port:user hoặc ip:port:user:pass.',
+              );
+            }
+            await call('PATCH', '/api/profiles/' + id, {
+              proxy: {
+                enabled: true,
+                protocol: parsed.protocol,
+                host: parsed.host,
+                port: parsed.port,
+                username: parsed.username,
+                password: parsed.password,
+                auth_method: parsed.username ? 'userpass' : 'none',
+              },
+            });
+            toast('Đã lưu proxy.', 'ok');
+            closeModal();
+            await render();
+          } catch (error) {
+            toast(String((error && error.message) || error), 'bad');
+            button.disabled = false;
+          }
+        },
+      }),
+    ]),
+    true,
+  );
+}
+
+/**
+ * Assign a proxy to every ticked profile.
+ *
+ * The table has one row for each profile and one cell for the proxy
+ * that goes to it, so the operator reads down the table and sees which
+ * address belongs to which machine.
+ *
+ * The cell takes the line the way every proxy list is written --
+ * ``ip:port:user:pass`` -- and the cell that is left empty leaves
+ * the profile with the proxy it already has.  The operator did not
+ * say to clear those, so they are not cleared.
+ */
+function openBulkProxyDialog() {
+  const chosen = selectedProfiles();
+  if (!chosen.length) return;
+
+  const inputs = chosen.map((profile) => {
+    const current = configOf(profile).proxy || {};
+    return el('input', {
+      type: 'text',
+      class: 'proxy-line',
+      spellcheck: 'false',
+      placeholder: 'ip:port:user:pass',
+      value: current.enabled
+        ? [
+            current.host || '',
+            current.port || '',
+            current.username || '',
+            current.password || '',
+          ]
+            .filter((part) => part !== '' && part !== undefined)
+            .join(':')
+        : '',
+    });
+  });
+
+  const rows = chosen.map((profile, index) =>
+    el('tr', {}, [
+      el('td', { class: 'idx', text: String(index + 1) }),
+      el('td', { class: 'who' }, [
+        el('div', { class: 'dev', text: deviceLabel(profile) }),
+        el('div', { class: 'and', text: androidLabel(profile) }),
+      ]),
+      el('td', {}, [inputs[index]]),
+    ]),
+  );
+
+  const body = el('div', {}, [
+    el('p', { class: 'hint' }, [
+      el('span', {
+        text:
+          'Mỗi dòng là một proxy cho profile tương ứng. Định dạng: ip:port:user:pass. ' +
+          'Ô trống nghĩa là profile đó giữ nguyên proxy hiện tại.',
+      }),
+    ]),
+    el('table', { class: 'proxy-table' }, [
+      el('thead', {}, [
+        el('tr', {}, [
+          el('th', { text: '#' }),
+          el('th', { text: 'Profile' }),
+          el('th', { text: 'Proxy' }),
+        ]),
+      ]),
+      el('tbody', {}, rows),
+    ]),
+  ]);
+
+  openModal(
+    'Gán proxy cho ' + num(chosen.length) + ' profile',
+    body,
+    el('div', { class: 'modal-actions' }, [
+      el('button', { class: 'btn', text: 'Huỷ', onclick: closeModal }),
+      el('button', {
+        class: 'btn btn-primary',
+        text: 'Gán',
+        onclick: async (event) => {
+          const button = event.currentTarget;
+          button.disabled = true;
+          try {
+            let assigned = 0;
+            const failures = [];
+
+            for (let index = 0; index < chosen.length; index += 1) {
+              const line = inputs[index].value.trim();
+              if (!line) continue;
+              const parsed = parseProxyLine(line);
+              if (!parsed) {
+                failures.push(
+                  deviceLabel(chosen[index]) +
+                    ': dòng proxy không đúng (cần ip:port:user:pass)',
+                );
+                continue;
+              }
+              const id = profileId(chosen[index]);
+              try {
+                await call('PATCH', '/api/profiles/' + id, {
+                  proxy: {
+                    enabled: true,
+                    protocol: parsed.protocol,
+                    host: parsed.host,
+                    port: parsed.port,
+                    username: parsed.username,
+                    password: parsed.password,
+                    auth_method: parsed.username ? 'userpass' : 'none',
+                  },
+                });
+                assigned += 1;
+              } catch (error) {
+                failures.push(
+                  deviceLabel(chosen[index]) + ': ' + String(error.message || error),
+                );
+              }
+            }
+
+            if (assigned) {
+              toast(
+                'Đã gán proxy cho ' +
+                  num(assigned) +
+                  ' trên ' +
+                  num(chosen.length) +
+                  ' profile.',
+                failures.length ? 'warn' : 'ok',
+              );
+            } else {
+              toast('Không gán được proxy nào.', 'bad');
+            }
+            if (failures.length) toast(failures[0], 'bad');
+            closeModal();
+            await render();
+          } catch (error) {
+            toast(String((error && error.message) || error), 'bad');
+            button.disabled = false;
+          }
+        },
+      }),
+    ]),
+    true,
+  );
+}
+
+/**
  * The proxy of a profile, as one line.
  *
  * The proxy is a record -- the host, the port, the credentials and the
@@ -461,10 +710,10 @@ async function toggleLaunch(profile, running) {
   try {
     if (running) {
       await call('POST', '/api/profiles/' + id + '/stop');
-      toast('Stopped.', 'ok');
+      toast('Đã dừng.', 'ok');
     } else {
       await call('POST', '/api/profiles/' + id + '/launch');
-      toast('Opened.', 'ok');
+      toast('Đã mở.', 'ok');
     }
     await render();
   } catch (error) {
@@ -475,12 +724,12 @@ async function toggleLaunch(profile, running) {
 async function deleteProfile(profile) {
   const id = profileId(profile);
   const confirmed = window.confirm(
-    'Delete this profile?\n\nIts profile directory is removed with it. This cannot be undone.',
+    'Xoá profile này?\n\nThư mục profile cũng bị xoá theo. Không thể hoàn tác.',
   );
   if (!confirmed) return;
   try {
     await call('DELETE', '/api/profiles/' + id);
-    toast('Deleted.', 'ok');
+    toast('Đã xoá.', 'ok');
     await render();
   } catch (error) {
     /* the toast has already been shown */
@@ -490,7 +739,7 @@ async function deleteProfile(profile) {
 async function openProfileDetails(profile) {
   const id = profileId(profile);
   const body = el('div', { class: 'loading' }, [el('div', { class: 'spinner' })]);
-  openModal('Profile', body);
+  openModal('Chi tiết profile', body);
   try {
     const detail = await call('GET', '/api/profiles/' + id);
     const config = detail && detail.config ? detail.config : detail || {};
@@ -503,17 +752,17 @@ async function openProfileDetails(profile) {
     const rows = [
       ['Profile id', id],
       ['Name', identity.name],
-      ['Device', [build.manufacturer, build.model].filter(Boolean).join(' ')],
+      ['Thiết bị', [build.manufacturer, build.model].filter(Boolean).join(' ')],
       ['Android', build.version_release],
       ['Build id', build.build_id],
       ['Fingerprint', build.fingerprint],
       ['Serial', build.serial],
-      ['Cores', nav.hardware_concurrency],
-      ['Memory', nav.device_memory ? nav.device_memory + ' GB' : null],
+      ['Lõi CPU', nav.hardware_concurrency],
+      ['Bộ nhớ', nav.device_memory ? nav.device_memory + ' GB' : null],
       ['Touch points', nav.max_touch_points],
       ['Screen', screen.width ? screen.width + '×' + screen.height + ' @' + screen.device_pixel_ratio : null],
       ['GPU', config.webgl ? config.webgl.unmasked_renderer : null],
-      ['Time zone', timeZoneLabel(detail)],
+      ['Múi giờ', timeZoneLabel(detail)],
       ['Language', nav.language],
       ['City', geo.city],
       ['User agent', nav.user_agent],
@@ -528,7 +777,7 @@ async function openProfileDetails(profile) {
   } catch (error) {
     body.replaceChildren(
       el('div', { class: 'empty' }, [
-        el('h3', { text: 'Could not read the profile' }),
+        el('h3', { text: 'Không đọc được profile' }),
         el('p', { text: String((error && error.message) || error) }),
       ]),
     );
@@ -563,26 +812,26 @@ async function openProfileDialog() {
   await loadPresets();
 
   const select = el('select', { id: 'profile-preset' }, presetOptions());
-  const group = el('input', { type: 'text', id: 'profile-group', placeholder: 'Optional' });
-  const notes = el('input', { type: 'text', id: 'profile-notes', placeholder: 'Optional' });
-  const proxy = el('input', { type: 'text', id: 'profile-proxy', placeholder: 'host:port:user:pass' });
+  const group = el('input', { type: 'text', id: 'profile-group', placeholder: 'Không bắt buộc' });
+  const notes = el('input', { type: 'text', id: 'profile-notes', placeholder: 'Không bắt buộc' });
+  const proxy = el('input', { type: 'text', id: 'profile-proxy', placeholder: 'ip:port:user:pass' });
 
   const body = el('div', {}, [
     el('div', { class: 'field' }, [
-      el('label', { for: 'profile-preset', text: 'Device' }),
+      el('label', { for: 'profile-preset', text: 'Thiết bị' }),
       select,
       el('div', {
         class: 'hint',
-        text: 'The device family the profile is drawn from. Its real hardware limits are kept.',
+        text: 'Nhóm thiết bị mà profile được rút ra. Giới hạn phần cứng thật được giữ nguyên.',
       }),
     ]),
     el('div', { class: 'form-row' }, [
       el('div', { class: 'field' }, [
-        el('label', { for: 'profile-group', text: 'Group' }),
+        el('label', { for: 'profile-group', text: 'Nhóm' }),
         group,
       ]),
       el('div', { class: 'field' }, [
-        el('label', { for: 'profile-notes', text: 'Note' }),
+        el('label', { for: 'profile-notes', text: 'Ghi chú' }),
         notes,
       ]),
     ]),
@@ -591,7 +840,7 @@ async function openProfileDialog() {
       proxy,
       el('div', {
         class: 'hint',
-        text: 'One profile, one proxy. A profile that changes its proxy is two profiles to a site.',
+        text: 'Một profile, một proxy. Một profile đổi proxy là hai người với web.',
       }),
     ]),
   ]);
@@ -599,7 +848,7 @@ async function openProfileDialog() {
   const footer = el('div', { class: 'toolbar' }, [
     el('button', {
       class: 'btn btn-primary',
-      text: 'Create',
+      text: 'Tạo',
       onclick: async (event) => {
         event.target.disabled = true;
         const payload = { preset_id: select.value };
@@ -609,7 +858,7 @@ async function openProfileDialog() {
         try {
           await call('POST', '/api/profiles', payload);
           closeModal();
-          toast('Profile created.', 'ok');
+          toast('Đã tạo profile.', 'ok');
           await render();
         } catch (error) {
           event.target.disabled = false;
@@ -617,10 +866,10 @@ async function openProfileDialog() {
         }
       },
     }),
-    el('button', { class: 'btn', text: 'Cancel', onclick: closeModal }),
+    el('button', { class: 'btn', text: 'Huỷ', onclick: closeModal }),
   ]);
 
-  openModal('New profile', body, footer);
+  openModal('Tạo profile', body, footer);
 }
 
 /* ------------------------------ bulk ------------------------------- */
@@ -636,12 +885,12 @@ async function openBulkDialog() {
     max: '100000',
   });
   const select = el('select', { id: 'bulk-preset' }, presetOptions());
-  const group = el('input', { type: 'text', id: 'bulk-group', placeholder: 'Optional' });
+  const group = el('input', { type: 'text', id: 'bulk-group', placeholder: 'Không bắt buộc' });
   const spread = el('input', { type: 'checkbox', id: 'bulk-spread', checked: true });
 
   const body = el('div', {}, [
     el('div', { class: 'field' }, [
-      el('label', { for: 'bulk-count', text: 'How many' }),
+      el('label', { for: 'bulk-count', text: 'Số lượng' }),
       count,
       el('div', {
         class: 'hint',
@@ -650,23 +899,23 @@ async function openBulkDialog() {
       }),
     ]),
     el('div', { class: 'field' }, [
-      el('label', { for: 'bulk-preset', text: 'Device family' }),
+      el('label', { for: 'bulk-preset', text: 'Nhóm thiết bị' }),
       select,
     ]),
     el('div', { class: 'field' }, [
-      el('label', { for: 'bulk-group', text: 'Group' }),
+      el('label', { for: 'bulk-group', text: 'Nhóm' }),
       group,
     ]),
     el('label', { class: 'check' }, [
       spread,
-      el('span', { text: 'Spread across the catalogue (each profile gets its own device family)' }),
+      el('span', { text: 'Trải rộng theo danh mục (mỗi profile một nhóm thiết bị riêng)' }),
     ]),
   ]);
 
   const footer = el('div', { class: 'toolbar' }, [
     el('button', {
       class: 'btn btn-primary',
-      text: 'Create them',
+      text: 'Tạo',
       onclick: async (event) => {
         event.target.disabled = true;
         const total = Math.max(1, Math.min(100000, Number(count.value) || 1));
@@ -687,10 +936,10 @@ async function openBulkDialog() {
         }
       },
     }),
-    el('button', { class: 'btn', text: 'Cancel', onclick: closeModal }),
+    el('button', { class: 'btn', text: 'Huỷ', onclick: closeModal }),
   ]);
 
-  openModal('Bulk create', body, footer, true);
+  openModal('Tạo hàng loạt', body, footer, true);
 }
 
 /* ------------------------------ fleet ------------------------------ */
@@ -726,7 +975,7 @@ async function renderFleet(actions, content) {
   content.replaceChildren(
     el('div', {}, [
       el('div', { class: 'stat-grid' }, [
-        statTile('Profiles', num(all.length), 'in the fleet'),
+        statTile('Profile', num(all.length), 'in the fleet'),
         statTile('Device families', num(devices.size), 'distinct models'),
         statTile('Graphics parts', num(gpus.size), 'distinct renderers'),
         statTile('Cities', num(cities.size), 'across Vietnam'),
@@ -734,7 +983,7 @@ async function renderFleet(actions, content) {
         statTile('Android releases', num(releases.size), 'in use'),
       ]),
       el('div', { class: 'card' }, [
-        el('div', { class: 'card-head' }, [el('h3', { text: 'The spread' })]),
+        el('div', { class: 'card-head' }, [el('h3', { text: 'Độ phân tán' })]),
         el('div', { class: 'card-body' }, [
           el('div', { class: 'form-row' }, [
             spreadColumn('Core counts', Array.from(cores).sort((a, b) => a - b)),
@@ -784,33 +1033,33 @@ async function renderPresets(actions, content) {
         el('thead', {}, [
           el('tr', {}, [
             el('th', { text: 'Id' }),
-            el('th', { text: 'Device' }),
+            el('th', { text: 'Thiết bị' }),
             el('th', { text: 'Android' }),
-            el('th', { text: 'Panel' }),
-            el('th', { text: 'Ratio' }),
-            el('th', { text: 'Cores' }),
-            el('th', { text: 'Memory' }),
-            el('th', { text: 'Touch' }),
-            el('th', { text: 'Graphics' }),
+            el('th', { text: 'Màn hình' }),
+            el('th', { text: 'Tỉ lệ' }),
+            el('th', { text: 'Lõi CPU' }),
+            el('th', { text: 'Bộ nhớ' }),
+            el('th', { text: 'Cảm ứng' }),
+            el('th', { text: 'Đồ hoạ' }),
           ]),
         ]),
         el('tbody', {}, rows),
       ])
     : el('div', { class: 'empty' }, [
-        el('h3', { text: 'The catalogue is empty' }),
-        el('p', { text: 'No device families were found.' }),
+        el('h3', { text: 'Danh mục rỗng' }),
+        el('p', { text: 'Không tìm thấy nhóm thiết bị nào.' }),
       ]);
 
   content.replaceChildren(
     el('div', {}, [
       el('div', { class: 'card', style: 'margin-bottom: 16px' }, [
-        el('div', { class: 'card-head' }, [el('h3', { text: 'What the columns mean' })]),
+        el('div', { class: 'card-head' }, [el('h3', { text: 'Ý nghĩa các cột' })]),
         el('div', { class: 'card-body' }, [
           el('p', {
             class: 'code',
             style: 'margin: 0; line-height: 1.7',
             text:
-              'Cores, memory and touch are the values the hardware of that device can really report. ' +
+              'Lõi CPU, bộ nhớ và cảm ứng là những giá trị mà phần cứng của thiết bị đó thực sự có thể báo. ' +
               'A profile of this device draws one of them -- it never reports a core count the model ' +
               'does not have, and two profiles of the same model do not report the same one.',
           }),
@@ -818,7 +1067,7 @@ async function renderPresets(actions, content) {
       ]),
       el('div', { class: 'card' }, [
         el('div', { class: 'card-head' }, [
-          el('h3', { text: 'The catalogue (' + presets.length + ')' }),
+          el('h3', { text: 'Danh mục (' + presets.length + ')' }),
         ]),
         el('div', { class: 'table-wrap' }, [table]),
       ]),
@@ -862,14 +1111,14 @@ async function renderProxies(actions, content) {
           el('tr', {}, [
             el('th', { text: 'Profile' }),
             el('th', { text: 'Proxy' }),
-            el('th', { text: 'Location' }),
-            el('th', { text: 'Time zone' }),
+            el('th', { text: 'Vị trí' }),
+            el('th', { text: 'Múi giờ' }),
           ]),
         ]),
         el('tbody', {}, rows),
       ])
     : el('div', { class: 'empty' }, [
-        el('h3', { text: 'No proxy is assigned' }),
+        el('h3', { text: 'Chưa gán proxy' }),
         el('p', {
           text:
             withoutProxy.length +
@@ -880,11 +1129,11 @@ async function renderProxies(actions, content) {
   content.replaceChildren(
     el('div', {}, [
       el('div', { class: 'stat-grid' }, [
-        statTile('Proxied', num(withProxy.length), 'with a proxy'),
-        statTile('Direct', num(withoutProxy.length), 'on this machine'),
+        statTile('Có proxy', num(withProxy.length), 'dùng đường truyền riêng'),
+        statTile('Trực tiếp', num(withoutProxy.length), 'trên máy này'),
       ]),
       el('div', { class: 'card' }, [
-        el('div', { class: 'card-head' }, [el('h3', { text: 'The proxy table' })]),
+        el('div', { class: 'card-head' }, [el('h3', { text: 'Bảng proxy' })]),
         el('div', { class: 'table-wrap' }, [table]),
       ]),
     ]),
@@ -897,7 +1146,7 @@ async function renderAudit(actions, content) {
   actions.appendChild(
     el('button', {
       class: 'btn btn-primary',
-      text: 'Run the probe',
+      text: 'Chạy kiểm tra',
       onclick: async (event) => {
         event.target.disabled = true;
         event.target.textContent = 'Probing…';
@@ -913,7 +1162,7 @@ async function renderAudit(actions, content) {
         } catch (error) {
           toast(String((error && error.message) || error), 'bad');
           event.target.disabled = false;
-          event.target.textContent = 'Run the probe';
+          event.target.textContent = 'Chạy kiểm tra';
         }
       },
     }),
@@ -936,20 +1185,20 @@ async function renderAudit(actions, content) {
   content.replaceChildren(
     el('div', {}, [
       el('div', { class: 'card' }, [
-        el('div', { class: 'card-head' }, [el('h3', { text: 'Last known sample' })]),
+        el('div', { class: 'card-head' }, [el('h3', { text: 'Mẫu gần nhất' })]),
         el('div', { class: 'table-wrap' }, [
           rows.length
             ? el('table', {}, [
                 el('thead', {}, [
-                  el('tr', {}, [el('th', { text: 'Metric' }), el('th', { text: 'Value' })]),
+                  el('tr', {}, [el('th', { text: 'Chỉ số' }), el('th', { text: 'Giá trị' })]),
                 ]),
                 el('tbody', {}, rows),
               ])
             : el('div', { class: 'empty' }, [
-                el('h3', { text: 'Nothing has been probed yet' }),
+                el('h3', { text: 'Chưa kiểm tra gì' }),
                 el('p', {
                   text:
-                    'The probe opens a profile and reads what the browser reports, then compares it against what the profile says.',
+                    'Bộ kiểm tra mở một profile, đọc những gì trình duyệt báo, rồi so với những gì profile khai.',
                 }),
               ]),
         ]),
@@ -1000,23 +1249,23 @@ async function renderSettings(actions, content) {
   content.replaceChildren(
     el('div', {}, [
       el('div', { class: 'card', style: 'margin-bottom: 16px' }, [
-        el('div', { class: 'card-head' }, [el('h3', { text: 'This installation' })]),
+        el('div', { class: 'card-head' }, [el('h3', { text: 'Bản cài đặt này' })]),
         el('div', { class: 'card-body' }, [list]),
       ]),
       el('div', { class: 'card' }, [
         el('div', { class: 'card-head' }, [
-          el('h3', { text: 'Defaults for a new profile' }),
+          el('h3', { text: 'Cài đặt mặc định cho profile mới' }),
         ]),
         el('div', { class: 'table-wrap' }, [
           defaultRows.length
             ? el('table', {}, [
                 el('thead', {}, [
-                  el('tr', {}, [el('th', { text: 'Setting' }), el('th', { text: 'Value' })]),
+                  el('tr', {}, [el('th', { text: 'Cài đặt' }), el('th', { text: 'Giá trị' })]),
                 ]),
                 el('tbody', {}, defaultRows),
               ])
             : el('div', { class: 'empty' }, [
-                el('p', { text: 'No defaults are configured. The engine uses its own.' }),
+                el('p', { text: 'Chưa cấu hình mặc định nào. Bộ máy dùng giá trị riêng của nó.' }),
               ]),
         ]),
       ]),
