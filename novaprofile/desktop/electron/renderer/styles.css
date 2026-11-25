@@ -688,6 +688,41 @@ select {
   pointer-events: none;
 }
 
+/* The mistakes the interface made.  They are shown in the corner of
+   the window so that the operator can see them and can tell the
+   developer about them, instead of them being lost in the console. */
+.error-trap {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 60vw;
+  padding: 10px 12px;
+  border: 1px solid #7f1d1d;
+  border-radius: var(--radius);
+  background: #2a1414;
+  color: #fecaca;
+  font-size: 12px;
+  z-index: 70;
+  pointer-events: auto;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+.error-trap .trap-label {
+  font-weight: 650;
+  color: #fca5a5;
+  white-space: nowrap;
+}
+
+.error-trap .mono {
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .toast {
   min-width: 250px;
   max-width: 420px;

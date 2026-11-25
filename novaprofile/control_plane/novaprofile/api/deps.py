@@ -165,6 +165,33 @@ def get_resolver() -> Any:
     return resolver_cls()
 
 
+def _note_browser_exit(profile_id: str, code: int | None) -> None:
+    """Write the status of a profile whose browser has closed.
+
+    The operator can close the browser's own window, and that is not a
+    call the interface makes.  The launcher watches the browser and
+    tells the control plane when it is gone, and the control plane
+    writes the status, so the table of profiles is right without the
+    operator doing anything.
+    """
+
+    try:
+        store = get_store()
+    except Exception:  # noqa: BLE001 - the note is best effort
+        return
+
+    writer = getattr(store, "set_status", None)
+    if not callable(writer):
+        writer = getattr(store, "update_profile_status", None)
+    if not callable(writer):
+        return
+
+    try:
+        writer(profile_id, "ready")
+    except Exception:  # noqa: BLE001 - the note is best effort
+        pass
+
+
 @functools.lru_cache(maxsize=1)
 def get_launcher() -> Any:
     """Return the process-wide :class:`~novaprofile.launcher.launcher.BrowserLauncher`."""
@@ -172,7 +199,7 @@ def get_launcher() -> Any:
     launcher_cls = getattr(module, "BrowserLauncher", None)
     if launcher_cls is None:
         raise ModuleUnavailableError("novaprofile.launcher.launcher", "BrowserLauncher is missing")
-    launcher = launcher_cls()
+    launcher = launcher_cls(on_exit=_note_browser_exit)
     profiles_root = get_profile_home() / "profiles"
     setter = getattr(launcher, "set_profiles_root", None)
     if callable(setter):

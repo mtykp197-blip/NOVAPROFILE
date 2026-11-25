@@ -31,9 +31,11 @@ import hashlib
 import json
 import os
 import shlex
+import json
 import subprocess
+import threading
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -210,6 +212,7 @@ class BrowserLauncher:
         js_runtime: bool = True,
         device_emulation: bool = True,
         debug_port_base: int = 9333,
+        on_exit: Callable[[str, int | None], None] | None = None,
     ) -> None:
         self._chrome_path = chrome_path
         self._isolation = isolation or ProfileIsolation()
@@ -227,6 +230,14 @@ class BrowserLauncher:
         self._device_emulation_enabled = device_emulation
         self._debug_port_base = debug_port_base
         self._launched: dict[str, LaunchedBrowser] = {}
+        # The callback that is told when a browser has gone.  It is the
+        # control plane's way of learning that the operator closed the
+        # window, which is not a call the interface makes.
+        self._on_exit = on_exit
+        self._watchers: dict[str, threading.Thread] = {}
+        # The relays that carry the proxy's name, one for each browser
+        # that is open.
+        self._relays: dict[str, Any] = {}
 
     # -- core selection ----------------------------------------------------
 
@@ -465,13 +476,35 @@ class BrowserLauncher:
         proxy_port = int(_getattr_path(config, "proxy.port") or 0)
         if proxy_enabled and proxy_host and proxy_port and proxy_protocol != "direct":
             scheme = "http" if proxy_protocol in {"http", "https"} else proxy_protocol
-            args.append(f"--proxy-server={scheme}://{proxy_host}:{proxy_port}")
-            if _getattr_path(config, "proxy.auth_method") == "userpass":
-                username = str(_getattr_path(config, "proxy.username") or "")
-                password = str(_getattr_path(config, "proxy.password") or "")
-                if username:
-                    args.append("--proxy-bypass-list=<-loopback>")
-                    args.append(f"--proxy-server-credentials={username}:{password}")
+
+            # A proxy that asks for a name and a password cannot be
+            # told about on the command line: the browser has no flag
+            # for it, and the flag that looks like one belongs to the
+            # extension that sets the proxy.  So the browser is pointed
+            # at a relay that lives on this machine, and the relay is
+            # the one that carries the name and the password.
+            username = str(_getattr_path(config, "proxy.username") or "")
+            password = str(_getattr_path(config, "proxy.password") or "")
+            needs_auth = (
+                _getattr_path(config, "proxy.auth_method") == "userpass" and username
+            )
+
+            relay_address = ""
+            if needs_auth and scheme in {"http", "socks5"}:
+                relay_address = self._start_relay(
+                    profile_id=str(_getattr_path(config, "identity.id") or ""),
+                    scheme=scheme,
+                    host=proxy_host,
+                    port=proxy_port,
+                    username=username,
+                    password=password,
+                )
+
+            if relay_address:
+                args.append(f"--proxy-server={relay_address}")
+                args.append("--proxy-bypass-list=<-loopback>")
+            else:
+                args.append(f"--proxy-server={scheme}://{proxy_host}:{proxy_port}")
 
         # -- DNS ------------------------------------------------------------
         dns_mode = str(_getattr_path(config, "dns.mode") or "system")
@@ -542,6 +575,40 @@ class BrowserLauncher:
         args.extend(self._extra_args)
 
         return args
+
+    def _start_relay(
+        self,
+        *,
+        profile_id: str,
+        scheme: str,
+        host: str,
+        port: int,
+        username: str,
+        password: str,
+    ) -> str:
+        # Start the relay that carries the proxy's name, and return its
+        # address.
+        #
+        # The relay listens on the loopback only, on a port the
+        # operating system chooses.  It is closed with the browser.
+
+        try:
+            from .proxy_relay import ProxyRelay
+
+            relay = ProxyRelay(
+                {
+                    "type": scheme,
+                    "ip": host,
+                    "port": int(port),
+                    "user": username,
+                    "pass": password,
+                }
+            )
+        except Exception:  # noqa: BLE001 - the relay is best effort
+            return ""
+
+        self._relays[profile_id] = relay
+        return relay.url
 
     @staticmethod
     def _executable_of(selection: CoreSelection) -> str:
@@ -733,7 +800,66 @@ class BrowserLauncher:
         if self._device_emulation_enabled and not self._headless:
             self._apply_device_emulation(config, launched)
 
+        # The browser is watched, so that a window the operator closed
+        # is noticed.
+        self._watch(profile_id, launched)
+
         return launched
+
+    def _watch(self, profile_id: str, launched: LaunchedBrowser) -> None:
+        # Watch a browser and say when it is gone.
+        #
+        # The watch is a thread that waits for the process and then
+        # tells the control plane.  A browser that is stopped through
+        # the interface is told about twice -- once by the stop and
+        # once by the watch -- and the control plane writes the same
+        # status both times, so the second one changes nothing.
+
+        if self._on_exit is None:
+            return
+
+        process = launched.process
+        if process is None:
+            return
+
+        def wait() -> None:
+            try:
+                code = process.wait()
+            except Exception:  # noqa: BLE001 - the watch is best effort
+                code = None
+            finally:
+                self._watchers.pop(profile_id, None)
+
+            # The browser that is still in the table is not the one
+            # that was watched -- a new browser was started in its
+            # place -- and the watch stays quiet.
+            current = self._launched.get(profile_id)
+            if current is not None and current is not launched:
+                return
+
+            self._launched.pop(profile_id, None)
+
+            relay = self._relays.pop(profile_id, None)
+            if relay is not None:
+                closer = getattr(relay, "close", None)
+                if callable(closer):
+                    try:
+                        closer()
+                    except Exception:  # noqa: BLE001 - the close is best effort
+                        pass
+
+            try:
+                self._on_exit(profile_id, code)
+            except Exception:  # noqa: BLE001 - the callback is best effort
+                pass
+
+        thread = threading.Thread(
+            target=wait,
+            name='nova-watch-' + profile_id[:8],
+            daemon=True,
+        )
+        self._watchers[profile_id] = thread
+        thread.start()
 
     def _apply_device_emulation(self, config: Any, launched: LaunchedBrowser) -> bool:
         """Turn the browser's touch mode on.
@@ -899,6 +1025,16 @@ class BrowserLauncher:
 
         with contextlib.suppress(Exception):
             ProfileIsolation.cleanup_lock_files(launched.user_data_dir)
+        # The relay is closed with the browser: it holds the proxy's
+        # name and its password, and nothing should be left listening
+        # once the browser has gone.
+        relay = self._relays.pop(profile_id, None)
+        if relay is not None:
+            closer = getattr(relay, "close", None)
+            if callable(closer):
+                with contextlib.suppress(Exception):
+                    closer()
+
         # The JavaScript payload is removed with the browser.  It carries
         # the fingerprint in the clear, and the next profile in the same
         # directory must not be able to read it.

@@ -26,6 +26,14 @@ const http = require('node:http');
 
 const IS_DEV = process.argv.includes('--dev');
 
+// The developer build opens a port the window can be inspected
+// through, so that the state of the page can be read from the outside
+// while it is being worked on.  The switch has to be set before the
+// application is ready, or the window is opened without it.
+if (IS_DEV) {
+  app.commandLine.appendSwitch('remote-debugging-port', '9222');
+}
+
 // The port the control plane listens on.  A fixed port keeps the
 // shell's own address book simple; the shell checks that the port is
 // free before it starts anything, and refuses to start if it is taken

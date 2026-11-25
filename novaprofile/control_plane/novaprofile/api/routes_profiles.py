@@ -593,6 +593,47 @@ async def list_profiles(
     return payload
 
 
+@router.get("/running", summary="List the profiles that are running")
+async def list_running_profiles(
+    store: Any = Depends(deps.get_store),  # noqa: B008
+) -> dict[str, Any]:
+    """Return the identifiers of the profiles whose browser is open.
+
+    The window asks this every few seconds, so that a browser the
+    operator closed with its own window loses its mark.  The answer is
+    the identifiers and nothing else, because the question is asked
+    often and the answer has to be small.
+    """
+
+    lister = getattr(store, "list_profiles", None)
+    if lister is None:
+        return {"items": [], "total": 0}
+
+    try:
+        configs = lister()
+    except TypeError:
+        try:
+            configs = lister(status="running")
+        except Exception:  # noqa: BLE001 - the list is best effort
+            configs = []
+    except Exception:  # noqa: BLE001 - the list is best effort
+        configs = []
+
+    items: list[str] = []
+    for config in configs or []:
+        payload = deps._to_plain(config)
+        if not isinstance(payload, dict):
+            continue
+        identity = payload.get("identity") or {}
+        if identity.get("status") != "running":
+            continue
+        profile_id = identity.get("id") or payload.get("profile_id")
+        if profile_id:
+            items.append(str(profile_id))
+
+    return {"items": items, "total": len(items)}
+
+
 @router.get("/rows", summary="List profiles for the table")
 async def list_profile_rows(
     group_id: str | None = Query(default=None),  # noqa: B008

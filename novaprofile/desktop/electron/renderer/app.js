@@ -52,7 +52,7 @@ const shell = {
 function el(tag, attrs, children) {
   const node = document.createElement(tag);
   const attributes = attrs || {};
-  const kids = children === undefined ? [] : [].concat(children);
+  const kids = flatten(children);
 
   for (const key of Object.keys(attributes)) {
     const value = attributes[key];
@@ -70,6 +70,31 @@ function el(tag, attrs, children) {
     node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
   }
   return node;
+}
+
+/**
+ * The children of an element, with the lists inside it opened out.
+ *
+ * A list of rows is the most natural thing to hand to an element, and
+ * it is most natural to build it with ``map``.  So the lists inside
+ * the children are opened out, and a child that is not a node and not
+ * a list is left alone -- the browser will say so itself, and it will
+ * say which one it was.
+ */
+function flatten(children) {
+  if (children === undefined || children === null) return [];
+
+  const out = [];
+  const walk = (value) => {
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    out.push(value);
+  };
+  walk(children);
+
+  return out;
 }
 
 /** Shorten an identifier for display, without losing its shape. */
@@ -229,8 +254,9 @@ async function render() {
   } catch (error) {
     content.replaceChildren(
       el('div', { class: 'empty' }, [
-        el('h3', { text: 'Bộ điều khiển không trả lời' }),
-        el('p', { text: String((error && error.message) || error) }),
+        el('h3', { text: 'Có lỗi khi vẽ trang' }),
+        el('p', { class: 'mono', text: String((error && error.message) || error) }),
+        el('p', { class: 'hint', text: errorSource(error) }),
         el('button', {
           class: 'btn',
           text: 'Thử lại',
@@ -239,6 +265,115 @@ async function render() {
       ]),
     );
   }
+}
+
+/**
+ * The profiles that are running, as the table last knew them.
+ *
+ * The table keeps this so that it knows whether the control plane has
+ * said anything new.
+ */
+let runningIds = new Set();
+
+/**
+ * The timer that asks what is running.
+ */
+let runningTimer = null;
+
+/**
+ * Ask what is running, and redraw the table when the answer changed.
+ *
+ * The question is small and the answer is smaller, so this costs
+ * nothing.  The table is redrawn only when a browser has opened or
+ * closed, and the drawing of a hundred rows is quick.
+ */
+async function pollRunning() {
+  if (!shell.ready) return;
+
+  try {
+    // The question is small: the identifiers of the profiles whose
+    // browser is open, and nothing else.
+    const response = await call('GET', '/api/profiles/running');
+    const items = (response && response.items) || [];
+
+    const now = new Set(items.map((id) => String(id)));
+
+    // The answer is the same as the last one: nothing to draw.
+    if (now.size === runningIds.size) {
+      let same = true;
+      for (const id of now) {
+        if (!runningIds.has(id)) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return;
+    }
+
+    runningIds = now;
+
+    if (currentView === 'profiles') {
+      await renderProfiles(
+        document.getElementById('topbar-actions'),
+        document.getElementById('content'),
+      );
+    }
+  } catch (error) {
+    // The window keeps the answer it has.
+  }
+}
+
+/**
+ * Start asking what is running, or stop asking.
+ *
+ * The asking stops when nothing is running, so a window that is only
+ * looking at a fleet of closed profiles does not ask anything.
+ */
+function refreshRunningPoll() {
+  const wanted = runningIds.size > 0;
+
+  if (wanted && !runningTimer) {
+    runningTimer = setInterval(pollRunning, 3000);
+  } else if (!wanted && runningTimer) {
+    clearInterval(runningTimer);
+    runningTimer = null;
+  }
+}
+
+/**
+ * The errors that escape the drawing.
+ *
+ * A mistake in a click handler or in a timer is caught by the browser
+ * and written to the console, where the operator never sees it.  It
+ * is caught here as well and shown in the corner of the window, so
+ * that a mistake in the interface is something the operator can see
+ * and the operator can tell the developer about.
+ */
+function installErrorTrap() {
+  const show = (label, error) => {
+    const box = document.getElementById('error-trap');
+    if (!box) return;
+    box.hidden = false;
+    box.replaceChildren(
+      el('span', { class: 'trap-label', text: label }),
+      el('span', { class: 'mono', text: String((error && error.message) || error) }),
+      el('button', {
+        class: 'btn btn-sm btn-ghost',
+        text: 'Đóng',
+        onclick: () => {
+          box.hidden = true;
+        },
+      }),
+    );
+  };
+
+  window.addEventListener('error', (event) => {
+    show('Lỗi giao diện', event.error || event.message);
+  });
+
+  window.addEventListener('unhandledrejection', (event) => {
+    show('Lỗi giao diện', event.reason);
+  });
 }
 
 /* ------------------------------ profiles --------------------------- */
@@ -254,6 +389,13 @@ async function renderProfiles(actions, content) {
   );
   profiles = pickList(response, 'profiles');
   const total = (response && response.total) || profiles.length;
+
+  // The table knows which of the profiles it shows are running, and
+  // the poll starts when there is one.
+  runningIds = new Set(
+    profiles.filter((profile) => isRunning(profile)).map((profile) => profileId(profile)),
+  );
+  refreshRunningPoll();
 
   actions.appendChild(
     el('button', {
@@ -445,12 +587,10 @@ function profileTable(rows) {
     ]),
   ]);
 
-  const shown = visibleRows(rows);
-
   const body = el(
     'tbody',
     {},
-    shown.map((profile) => {
+    rows.map((profile) => {
       const identity = identityOf(profile);
       const running = isRunning(profile);
       const id = profileId(profile);
@@ -980,6 +1120,27 @@ function openAnalysisDialog() {
 }
 
 /**
+ * Where an error came from.
+ *
+ * The control plane answers over the network and the page draws what
+ * it answers, so an error that happened while drawing is usually a
+ * mistake in the page rather than a problem with the service.  The
+ * operator is told which of the two it was.
+ */
+function errorSource(error) {
+  const message = String((error && error.message) || error || '');
+  if (
+    /is not defined|is not a function|Cannot read|undefined/i.test(message)
+  ) {
+    return 'Lỗi nằm trong giao diện, không phải ở bộ điều khiển.';
+  }
+  if (/ECONNREFUSED|fetch failed|Network Error/i.test(message)) {
+    return 'Bộ điều khiển không trả lời.';
+  }
+  return 'Xem chi tiết bên dưới.';
+}
+
+/**
  * Whether a profile's browser is running.
  *
  * The status lives inside the profile's identity, and a profile that
@@ -1327,6 +1488,10 @@ function openBulkProxyDialog() {
  * a record but is not enabled is a profile with no proxy.
  */
 function proxyLabel(profile) {
+  // The light row carries the proxy as the text that is shown.
+  if (profile && typeof profile.proxy === 'string' && profile.proxy) {
+    return profile.proxy;
+  }
   const proxy = configOf(profile).proxy;
   if (!proxy || typeof proxy !== 'object') return proxy ? String(proxy) : '';
   if (!proxy.enabled) return '';
@@ -1765,7 +1930,9 @@ function optionList(values) {
 /* ----------------------------- proxies ----------------------------- */
 
 async function renderProxies(actions, content) {
-  const response = await call('GET', '/api/profiles?limit=100000');
+  // The rows carry the proxy, so the whole configuration of every
+  // profile in the fleet is not needed to draw this page.
+  const response = await call('GET', '/api/profiles/rows?limit=100000');
   const all = pickList(response, 'profiles');
 
   const withProxy = all.filter((profile) => proxyLabel(profile));
@@ -1972,6 +2139,8 @@ api.on('backend:ready', async () => {
   shell.error = null;
   setStatus('ok', 'Control plane ready');
   await render();
+  await pollRunning();
+  refreshRunningPoll();
 });
 
 api.on('backend:failed', (payload) => {
@@ -2018,6 +2187,10 @@ async function probe() {
 }
 
 (async function start() {
+  // The trap is installed first, so that a mistake in the interface is
+  // shown even if it happens while the window is waking up.
+  installErrorTrap();
+
   try {
     shell.info = await api.info();
     document.getElementById('version').textContent = 'v' + (shell.info.version || '?');
