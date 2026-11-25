@@ -817,7 +817,28 @@ async def launch_profile(
         result = launch(config, extra_args=extra_args or None)
     except TypeError:
         result = launch(config)
+
+    # The profile's own status now says that it is running, so the
+    # table of profiles shows which of them are open.
+    _set_status(store, profile_id, "running")
+
     return _launch_result(result, profile_id)
+
+
+def _set_status(store: Any, profile_id: str, status: str) -> None:
+    """Write a lifecycle status onto a profile.
+
+    The store is the one that knows how to write the status, and a
+    store that does not is not a reason to fail a launch.
+    """
+
+    setter = getattr(store, "set_status", None)
+    if not callable(setter):
+        return
+    try:
+        setter(profile_id, status)
+    except Exception:  # noqa: BLE001 - the launch itself is what matters
+        pass
 
 
 def _launch_result(result: Any, profile_id: str) -> dict[str, Any]:
@@ -846,6 +867,15 @@ async def stop_profile(
 ) -> dict[str, Any]:
     """Stop the running browser for a profile."""
     _load_profile(profile_id, store)
+
+    # The status is written before the browser is asked to stop, so
+    # the table never shows a profile as running once it is closed.
+    #
+    # The status is "ready" and not "stopped": a profile that has been
+    # stopped is a profile that is ready to be started again, and
+    # "ready" is the word the lifecycle knows.
+    _set_status(store, profile_id, "ready")
+
     for attr in ("stop", "stop_profile", "terminate"):
         fn = getattr(launcher, attr, None)
         if callable(fn):

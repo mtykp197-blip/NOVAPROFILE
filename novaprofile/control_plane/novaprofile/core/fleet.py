@@ -203,6 +203,31 @@ def _core_count(preset: DevicePreset) -> int:
     return cores_from_cluster_layout(preset.abi.cpu_cluster_layout)
 
 
+def _release_of(preset: DevicePreset) -> str:
+    """The Android release the handset is sold with.
+
+    It is the newest release the catalogue knows for the handset, which
+    is the release the first unit of it carries.  The other releases
+    it was updated to are on the same axis as the model code, and
+    they are what the generator draws from.
+    """
+
+    variants = preset.release_variants or ((preset.release, preset.sdk_int),)
+    return str(variants[0][0])
+
+
+def _memory_report_of(preset: DevicePreset) -> int:
+    """The memory the platform reports for the handset.
+
+    The platform rounds the physical memory to a power of two and
+    clamps it at eight gigabytes, so this is the value that a site
+    reads, and not the size of the memory the handset was sold with.
+    """
+
+    physical = preset.ram_options[0] if preset.ram_options else 0
+    return approximate_device_memory(physical)
+
+
 def _memory_value(preset: DevicePreset) -> int:
     """The memory the preset's handsets report, once Chromium rounds it.
 
@@ -287,6 +312,18 @@ _READS: tuple[tuple[int, ...], ...] = (
     (0, 3, 4),
     (0, 5, 3, 4),
     (0, 1, 2, 3, 4, 5, 6, 7, 8),
+    # The readings a site makes when it does not look at the model.
+    #
+    # The Android release on its own, the core count with the release,
+    # and the release with the memory: these three are what a script
+    # reads to put two profiles in one bucket, and none of them needs
+    # the model to do it.  They weigh more than the readings that do
+    # look at the model, because a site that reads the model is the
+    # site that has already grouped the fleet.
+    (9,),
+    (9, 5),
+    (9, 10),
+    (9, 5, 10),
 )
 
 #: How much each read counts.  The whole machine counts most, because
@@ -305,6 +342,10 @@ _WEIGHTS: dict[tuple[int, ...], float] = {
     (0, 3, 4): 1,
     (0, 5, 3, 4): 0.5,
     (0, 1, 2, 3, 4, 5, 6, 7, 8): 0.25,
+    (9,): 3,
+    (9, 5): 2.5,
+    (9, 10): 2.5,
+    (9, 5, 10): 2,
 }
 
 
@@ -320,8 +361,153 @@ def _scaled_weight(weight: float) -> int:
     return int(round(weight * 4))
 
 
+#: How many handsets in the field report each amount of memory.
+#:
+#: These are the numbers Chromium reports -- one, two, four and eight
+#: gigabytes -- and the shares are the shares of the phones that are
+#: actually in use.  Four gigabytes carries the market, eight is the
+#: one above it, two is the one below it, and one is the rarity.
+_MEMORY_SHARES: tuple[tuple[int, float], ...] = (
+    (4, 0.44),
+    (8, 0.26),
+    (2, 0.22),
+    (1, 0.08),
+)
+
+
+def _memory_band(preset: DevicePreset) -> int:
+    """The amount of memory a handset of this kind reports.
+
+    The band is the one Chromium would report for the memory the
+    handset was sold with.  A handset that was sold with eight
+    gigabytes is in the eight gigabyte band, and one that was sold
+    with six is in the four gigabyte band, because six is reported
+    as four.
+    """
+
+    physical = preset.ram_options[0] if preset.ram_options else 0
+    return approximate_device_memory(physical)
+
+
+def _hardware_kind(preset: DevicePreset) -> tuple:
+    """The kind of hardware a machine is.
+
+    It is the two readings that say how old the phone is and how fast
+    it is: the Android release and the core count.  Two profiles of
+    the same kind are alike in the way a market is alike -- most
+    phones run the same release on the same class of chip -- and they
+    are told apart by their panel, their GPU, their memory and their
+    serial.
+
+    The memory is not part of the kind.  A kind that is cut by the
+    memory as well holds only a handful of handsets, and a search
+    over a handful of handsets has nothing to choose between.
+    """
+
+    return (_release_of(preset), _core_count(preset))
+
+
+def _quotas(count: int, kinds: Sequence[tuple]) -> dict[tuple, int]:
+    """How many units of the fleet each kind of hardware gets.
+
+    The share is the share of the catalogue, rounded in the way that
+    adds up to the whole fleet: every kind gets its share rounded
+    down, and the units left over go to the kinds that were rounded
+    down hardest, largest remainder first.
+    """
+
+    if count <= 0 or not kinds:
+        return {}
+
+    totals = collections.Counter(kinds)
+    grand = sum(totals.values())
+
+    exact = {kind: count * size / grand for kind, size in totals.items()}
+    quota = {kind: int(value) for kind, value in exact.items()}
+
+    left = count - sum(quota.values())
+    order = sorted(
+        totals,
+        key=lambda kind: (-(exact[kind] - quota[kind]), kind),
+    )
+    for index in range(left):
+        quota[order[index % len(order)]] += 1
+
+    return quota
+
+
 def _spread_machines(presets: Sequence[DevicePreset], count: int) -> list[DevicePreset]:
     """Pick ``count`` machines that a site cannot group.
+
+    The rule the fleet is built by is not "share as few values as
+    possible" -- it is "keep the *largest group* as small as
+    possible".  Those are different, and the second one is the one a
+    site runs into.
+
+    A site reads a handful of values at once.  Two profiles that
+    agree on the GPU are a pair; two that agree on the chip count
+    *and* the memory are also a pair, and a script that reads those
+    two numbers finds the pair without reading the GPU at all.  The
+    chip count has four possible values and the memory has four, so
+    those two readings alone put sixteen profiles into one bucket.
+
+    So the fleet is scored on the combinations, and the machine that
+    is chosen is the one that makes the largest group smallest.  The
+    score of a candidate is the worst group it leaves behind over
+    the readings a script would plausibly use:
+
+    * the GPU on its own,
+    * the chip count and the memory together -- the cheapest read,
+    * the GPU with the chip count,
+    * the GPU with the panel,
+    * the whole machine.
+
+    Ties are broken towards the machine whose own values are rarest in
+    the catalogue, so the fleet leans on the handsets that are
+    hardest to find a twin for.
+    """
+
+    if count <= 0:
+        return []
+
+    candidates = _distinct_machines(presets)
+    if not candidates:
+        return []
+
+    # The fleet is given to the kinds of hardware in the proportion the
+    # catalogue has them, and the search below runs inside each kind.
+    #
+    # Without this the search finds the rare readings and fills the
+    # fleet with them: every profile reports the same core count, the
+    # same memory and the same Android release, which is the easiest
+    # possible thing for a site to group on and the least possible
+    # thing for a real phone to do.
+    by_kind: dict[tuple, list[DevicePreset]] = {}
+    for preset in candidates:
+        by_kind.setdefault(_hardware_kind(preset), []).append(preset)
+
+    quota = _quotas(count, [_hardware_kind(preset) for preset in candidates])
+
+    if len(by_kind) > 1:
+        # The kinds are dealt out in order, but the units of one kind
+        # must not all come before the units of another, or a site
+        # that reads the release in order sees the fleet change
+        # character half way through.
+        chosen = _deal_round_robin(
+            [_spread_by_memory(by_kind[kind], quota[kind]) for kind in quota]
+        )
+        return chosen[:count]
+
+    # A catalogue of one kind: the memory still decides how many of
+    # the units report which amount of memory.
+    return _spread_by_memory(candidates, count)
+
+    # One kind of hardware only: the search runs as it always did.
+    return _spread_within(candidates, count)
+
+
+def _spread_within(presets: Sequence[DevicePreset], count: int) -> list[DevicePreset]:
+    """The spreading search, over one kind of hardware.
 
     The rule the fleet is built by is not "share as few values as
     possible" -- it is "keep the *largest group* as small as
@@ -376,6 +562,8 @@ def _spread_machines(presets: Sequence[DevicePreset], count: int) -> list[Device
                 _memory_value(preset),
                 _touch_points(preset),
                 preset.screen.device_pixel_ratio,
+                _release_of(preset),
+                _memory_report_of(preset),
             )
         )
 
@@ -590,6 +778,78 @@ def _spread_machines(presets: Sequence[DevicePreset], count: int) -> list[Device
         chosen.append(best_index)
 
     return [candidates[index] for index in chosen]
+
+
+def _spread_by_memory(presets: Sequence[DevicePreset], count: int) -> list[DevicePreset]:
+    """Spread a fleet over the memory bands of the field.
+
+    The bands get their share of the fleet, and the search runs inside
+    each band, so the fleet reports the memory the market reports and
+    no two of its units share a panel, a GPU and a build.
+
+    A band that has no handset in it gets no units, and the units it
+    would have had go to the bands that do have handsets, in the
+    proportion of the handsets they hold.  A fleet that draws from a
+    catalogue of four gigabyte phones therefore reports four gigabytes
+    on every profile, which is what a fleet of four gigabyte phones
+    does.
+    """
+
+    if count <= 0:
+        return []
+
+    by_band: dict[int, list[DevicePreset]] = {}
+    for preset in presets:
+        by_band.setdefault(_memory_band(preset), []).append(preset)
+    if not by_band:
+        return []
+
+    # The share of the field each band gets.
+    quota: dict[int, int] = {}
+    for band, share in _MEMORY_SHARES:
+        if band in by_band:
+            quota[band] = int(count * share)
+
+    # The bands the field's shares say nothing about, and the units
+    # left over, go to the bands that hold handsets.
+    leftover = count - sum(quota.values())
+    if leftover > 0:
+        spare = {band: len(group) for band, group in by_band.items() if band not in quota}
+        held = sum(spare.values())
+        if held:
+            for band, size in spare.items():
+                quota[band] = quota.get(band, 0) + int(leftover * size / held)
+        else:
+            # Every band is a band the field knows about, and the
+            # rounding left a few units over: they go to the bands
+            # with the most handsets.
+            for band in sorted(by_band, key=lambda b: (-len(by_band[b]), b)):
+                if leftover <= 0:
+                    break
+                quota[band] = quota.get(band, 0) + 1
+                leftover -= 1
+
+    chosen = _deal_round_robin(
+        [_spread_within(by_band[band], quota.get(band, 0)) for band in by_band]
+    )
+    return chosen[:count]
+
+
+def _deal_round_robin(batches: Sequence[list[DevicePreset]]) -> list[DevicePreset]:
+    """Deal the batches out in turn, one unit each.
+
+    A fleet of a hundred handsets that is fifty of one kind followed by
+    fifty of another is two fleets, and a site that reads the fleet
+    over time sees it change.  Dealing them out keeps the mix of the
+    fleet the same from the first unit to the last.
+    """
+
+    dealt: list[DevicePreset] = []
+    for index in range(max((len(batch) for batch in batches), default=0)):
+        for batch in batches:
+            if index < len(batch):
+                dealt.append(batch[index])
+    return dealt
 
 
 def plan_fleet(

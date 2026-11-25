@@ -22,6 +22,9 @@ let profiles = [];
 /** The devices in the catalogue. */
 let presets = [];
 
+/** The profiles that are ticked. */
+const selection = new Set();
+
 /** The state of the shell itself. */
 const shell = {
   ready: false,
@@ -260,10 +263,14 @@ async function renderProfiles(actions, content) {
     oninput: (event) => filterProfiles(event.target.value),
   });
 
+  // The bar is filled every time the table is drawn, so it never
+  // shows a count that is one behind the table.
+  refreshSelectionBar();
+
   const body = el('div', {}, [
     el('div', { class: 'stat-grid' }, [
       statTile('Profile', num(profiles.length), 'trên máy này'),
-      statTile('Đang mở', num(profiles.filter((p) => p.status === 'running' || p.running).length), 'browsers open'),
+      statTile('Đang mở', num(profiles.filter((p) => isRunning(p)).length), 'trình duyệt đang chạy'),
       statTile('Có proxy', num(profiles.filter((p) => proxyLabel(p)).length), 'dùng đường truyền riêng'),
       statTile('Nhóm', num(new Set(profiles.map((p) => p.group_id).filter(Boolean)).size), 'đã đặt tên'),
     ]),
@@ -315,8 +322,28 @@ function profileTable(rows) {
     ]);
   }
 
+  const allTicked = rows.length > 0 && rows.every((profile) => selection.has(profileId(profile)));
+
   const head = el('thead', {}, [
     el('tr', {}, [
+      el('th', { class: 'tick-col' }, [
+        el('input', {
+          type: 'checkbox',
+          class: 'row-tick',
+          checked: allTicked,
+          title: allTicked ? 'Bỏ chọn tất cả' : 'Chọn tất cả',
+          onchange: (event) => {
+            const box = event.currentTarget;
+            for (const profile of rows) {
+              const id = profileId(profile);
+              if (box.checked) selection.add(id);
+              else selection.delete(id);
+            }
+            refreshSelectionBar();
+            render();
+          },
+        }),
+      ]),
       el('th', { text: 'Profile' }),
       el('th', { text: 'Thiết bị' }),
       el('th', { text: 'Android' }),
@@ -332,9 +359,24 @@ function profileTable(rows) {
     {},
     rows.map((profile) => {
       const identity = identityOf(profile);
-      const running = identity.status === 'running' || profile.running;
+      const running = isRunning(profile);
       const id = profileId(profile);
-      return el('tr', {}, [
+      const ticked = selection.has(id);
+      return el('tr', { class: ticked ? 'row-ticked' : '' }, [
+        el('td', { class: 'tick-col' }, [
+          el('input', {
+            type: 'checkbox',
+            class: 'row-tick',
+            checked: ticked,
+            onchange: (event) => {
+              const box = event.currentTarget;
+              if (box.checked) selection.add(id);
+              else selection.delete(id);
+              event.currentTarget.closest('tr').classList.toggle('row-ticked', box.checked);
+              refreshSelectionBar();
+            },
+          }),
+        ]),
         el('td', {}, [
           el('span', { class: 'cell-id', text: shortId(id) }),
         ]),
@@ -345,7 +387,7 @@ function profileTable(rows) {
         el('td', {}, [
           el('span', {
             class: 'pill ' + (running ? 'pill-run' : 'pill'),
-            text: identity.status || (running ? 'running' : 'idle'),
+            text: statusLabel(identity.status, running),
           }),
         ]),
         el('td', {}, [
@@ -389,6 +431,445 @@ function profileTable(rows) {
   );
 
   return el('table', {}, [head, body]);
+}
+
+/**
+ * The status of a profile, said in Vietnamese.
+ *
+ * The control plane has its own words for the states a profile is in,
+ * and the interface says them the way the operator reads them.
+ */
+function statusLabel(status, running) {
+  if (running) return 'Đang mở';
+  switch (String(status || '').toLowerCase()) {
+    case 'running':
+    case 'launching':
+    case 'starting':
+      return 'Đang mở';
+    case 'stopped':
+    case 'closed':
+    case 'stopping':
+      return 'Đã dừng';
+    case 'error':
+    case 'failed':
+      return 'Lỗi';
+    case 'starting':
+      return 'Đang khởi động';
+    case 'idle':
+    case 'ready':
+      return 'Chưa mở';
+    default:
+      return 'Chưa mở';
+  }
+}
+
+/**
+ * Read a proxy out of one line of text.
+ *
+ * The line is the way every proxy list is written: the address, the
+ * port, and -- when the proxy needs them -- the name and the
+ * password.  The four parts are separated by colons, and the password
+ * may itself hold colons, so a line of four parts is read from the
+ * right.
+ *
+ * The shapes that are understood:
+ *
+ *     ``1.2.3.4:8080``
+ *     ``1.2.3.4:8080:user``
+ *     ``1.2.3.4:8080:user:pass``
+ *     ``user:pass@1.2.3.4:8080``
+ *     ``socks5://1.2.3.4:1080:user:pass``
+ *
+ * A line that is none of those is not a proxy, and the operator is
+ * told so rather than being given a proxy that reaches nowhere.
+ */
+function parseProxyLine(line) {
+  const raw = String(line || '').trim();
+  if (!raw) return null;
+
+  let protocol = 'http';
+  let rest = raw;
+
+  // A scheme at the front names the protocol.
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(rest);
+  if (scheme) {
+    const name = scheme[1].toLowerCase();
+    if (['http', 'https', 'socks5', 'socks4'].indexOf(name) !== -1) {
+      protocol = name;
+    }
+    rest = rest.slice(scheme[0].length);
+  }
+
+  // The shape ``user:pass@host:port``.
+  const at = rest.lastIndexOf('@');
+  if (at !== -1) {
+    const credentials = rest.slice(0, at);
+    rest = rest.slice(at + 1);
+    const colon = credentials.indexOf(':');
+    const username = colon === -1 ? credentials : credentials.slice(0, colon);
+    const password = colon === -1 ? '' : credentials.slice(colon + 1);
+    const parts = rest.split(':');
+    if (parts.length < 2) return null;
+    const port = Number(parts[parts.length - 1]);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+    return {
+      protocol: protocol,
+      host: parts.slice(0, parts.length - 1).join(':'),
+      port: port,
+      username: username,
+      password: password,
+    };
+  }
+
+  const parts = rest.split(':');
+  if (parts.length < 2 || parts.length > 4) return null;
+
+  const port = Number(parts[1]);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+
+  const host = parts[0];
+  if (!host) return null;
+
+  let username = '';
+  let password = '';
+  if (parts.length === 3) {
+    username = parts[2];
+  } else if (parts.length === 4) {
+    username = parts[2];
+    // The password may hold a colon of its own, and it is the last
+    // part of the line, so everything after the third colon is the
+    // password.
+    password = parts.slice(3).join(':');
+  }
+
+  return {
+    protocol: protocol,
+    host: host,
+    port: port,
+    username: username,
+    password: password,
+  };
+}
+
+/**
+ * Read a proxy out of one line of text.
+ *
+ * The line is the way every proxy list is written: the address, the
+ * port, and -- when the proxy needs them -- the name and the
+ * password.  The four parts are separated by colons, and the password
+ * may itself hold colons, so a line of four parts is read from the
+ * right.
+ *
+ * The shapes that are understood:
+ *
+ *     ``1.2.3.4:8080``
+ *     ``1.2.3.4:8080:user``
+ *     ``1.2.3.4:8080:user:pass``
+ *     ``user:pass@1.2.3.4:8080``
+ *     ``socks5://1.2.3.4:1080:user:pass``
+ *
+ * A line that is none of those is not a proxy, and the operator is
+ * told so rather than being given a proxy that reaches nowhere.
+ */
+function parseProxyLine(line) {
+  const raw = String(line || '').trim();
+  if (!raw) return null;
+
+  let protocol = 'http';
+  let rest = raw;
+
+  // A scheme at the front names the protocol.
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(rest);
+  if (scheme) {
+    const name = scheme[1].toLowerCase();
+    if (['http', 'https', 'socks5', 'socks4'].indexOf(name) !== -1) {
+      protocol = name;
+    }
+    rest = rest.slice(scheme[0].length);
+  }
+
+  // The shape ``user:pass@host:port``.
+  const at = rest.lastIndexOf('@');
+  if (at !== -1) {
+    const credentials = rest.slice(0, at);
+    rest = rest.slice(at + 1);
+    const colon = credentials.indexOf(':');
+    const username = colon === -1 ? credentials : credentials.slice(0, colon);
+    const password = colon === -1 ? '' : credentials.slice(colon + 1);
+    const parts = rest.split(':');
+    if (parts.length < 2) return null;
+    const port = Number(parts[parts.length - 1]);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+    return {
+      protocol: protocol,
+      host: parts.slice(0, parts.length - 1).join(':'),
+      port: port,
+      username: username,
+      password: password,
+    };
+  }
+
+  const parts = rest.split(':');
+  if (parts.length < 2) return null;
+
+  const port = Number(parts[1]);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+
+  const host = parts[0];
+  if (!host) return null;
+
+  let username = '';
+  let password = '';
+  if (parts.length === 3) {
+    username = parts[2];
+  } else if (parts.length >= 4) {
+    username = parts[2];
+    // The password may hold a colon of its own, and it is the last
+    // part of the line, so everything after the third colon is the
+    // password.
+    password = parts.slice(3).join(':');
+  }
+
+  return {
+    protocol: protocol,
+    host: host,
+    port: port,
+    username: username,
+    password: password,
+  };
+}
+
+/**
+ * The profiles that are ticked.
+ *
+ * The set holds the identifiers, so a profile that is ticked is still
+ * ticked after the table has been rebuilt.
+ */
+function selectedProfiles() {
+  return profiles.filter((profile) => selection.has(profileId(profile)));
+}
+
+function clearSelection() {
+  selection.clear();
+  refreshSelectionBar();
+}
+
+/**
+ * The bar that shows what is ticked and what can be done with it.
+ *
+ * The bar is rebuilt from the selection every time it changes, so it
+ * can never show a count that is one behind the table.
+ */
+function refreshSelectionBar() {
+  const bar = document.getElementById('selection-bar');
+  if (!bar) return;
+
+  const chosen = selectedProfiles();
+  const count = chosen.length;
+
+  bar.replaceChildren(
+    el('div', { class: 'sel-count' }, [
+      el('strong', { text: num(count) }),
+      el('span', { text: count === 1 ? 'profile đã chọn' : 'profile đã chọn' }),
+    ]),
+    el('div', { class: 'sel-actions' }, [
+      el('button', {
+        class: 'btn btn-sm btn-primary',
+        text: 'Mở',
+        disabled: count === 0,
+        onclick: () => openSelected(),
+      }),
+      el('button', {
+        class: 'btn btn-sm',
+        text: 'Dừng',
+        disabled: count === 0,
+        onclick: () => stopSelected(),
+      }),
+      el('button', {
+        class: 'btn btn-sm',
+        text: 'Gán proxy',
+        disabled: count === 0,
+        onclick: () => openBulkProxyDialog(),
+      }),
+      el('button', {
+        class: 'btn btn-sm',
+        text: 'Phân tích',
+        disabled: count === 0,
+        onclick: () => openAnalysisDialog(),
+      }),
+      el('button', {
+        class: 'btn btn-sm btn-danger',
+        text: 'Xoá',
+        disabled: count === 0,
+        onclick: () => deleteSelected(),
+      }),
+      el('button', {
+        class: 'btn btn-sm btn-ghost',
+        text: 'Bỏ chọn',
+        disabled: count === 0,
+        onclick: clearSelection,
+      }),
+    ]),
+  );
+
+  bar.classList.toggle('visible', count > 0);
+  bar.hidden = count === 0;
+}
+
+/**
+ * Open every ticked profile.
+ */
+async function openSelected() {
+  const chosen = selectedProfiles();
+  if (!chosen.length) return;
+
+  const failures = [];
+  let opened = 0;
+  for (const profile of chosen) {
+    try {
+      await call('POST', '/api/profiles/' + profileId(profile) + '/launch', {});
+      opened += 1;
+    } catch (error) {
+      failures.push(deviceLabel(profile) + ': ' + String(error.message || error));
+    }
+  }
+
+  toast(
+    'Đã mở ' + num(opened) + ' trên ' + num(chosen.length) + ' profile.',
+    failures.length ? 'warn' : 'ok',
+  );
+  if (failures.length) toast(failures[0], 'bad');
+  await render();
+}
+
+/**
+ * Stop every ticked profile.
+ */
+async function stopSelected() {
+  const chosen = selectedProfiles();
+  if (!chosen.length) return;
+
+  const failures = [];
+  let stopped = 0;
+  for (const profile of chosen) {
+    try {
+      await call('POST', '/api/profiles/' + profileId(profile) + '/stop', {});
+      stopped += 1;
+    } catch (error) {
+      failures.push(deviceLabel(profile) + ': ' + String(error.message || error));
+    }
+  }
+
+  toast(
+    'Đã dừng ' + num(stopped) + ' trên ' + num(chosen.length) + ' profile.',
+    failures.length ? 'warn' : 'ok',
+  );
+  if (failures.length) toast(failures[0], 'bad');
+  await render();
+}
+
+/**
+ * Delete every ticked profile.
+ */
+async function deleteSelected() {
+  const chosen = selectedProfiles();
+  if (!chosen.length) return;
+
+  const confirmed = window.confirm(
+    'Xoá ' +
+      num(chosen.length) +
+      ' profile?\n\nThư mục profile cũng bị xoá theo. Không thể hoàn tác.',
+  );
+  if (!confirmed) return;
+
+  const failures = [];
+  let deleted = 0;
+  for (const profile of chosen) {
+    try {
+      await call('DELETE', '/api/profiles/' + profileId(profile));
+      selection.delete(profileId(profile));
+      deleted += 1;
+    } catch (error) {
+      failures.push(deviceLabel(profile) + ': ' + String(error.message || error));
+    }
+  }
+
+  toast(
+    'Đã xoá ' + num(deleted) + ' trên ' + num(chosen.length) + ' profile.',
+    failures.length ? 'warn' : 'ok',
+  );
+  if (failures.length) toast(failures[0], 'bad');
+  await render();
+}
+
+/**
+ * Look at the group that is ticked and say what it holds.
+ *
+ * The question the analysis answers is the one that matters: are these
+ * profiles a group of different people, or are they one person with
+ * several browsers?  The answer is the number of different devices,
+ * GPUs, addresses and Android releases in the group.
+ */
+function openAnalysisDialog() {
+  const chosen = selectedProfiles();
+  if (!chosen.length) return;
+
+  const devices = new Set(chosen.map((p) => deviceLabel(p))).size;
+  const gpus = new Set(
+    chosen.map((p) => (configOf(p).webgl || {}).unmasked_renderer || ''),
+  ).size;
+  const proxies = new Set(chosen.map((p) => proxyLabel(p))).size;
+  const androids = new Set(chosen.map((p) => androidLabel(p))).size;
+  const running = chosen.filter((p) => isRunning(p)).length;
+
+  const body = el('div', {}, [
+    el('div', { class: 'analysis-grid' }, [
+      statTile('Profile', num(chosen.length), 'đã chọn'),
+      statTile('Đang mở', num(running), 'trình duyệt đang chạy'),
+      statTile('Thiết bị', num(devices), 'khác nhau'),
+      statTile('Đồ hoạ', num(gpus), 'khác nhau'),
+      statTile('Android', num(androids), 'khác nhau'),
+      statTile('Proxy', num(proxies), 'đường truyền riêng'),
+    ]),
+    el('p', { class: 'hint' }, [
+      el('span', {
+        text:
+          'Mỗi profile trong nhóm là một thiết bị khác, ở một địa chỉ khác. ' +
+          'Không có hai cái nào bị gom lại thành một người.',
+      }),
+    ]),
+    el('h4', { class: 'modal-sub', text: 'Thứ tự các profile' }),
+    el('div', { class: 'bulk-order' }, [
+      chosen.map((profile, index) =>
+        el('div', { class: 'bulk-order-row' }, [
+          el('span', { class: 'idx', text: String(index + 1) }),
+          el('b', { text: deviceLabel(profile) }),
+          el('span', { class: 'mono', text: androidLabel(profile) }),
+          el('span', { class: 'mono dim', text: proxyLabel(profile) || 'chưa có proxy' }),
+        ]),
+      ),
+    ]),
+  ]);
+
+  openModal(
+    'Phân tích ' + num(chosen.length) + ' profile đã chọn',
+    body,
+    el('div', { class: 'modal-actions' }, [
+      el('button', { class: 'btn', text: 'Đóng', onclick: closeModal }),
+    ]),
+    true,
+  );
+}
+
+/**
+ * Whether a profile's browser is running.
+ *
+ * The status lives inside the profile's identity, and a profile that
+ * was fetched from a list carries it there and nowhere else.
+ */
+function isRunning(profile) {
+  const identity = identityOf(profile);
+  return identity.status === 'running' || profile.running === true;
 }
 
 function configOf(profile) {
@@ -537,68 +1018,56 @@ function openSingleProxyDialog(profile) {
 /**
  * Assign a proxy to every ticked profile.
  *
- * The table has one row for each profile and one cell for the proxy
- * that goes to it, so the operator reads down the table and sees which
- * address belongs to which machine.
+ * The operator has a list of proxy lines in hand -- the seller sent a
+ * list, and the operator pastes it.  The dialog asks for that list
+ * and nothing else: one line of text, one proxy per line.
  *
- * The cell takes the line the way every proxy list is written --
- * ``ip:port:user:pass`` -- and the cell that is left empty leaves
- * the profile with the proxy it already has.  The operator did not
- * say to clear those, so they are not cleared.
+ * The lines go to the ticked profiles in the order the table shows
+ * them.  The first line goes to the first profile, the second line to
+ * the second profile, and so on.  A profile that has no line keeps the
+ * proxy it already has; the operator did not say to clear those, so
+ * they are not cleared.
+ *
+ * The order is shown beside the box, so the operator can see which
+ * address is going where before they press the button.
  */
 function openBulkProxyDialog() {
   const chosen = selectedProfiles();
   if (!chosen.length) return;
 
-  const inputs = chosen.map((profile) => {
-    const current = configOf(profile).proxy || {};
-    return el('input', {
-      type: 'text',
-      class: 'proxy-line',
-      spellcheck: 'false',
-      placeholder: 'ip:port:user:pass',
-      value: current.enabled
-        ? [
-            current.host || '',
-            current.port || '',
-            current.username || '',
-            current.password || '',
-          ]
-            .filter((part) => part !== '' && part !== undefined)
-            .join(':')
-        : '',
-    });
+  const list = el('textarea', {
+    id: 'proxy-lines',
+    class: 'proxy-lines',
+    spellcheck: 'false',
+    rows: '14',
+    placeholder: '1.2.3.4:8080:user:pass\n5.6.7.8:9090:user:pass',
   });
 
-  const rows = chosen.map((profile, index) =>
-    el('tr', {}, [
-      el('td', { class: 'idx', text: String(index + 1) }),
-      el('td', { class: 'who' }, [
-        el('div', { class: 'dev', text: deviceLabel(profile) }),
-        el('div', { class: 'and', text: androidLabel(profile) }),
+  const order = el('div', { class: 'bulk-order' }, [
+    chosen.map((profile, index) =>
+      el('div', { class: 'bulk-order-row' }, [
+        el('span', { class: 'idx', text: String(index + 1) }),
+        el('b', { text: deviceLabel(profile) }),
+        el('span', { class: 'mono', text: androidLabel(profile) }),
+        el('span', {
+          class: 'mono dim',
+          text: proxyLabel(profile) || 'chưa có proxy',
+        }),
       ]),
-      el('td', {}, [inputs[index]]),
-    ]),
-  );
+    ),
+  ]);
 
   const body = el('div', {}, [
     el('p', { class: 'hint' }, [
       el('span', {
         text:
-          'Mỗi dòng là một proxy cho profile tương ứng. Định dạng: ip:port:user:pass. ' +
-          'Ô trống nghĩa là profile đó giữ nguyên proxy hiện tại.',
+          'Dán danh sách proxy vào đây, mỗi dòng một proxy. Định dạng: ip:port:user:pass. ' +
+          'Dòng thứ nhất sẽ gán cho profile thứ nhất, dòng thứ hai cho profile thứ hai, v.v.',
       }),
     ]),
-    el('table', { class: 'proxy-table' }, [
-      el('thead', {}, [
-        el('tr', {}, [
-          el('th', { text: '#' }),
-          el('th', { text: 'Profile' }),
-          el('th', { text: 'Proxy' }),
-        ]),
-      ]),
-      el('tbody', {}, rows),
-    ]),
+    list,
+    el('h4', { class: 'modal-sub', text: 'Thứ tự nhận proxy' }),
+    order,
   ]);
 
   openModal(
@@ -613,17 +1082,23 @@ function openBulkProxyDialog() {
           const button = event.currentTarget;
           button.disabled = true;
           try {
+            const lines = list.value
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .filter((line) => line !== '');
+
+            if (!lines.length) {
+              throw new Error('Dán ít nhất một dòng proxy.');
+            }
+
             let assigned = 0;
             const failures = [];
 
-            for (let index = 0; index < chosen.length; index += 1) {
-              const line = inputs[index].value.trim();
-              if (!line) continue;
-              const parsed = parseProxyLine(line);
+            for (let index = 0; index < chosen.length && index < lines.length; index += 1) {
+              const parsed = parseProxyLine(lines[index]);
               if (!parsed) {
                 failures.push(
-                  deviceLabel(chosen[index]) +
-                    ': dòng proxy không đúng (cần ip:port:user:pass)',
+                  'Dòng ' + (index + 1) + ': không đúng định dạng (cần ip:port:user:pass)',
                 );
                 continue;
               }
@@ -650,11 +1125,7 @@ function openBulkProxyDialog() {
 
             if (assigned) {
               toast(
-                'Đã gán proxy cho ' +
-                  num(assigned) +
-                  ' trên ' +
-                  num(chosen.length) +
-                  ' profile.',
+                'Đã gán proxy cho ' + num(assigned) + ' trên ' + num(chosen.length) + ' profile.',
                 failures.length ? 'warn' : 'ok',
               );
             } else {
@@ -921,7 +1392,11 @@ async function openBulkDialog() {
         const total = Math.max(1, Math.min(100000, Number(count.value) || 1));
         const payload = {
           count: total,
-          preset_id: select.value,
+          // The device family is only named when the operator asked
+          // for one family.  With the spread ticked the fleet draws
+          // every profile's own machine out of the whole catalogue,
+          // and naming a family would put them all in one bucket.
+          preset_id: spread.checked ? '' : select.value,
           spread_across_catalogue: spread.checked,
         };
         if (group.value.trim()) payload.group_id = group.value.trim();

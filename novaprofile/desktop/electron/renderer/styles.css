@@ -434,6 +434,34 @@ tbody tr:last-child td {
   color: var(--accent);
 }
 
+/* The tick that a row carries of its own. */
+.tick-col {
+  width: 34px;
+  text-align: center;
+  padding-right: 0;
+}
+
+.row-tick {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+tbody tr.row-ticked td {
+  background: rgba(56, 189, 248, 0.06);
+}
+
+tbody tr.row-ticked td.tick-col {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+thead th.tick-col {
+  text-align: center;
+  padding-right: 0;
+}
+
 .cell-actions {
   display: flex;
   gap: 5px;
@@ -958,6 +986,37 @@ tr.is-selected td {
 .proxy-table input:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* The box the operator pastes the list of proxy lines into. */
+.proxy-lines {
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.65;
+  letter-spacing: 0.02em;
+  resize: vertical;
+  min-height: 180px;
+}
+
+.proxy-lines:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.modal-sub {
+  margin: 16px 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
 }
 
 .field-row {
