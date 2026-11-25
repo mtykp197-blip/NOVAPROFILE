@@ -87,3 +87,10 @@ tests/
 **/test_*.py
 **/tests/
 **/conftest.py
+
+# The scratch directories the test runs leave behind, wherever they
+# are and whatever they are called.
+**/.pytest_tmp*/
+**/.pytest-tmp*/
+**/.pytest_cache/
+**/.ruff_cache/

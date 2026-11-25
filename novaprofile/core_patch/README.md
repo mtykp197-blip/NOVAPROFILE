@@ -40,7 +40,7 @@ core patch does not cover, and not the primary mechanism.
 | `build_config.json` | the version matrix: branches, tags, GN arguments, patch series |
 | `build.py` | the build tool: `list`, `plan`, `apply`, `verify`, `check` |
 
-The two patches are a **series** and must be applied in order: the second
+The three patches are a **series** and must be applied in order: the second
 patch reaches the profile's configuration through the same `nova::` hooks
 the first patch introduced.
 
@@ -135,7 +135,7 @@ cores is even switched on.  Five things are decided:
   nothing for `git apply` to match against;
 - the accessors the first patch substitutes are implemented in the NOVA
   sources, and every hook the second patch calls is one the first patch
-  introduces — the two patches are two halves of one change;
+  introduces — the patches are the halves of one change;
 - the file paths the patches name exist in a Chromium checkout layout.
 
 ### `describe` — hand a built core to the installer

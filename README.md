@@ -151,7 +151,7 @@ python -m pytest tests -q
 python -m novaprofile.cli --help
 ```
 
-The suite is the first thing to run: **1.791 tests**, and they are the
+The suite is the first thing to run, and it is the
 specification of the engine. A change that breaks one of them broke a
 property the fleet depends on.
 
@@ -159,8 +159,8 @@ property the fleet depends on.
 
 ## The catalogue
 
-8.954 Android handsets, drawn from the reference descriptors in
-`source tham khảo/device-catalog.json`.
+19.381 Android presets, drawn from the market dataset in
+`novaprofile/core_patch/data/vn_devices.jsonl`.
 
 ```bash
 python tools/generate_device_presets.py
@@ -204,7 +204,7 @@ When the build finishes:
 # bundle it and register it as a core
 python -m novaprofile.installer.install_built_core \
     --chromium C:/chromium/src/out/nova-win \
-    --version 159.0.6896.0 --major 159
+    --version 160.0.8177.0 --major 160
 
 # verify a profile against it
 python -m novaprofile.probe.verify_built_core \

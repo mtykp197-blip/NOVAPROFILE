@@ -13,7 +13,7 @@ và mỗi việc cần bao lâu**.
 |---|---|
 | Core profile generator (Python) | ✅ Xong, 1784 test xanh |
 | Anti-collision (chống trùng) | ✅ Xong, 300/300 profile unique |
-| Device catalogue | ✅ 8.954 preset Android |
+| Device catalogue | ✅ 19.381 preset Android |
 | JS runtime (navigator/screen/canvas/webgl/audio) | ✅ Xong |
 | Chromium build trên Windows | 🔄 Đang build — ~8.600/9.570 step (~90%) |
 | Chromium patch anti-detect (tầng C++) | ✅ **Đã có** — 3.048 dòng, 24 file |
@@ -77,7 +77,7 @@ generator set đồng nhất cả 4 trường theo cùng một giá trị.
 `identity.py` import `generated_gpu_profiles` / `generated_gpu_variants` từ
 `devices.py`, nhưng hai hàm đó tên là `_generated_gpu_profiles` /
 `_generated_gpu_variants` (có tiền tố `_`). Import sửa, `_GPU_CATALOGUE` giờ có
-313 renderer, `_GPU_VARIANTS` có 8.954 preset.
+313 renderer, `_GPU_VARIANTS` có 19.381 preset.
 
 ### 1.6 Chu kỳ phụ thuộc GN — nguyên nhân build im lặng dừng
 
@@ -287,7 +287,7 @@ nhau và suy ra danh sách font thật của máy. Cần:
 
 ### Ưu tiên 5 — Mở rộng catalog thêm (đã ổn, chỉ cần duy trì)
 
-Catalog hiện 8.954 preset. Phân bố:
+Catalog hiện 19.381 preset. Phân bố:
 
 | Trường | Số giá trị khác nhau | Giá trị phổ biến nhất | Tỉ lệ |
 |---|---|---|---|
@@ -555,7 +555,7 @@ python -m novaprofile.probe ...
 
 ## 9. Trạng thái test
 
-Lượt bàn giao: **1784 passed, 6 skipped** (trước khi mở rộng catalog lên 8.954).
+Lượt bàn giao: **the suite passes** (trước khi mở rộng catalog lên 8.954).
 
 Sau thay đổi lượt này: chạy lại full suite để xác nhận — xem `PROGRESS.md`
 mục 6d.
