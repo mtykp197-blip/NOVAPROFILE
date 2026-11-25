@@ -51,7 +51,8 @@
           "*.dat",
           "*.pak",
           "*.dll",
-          "*.json"
+          "*.json",
+          "*.manifest"
         ]
       }
     ],

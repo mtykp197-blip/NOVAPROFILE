@@ -194,12 +194,34 @@ def _note_browser_exit(profile_id: str, code: int | None) -> None:
 
 @functools.lru_cache(maxsize=1)
 def get_launcher() -> Any:
-    """Return the process-wide :class:`~novaprofile.launcher.launcher.BrowserLauncher`."""
+    """Return the process-wide :class:`~novaprofile.launcher.launcher.BrowserLauncher`.
+
+    The launcher is given a core manager, because a launcher without one
+    can never select a core: it runs whatever executable it finds,
+    which is a stock browser, and a stock browser does not know what
+    ``--nova-config`` means -- so every surface the core owns is the
+    host's, and the browser looks like a desktop rather than like the
+    handset the profile claims to be.
+    """
     module = _import("novaprofile.launcher.launcher")
     launcher_cls = getattr(module, "BrowserLauncher", None)
     if launcher_cls is None:
         raise ModuleUnavailableError("novaprofile.launcher.launcher", "BrowserLauncher is missing")
-    launcher = launcher_cls(on_exit=_note_browser_exit)
+
+    kwargs: dict[str, Any] = {"on_exit": _note_browser_exit}
+
+    # The manager that owns the installed cores.  It is optional: a
+    # control plane without the core module still runs, it just has no
+    # core to select.
+    try:
+        cores_module = _import("novaprofile.core.cores")
+        manager_cls = getattr(cores_module, "CoreManager", None)
+        if manager_cls is not None:
+            kwargs["core_manager"] = manager_cls()
+    except EngineUnavailableError:
+        pass
+
+    launcher = launcher_cls(**kwargs)
     profiles_root = get_profile_home() / "profiles"
     setter = getattr(launcher, "set_profiles_root", None)
     if callable(setter):

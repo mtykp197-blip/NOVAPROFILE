@@ -33,6 +33,7 @@ import os
 import shlex
 import json
 import subprocess
+import sys
 import threading
 import uuid
 from collections.abc import Callable, Sequence
@@ -87,6 +88,116 @@ NOVA_CORE_PATHS: tuple[str, ...] = (
     r"C:\chromium\src\out\Release\chrome.exe",
     r"C:\chromium\src\out\Default\chrome.exe",
 )
+
+#: The name the core's executable carries in a finished application.
+#:
+#: The build produces ``chrome.exe``.  The application renames it, so
+#: that the process list and the task bar say what is running.
+CORE_EXECUTABLE_NAMES: tuple[str, ...] = ("NOVAPROFILE.exe", "chrome.exe")
+
+
+def _frozen_root() -> Path | None:
+    """The directory the frozen control plane was unpacked into."""
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    return Path(meipass) if meipass else None
+
+
+def _core_candidates() -> list[Path]:
+    """Every place a core's executable may be, most likely first.
+
+    The order matters: a machine that was given a finished
+    application has the core beside the application, and the machine
+    that built the core has it in the build directory.  The build
+    directory is last, because that is the one that only exists on the
+    machine that built it.
+    """
+
+    candidates: list[Path] = []
+
+    # The shell says where the core is.  This is the answer on a
+    # packaged application.
+    override = os.environ.get("NOVA_CORE_DIR") or os.environ.get("NOVA_CHROME_PATH")
+    if override:
+        candidate = Path(override).expanduser()
+        if candidate.is_dir():
+            candidates.extend(candidate / name for name in CORE_EXECUTABLE_NAMES)
+        else:
+            candidates.append(candidate)
+
+    # The core that sits beside the frozen control plane.  The shell
+    # puts it in ``resources/core``, and the frozen control plane is
+    # unpacked into ``resources/backend``, so the core is one level up.
+    root = _frozen_root()
+    if root is not None:
+        candidates.extend(
+            root.parent / "core" / name for name in CORE_EXECUTABLE_NAMES
+        )
+        candidates.extend(root / "core" / name for name in CORE_EXECUTABLE_NAMES)
+
+    # The core that sits beside the control plane in a checkout.  The
+    # repository holds the source, and the core is fetched into
+    # ``core/build/cores/<version>``.
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        cores = parent / "core" / "build" / "cores"
+        if not cores.is_dir():
+            continue
+        for entry in sorted(cores.iterdir(), reverse=True):
+            if not entry.is_dir():
+                continue
+            candidates.extend(entry / name for name in CORE_EXECUTABLE_NAMES)
+
+    return candidates
+
+
+def _core_version_of(directory: Path) -> str:
+    """The version a core directory carries.
+
+    The manifest holds it when there is one.  The directory's own name
+    holds it otherwise, because the core is fetched into a directory
+    that is named after the version it carries.
+    """
+
+    manifest = directory / "core.json"
+    if manifest.is_file():
+        try:
+            import json as _json
+
+            payload = _json.loads(manifest.read_text(encoding="utf-8"))
+            version = payload.get("version")
+            if isinstance(version, str) and version:
+                return version
+        except Exception:  # noqa: BLE001 - the name is the fallback
+            pass
+
+    name = directory.name
+    if name and name[0].isdigit():
+        return name
+    return ""
+
+
+def _major_of(version: str) -> int:
+    """The major version a version string names."""
+
+    try:
+        return int(version.split(".", 1)[0])
+    except (TypeError, ValueError):
+        return 0
+
+
+def find_core_executable() -> str:
+    """The executable of the NOVA core, or ``""`` when there is none.
+
+    The answer is what tells the two browsers apart: a stock Chromium
+    does not know what ``--nova-config`` means, so a profile served by
+    one reports the host's values for every surface the core owns.
+    """
+
+    for candidate in _core_candidates():
+        if candidate.is_file():
+            return str(candidate)
+    return ""
 
 DEFAULT_CHROME_PATHS: tuple[str, ...] = (
     *NOVA_CORE_PATHS,
@@ -256,25 +367,72 @@ class BrowserLauncher:
         core still agree -- a profile that claims Chromium 124 while
         Chromium 120 runs is a contradiction a site can read.
 
-        Returns ``None`` when no core manager is configured, in which case
-        the launcher's own executable is used.
+        Returns ``None`` when no core manager is configured and no core
+        was found, in which case the launcher's own executable is used.
         """
 
-        if self._core_manager is None:
-            return None
-
         version = getattr(config, "browser_version", None)
-        if version is None:
+
+        # The installed cores come first: a machine with several of
+        # them picks the one the profile asks for.
+        if self._core_manager is not None and version is not None:
+            selector = CoreSelector(self._core_manager, policy=self._core_policy)
+            try:
+                return selector.select(version.major)
+            except Exception:  # noqa: BLE001 - the fallback below is the answer
+                # The tree is empty, or it holds no core of that version.
+                # The core that was shipped with the application is the
+                # one to use, and the profile's declared version is
+                # adjusted to it below.
+                pass
+
+        # The core that was shipped with the application.  It is a
+        # single core, so it serves every profile; the selection says
+        # which version it is, and the profile is adjusted to match.
+        executable = find_core_executable()
+        if not executable:
             return None
 
-        selector = CoreSelector(self._core_manager, policy=self._core_policy)
-        return selector.select(version.major)
+        from ..core.versions import CoreManifest, CoreSelection, ReleaseChannel
+
+        directory = Path(executable).parent
+        version_string = _core_version_of(directory)
+        major = _major_of(version_string)
+        requested_major = version.major if version is not None else major
+
+        manifest = CoreManifest(
+            core_id=version_string or "nova-core",
+            version=version_string,
+            major=major,
+            channel=ReleaseChannel.CUSTOM,
+            platform="windows",
+            executable=executable,
+            install_path=str(directory),
+        )
+
+        return CoreSelection(
+            requested_major=requested_major,
+            core=manifest,
+            exact=requested_major == major,
+            fallback_used=requested_major != major,
+            reason=(
+                ""
+                if requested_major == major
+                else f"the shipped core is {version_string or 'unknown'}"
+            ),
+        )
 
     # -- discovery ---------------------------------------------------------
 
     @staticmethod
     def find_chrome(explicit: str | None = None) -> str:
-        """Locate a Chrome/Chromium executable.
+        """Locate the NOVA core, or a Chrome/Chromium executable.
+
+        The core comes first, always.  A stock Chromium does not know
+        what ``--nova-config`` means, so a profile served by one
+        reports the host's values for every surface the core owns, and
+        the browser looks like a desktop rather than like the handset
+        the profile claims to be.
 
         Raises :class:`FileNotFoundError` when nothing suitable is installed.
         """
@@ -289,6 +447,11 @@ class BrowserLauncher:
             if found:
                 return found
             raise FileNotFoundError(f"chrome executable not found: {explicit}")
+
+        core = find_core_executable()
+        if core:
+            return core
+
         for path in DEFAULT_CHROME_PATHS:
             if Path(path).exists():
                 return path
@@ -622,12 +785,18 @@ class BrowserLauncher:
         manifest = selection.core
         if not manifest.executable:
             return ""
-        candidate = Path(manifest.install_path) / manifest.executable
-        if candidate.is_file():
-            return str(candidate)
-        # The manifest may already carry an absolute path.
+
+        # The manifest may carry the executable relative to the core's
+        # directory, or as an absolute path.  Both are answered.
         absolute = Path(manifest.executable)
-        return str(absolute) if absolute.is_file() else ""
+        if absolute.is_file():
+            return str(absolute)
+
+        if manifest.install_path:
+            candidate = Path(manifest.install_path) / absolute.name
+            if candidate.is_file():
+                return str(candidate)
+        return ""
 
     @staticmethod
     def _host_resolver_rules(

@@ -91,6 +91,29 @@ REQUIRED_NAMES: tuple[str, ...] = (
     "vulkan-1.dll",
 )
 
+#: The pattern of the version manifest.
+#:
+#: Chromium writes a manifest beside the executable whose name is the
+#: version, and the executable's own embedded manifest names it as a
+#: dependent assembly.  Without it the browser does not start at all,
+#: so it is matched by name rather than by suffix: the other manifests
+#: -- ``chrome.exe.manifest`` and the like -- are build artifacts.
+VERSION_MANIFEST_PATTERN: str = "[0-9]*.manifest"
+
+
+def _is_version_manifest(path: Path) -> bool:
+    """Whether a file is the version manifest the loader asks for.
+
+    The name of the file is the version, and the version is a number.
+    ``chrome.exe.manifest`` is not named after a version, and the
+    loader never asks for it.
+    """
+
+    if path.suffix.lower() != ".manifest":
+        return False
+    stem = path.stem
+    return bool(stem) and stem[0].isdigit()
+
 #: The suffix of the file that records what the bundle holds.
 MANIFEST_NAME = "chromium_bundle.json"
 
@@ -116,8 +139,14 @@ class BundleResult:
 
 
 def _is_build_output(path: Path) -> bool:
-    """Whether a file only matters to the build."""
+    """Whether a file only matters to the build.
 
+    The version manifest is the exception: the loader asks for it by
+    name, and the browser does not start without it.
+    """
+
+    if _is_version_manifest(path):
+        return False
     return path.suffix.lower() in BUILD_ONLY_SUFFIXES
 
 

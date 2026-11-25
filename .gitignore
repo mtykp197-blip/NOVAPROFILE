@@ -52,6 +52,8 @@ desktop-app/
 # Where the installer puts the application.  It is a copy of the
 # build, not the build.
 installed/
+installed_test/
+installed-*/
 
 # The built core.  The core is a *build artifact* of the patch series
 # under ``novaprofile/core_patch``: it is rebuilt from the series by

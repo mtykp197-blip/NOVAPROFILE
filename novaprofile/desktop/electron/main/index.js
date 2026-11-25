@@ -204,10 +204,23 @@ async function startBackend() {
   let args;
   let spawnOptions;
 
+  // The control plane is told where the core is.
+  //
+  // It looks for the core in the build directories of the machine that
+  // built it, which is where it is on that machine and nowhere else.
+  // The shell knows better: it carries the core beside itself, and it
+  // says so here.  Without this, a machine that was given a finished
+  // application ran a stock browser and every surface the core owns
+  // was the host's.
+  const backendEnv = {
+    ...process.env,
+    NOVA_CORE_DIR: paths.coreDir(),
+  };
+
   if (executable) {
     command = executable;
     args = ['serve', '--port', String(port), '--data-dir', paths.dataDir(), '--handshake'];
-    spawnOptions = { windowsHide: true };
+    spawnOptions = { windowsHide: true, env: backendEnv };
   } else {
     command = process.env.NOVA_PYTHON || 'python';
     args = [
@@ -223,7 +236,7 @@ async function startBackend() {
     spawnOptions = {
       cwd: paths.backendDir(),
       windowsHide: true,
-      env: { ...process.env, PYTHONPATH: paths.backendDir() },
+      env: { ...backendEnv, PYTHONPATH: paths.backendDir() },
     };
   }
 
