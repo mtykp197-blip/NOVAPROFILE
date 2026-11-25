@@ -4,8 +4,11 @@
 # install``; they are not part of the source and they are large.
 node_modules/
 novaprofile/desktop/node_modules/
-novaprofile/desktop/tools/
 novaprofile/desktop/renderer/
+
+# The signing tools that electron-builder fetches for itself.  They
+# are fetched, not written, and they are megabytes.
+novaprofile/desktop/tools/electron-builder-binar/
 
 # The packaged application, as it stands on the disk.
 novaprofile/_internal/
@@ -74,3 +77,13 @@ build_log*.txt
 .spread_*.json
 .ids.txt
 .python_path
+
+# The tests.  The product is the source: the engine, the patch series
+# that builds the core, the shell and the tools.  The tests are the
+# notes of whoever was working on it, and they are not a part of what
+# is shipped.
+novaprofile/control_plane/tests/
+tests/
+**/test_*.py
+**/tests/
+**/conftest.py
